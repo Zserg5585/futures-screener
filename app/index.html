@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Futures Screener — Densities</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Futures Screener</div>
+    <div class="subtitle">Densities (grouped by symbol)</div>
+  </header>
+
+  <section class="controls">
+    <label>
+      Min Notional $
+      <input id="minNotional" type="number" value="100000" min="0" step="1000" />
+    </label>
+
+    <label>
+      Symbols (optional)
+      <input id="symbols" type="text" placeholder="BTCUSDT,ETHUSDT" />
+    </label>
+
+    <label>
+      Side
+      <select id="side">
+        <option value="all">All</option>
+        <option value="bid">Bid</option>
+        <option value="ask">Ask</option>
+      </select>
+    </label>
+
+    <button id="refresh">Refresh</button>
+
+    <label class="inline">
+      <input id="auto" type="checkbox" />
+      Auto
+    </label>
+
+    <label>
+      Interval
+      <select id="interval">
+        <option value="5000">5s</option>
+        <option value="10000" selected>10s</option>
+        <option value="20000">20s</option>
+      </select>
+    </label>
+
+    <div class="status">
+      <span id="state">Idle</span>
+      <span id="updated"></span>
+    </div>
+  </section>
+
+  <main class="main">
+    <div id="error" class="error hidden"></div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th colspan="3">BID (nearest)</th>
+          <th colspan="3">ASK (nearest)</th>
+        </tr>
+        <tr class="subhead">
+          <th></th>
+          <th>Level</th><th>Dist %</th><th>Notional</th>
+          <th>Level</th><th>Dist %</th><th>Notional</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
