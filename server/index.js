@@ -177,7 +177,7 @@ const port = Number(process.env.PORT || 3100)
 
 const start = async () => {
   try {
-    await fastify.listen({ port, host: '127.0.0.1' })
+    await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
   } catch (err) {
     fastify.log.error(err)
