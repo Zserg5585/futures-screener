@@ -1,18 +1,42 @@
-# MEMORY.md - Long-term memory for Futures Screener
+# MEMORY.md — Долговременная память Morty
 
-This file serves as the long-term memory for the OpenClaw agent operating in /home/app/futures-screener. It captures significant decisions, lessons, milestones, and context that should persist across sessions.
+## Зачем
+Сохранять значимые решения, контекст и выводы между сессиями.
+Каждую сессию я просыпаюсь с нуля — этот файл и `memory/` помогают вспомнить.
 
-## Guidelines
-- Record decisions, outcomes, and rationale with dates when possible.
-- Do not leak private data unless explicitly requested.
-- Update as context evolves; prune outdated notes periodically.
+## Структура
+- `MEMORY.md` — консолидированные выводы и ключевые факты
+- `memory/YYYY-MM-DD.md` — дневники по дням (сырые заметки)
 
-## Structure suggestions
-- memory/YYYY-MM-DD.md — daily notes for traceable context
-- Sections to include:
-  - Event / Decision
-  - Why it mattered
-  - Outcome / Next steps
+## Шаблон дневниковой записи (memory/YYYY-MM-DD.md)
 
-## Current log (example)
-- 2026-02-13: Bootstrapped identity Morty; defined core persona; created ROADMAP.md and STATUS.md. Next steps: populate USER.md, MEMORY.md, and START memory diaries.
+```
+## Event / Decision
+Что произошло или решено.
+
+## Context
+Почему это важно.
+
+## Rationale
+Обоснование выбора.
+
+## Outcome / Next steps
+Что получилось → что делать дальше.
+
+## Evidence
+Ссылки на файлы, команды, логи.
+```
+
+## Правила
+- Факты, даты, ссылки на файлы — без воды.
+- Не размещать приватные данные без явного запроса.
+- Обновлять по мере изменений; удалять устаревшее.
+- Завершённые решения помечать ✅.
+- Периодически консолидировать дневники → сюда (краткие выводы).
+
+## Ключевые факты
+- 2026-02-13: Bootstrap — создан агент Morty, заполнены IDENTITY.md, SOUL.md, USER.md.
+- 2026-02-13: Пользователь — Sergii (Rick), Ванкувер, Канада.
+- 2026-02-13: Проект — Futures Screener (Binance Futures). Позже будут другие проекты.
+- 2026-02-13: Роль агента — помощник + топовый программист.
+- 2026-02-13: Правило — всегда спрашивать подтверждение перед действием.
