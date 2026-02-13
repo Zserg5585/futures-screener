@@ -1,1 +1,79 @@
-# VISION.md - Futures Screener (Binance Futures focus)\n\n## Overview\n- Scope: Binance Futures screener with three tabs: Densities, Mini-charts/Screener, Signals.\n- Current status: Backend groundwork exists for Densities; frontend not yet implemented.\n- Tabs are designed to align with Binance Futures data and workflows.\n\n## Tab 1: Densities (P densities)\n- Goal: Provide density-based prioritization for futures assets; backend prepared; frontend pending.\n- Key features:\n  - backend power for density computation (pre-aggregated densities available)\n  - API endpoints to fetch densities per asset\n  - placeholder UI for densities view (to be wired)\n- Status: Tab1 = backend ready, frontend not completed.\n\n## Tab 2: Mini-charts / Screener\n- Goal: Lightweight mini-charts + screener matrix similar to Digas/Taoscalp; prototype.\n- Key features:\n  - per-asset mini-chart rendering data structure\n  - tabular screener view with sortable columns (price, volume, change)\n  - data fetch hook to pull mini-chart data (to be wired)\n- Status: Tab2 = backend TBD, frontend pending.\n\n## Tab 3: Signals (RSI / zones / events)\n- Goal: Signal engine viewing RSI bands, zone highlighting, event signals.\n- Key features:\n  - RSI calculation hooks (server-side or client-side plan)\n  - zone mapping (overbought/oversold) visualization\n  - event-driven signals for alerts\n- Status: Tab3 = backend TBD, frontend pending.\n\n
+# VISION — Futures Screener
+
+> Скринер работает **только с Binance Futures**.
+> Три вкладки, каждая — отдельный режим анализа.
+
+---
+
+## Tab 1 · Плотности (Densities) — ПРИОРИТЕТ
+
+**Цель:**
+Показать зоны плотности ордеров / ликвидности по каждому фьючерсному тикеру.
+Позволяет быстро найти инструменты с аномальными скоплениями.
+
+**Ключевые функции:**
+- Таблица тикеров с колонками плотностей (bid/ask стаканы, кластеры).
+- Сортировка по силе плотности / дистанции до текущей цены.
+- Визуальная шкала (heatmap-полоска или числовой индикатор).
+- Фильтр по минимальному порогу плотности.
+
+**Статус:**
+| Слой     | Готовность                                      |
+|----------|-------------------------------------------------|
+| Backend  | ✅ Готов (`server/modules/densities/`)           |
+| API      | ✅ Endpoint существует или легко добавляется     |
+| Frontend | ❌ Не доделан — нужна таблица + визуализация     |
+
+---
+
+## Tab 2 · Mini-charts / Screener (à la Digas / Taoscalp)
+
+**Цель:**
+Сетка мини-графиков по всем фьючерсам — быстрый визуальный обзор рынка.
+Аналог экранов Digas или Taoscalp: компактные свечные/линейные чарты в плиточном layout.
+
+**Ключевые функции:**
+- Плиточная сетка (tile grid): каждый тайл = тикер + мини-график (1m/5m/15m).
+- Цветовая индикация: зелёный/красный фон по направлению движения.
+- Клик на тайл → расширенный вид или переход к детальному графику.
+- Сортировка плиток по объёму / % изменения / волатильности.
+- Поиск / фильтр по имени тикера.
+
+**Статус:**
+| Слой     | Готовность                                      |
+|----------|-------------------------------------------------|
+| Backend  | ⏳ Позже — нужен endpoint с kline/candle данными |
+| Frontend | ⏳ Позже — tile grid + canvas/svg мини-графики   |
+
+---
+
+## Tab 3 · Signals (RSI / зоны / события)
+
+**Цель:**
+Сигнальная панель: автоматически подсвечивает тикеры, попавшие в зоны
+RSI-перекупленности/перепроданности, пробившие уровни или сгенерировавшие события.
+
+**Ключевые функции:**
+- RSI-скринер: таблица тикеров с текущим RSI (14), зоной (OB/OS/нейтрал).
+- Фильтр «только сигналы» — показать только тикеры в зоне OB/OS.
+- Зоны поддержки/сопротивления: пробой уровня → событие в ленте.
+- Лента событий (event feed): хронологический список сигналов.
+- Настраиваемые пороги (RSI > 70 / < 30 по умолчанию).
+
+**Статус:**
+| Слой     | Готовность                                      |
+|----------|-------------------------------------------------|
+| Backend  | ⏳ Позже — RSI расчёт, детектор зон             |
+| Frontend | ⏳ Позже — таблица сигналов + event feed         |
+
+---
+
+## Порядок реализации
+
+```
+Tab 1 (Densities)  ██████████░░░░  бэк готов → доделать фронт
+Tab 2 (Mini-charts) ░░░░░░░░░░░░░░  после Tab 1
+Tab 3 (Signals)     ░░░░░░░░░░░░░░  после Tab 2
+```
+
+Приоритет: **Tab 1 → Tab 2 → Tab 3**.
