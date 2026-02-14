@@ -34,14 +34,6 @@ body {
     line-height: 1.6;
 }
 
-/* Главная сетка */
-.app {
-    display: grid;
-    grid-template-rows: auto 1fr;
-    min-height: 100vh;
-}
-
-/* Шапка */
 .top { 
     padding: 14px 16px; 
     border-bottom: 1px solid var(--border-primary); 
@@ -56,36 +48,6 @@ body {
     font-size: var(--font-size-large);
 }
 
-.tabs {
-    display: flex;
-    gap: 12px;
-    margin-left: auto;
-}
-
-.tab {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    padding: 6px 12px;
-    border-radius: 8px;
-    transition: background-color 0.3s ease;
-}
-
-.tab.active {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-}
-
-.tab-content {
-    display: none;
-}
-
-.tab-content.active {
-    display: block;
-}
-
-/* Контролы */
 .controls {
     display: flex; 
     flex-wrap: wrap; 
@@ -144,7 +106,6 @@ button:hover {
     align-items: center; 
 }
 
-/* Основной контент */
 .main { 
     padding: 10px 16px 24px; 
     overflow-x: auto; 
@@ -162,7 +123,6 @@ button:hover {
     display: none; 
 }
 
-/* Таблицы */
 .table { 
     width: 100%; 
     border-collapse: collapse; 
@@ -198,28 +158,11 @@ th {
     color: var(--text-muted); 
 }
 
-/* Placeholder для вкладок */
-.placeholder {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 200px;
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-    border-radius: 8px;
-    margin: 16px;
-}
-
 /* Медиа-запросы */
 @media screen and (max-width: 768px) {
     .top {
         flex-direction: column;
         gap: 8px;
-    }
-
-    .tabs {
-        margin-left: 0;
-        justify-content: flex-start;
     }
 
     .controls {
