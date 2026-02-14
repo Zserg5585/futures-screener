@@ -1,4 +1,11 @@
-const fastify = require('fastify')({ logger: true })
+const fastify = require('fastify')({ 
+    logger: true,
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization']
+    }
+})
 
 // Binance Futures (USDT-M) REST base
 const BINANCE_FAPI = 'https://fapi.binance.com'
@@ -15,20 +22,38 @@ async function bget(path) {
 
 function toNumber(x) { return Number(x) }
 
-function calcNearestDensities({ price, bids, asks, minNotional }) {
+// Utility function to calculate percentile
+function percentile(arr, p) {
+  if (!arr || arr.length === 0) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length)));
+  return sorted[index];
+}
+
+function filterLevelsByWindow(levels, markPrice, windowPct) {
+  return levels.filter(level => {
+    const distPct = Math.abs(level.price - markPrice) / markPrice * 100;
+    return distPct <= windowPct;
+  });
+}
+
+function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
   // bids/asks are arrays: [priceStr, qtyStr]
-  let nearestBid = null
-  let nearestAsk = null
+  const filteredLevels = [];
 
   for (const [pStr, qStr] of bids) {
     const p = toNumber(pStr), q = toNumber(qStr)
     const notional = p * q
     if (notional >= minNotional) {
-      const distPct = ((price - p) / price) * 100
-      if (distPct >= 0) {
-        if (!nearestBid || distPct < nearestBid.distancePct) {
-          nearestBid = { side: 'bid', price: p, qty: q, notional, distancePct: distPct }
-        }
+      const distPct = Math.abs((price - p) / price) * 100
+      if (distPct <= windowPct) {
+        filteredLevels.push({ 
+          side: 'bid', 
+          price: p, 
+          qty: q, 
+          notional, 
+          distancePct: distPct 
+        })
       }
     }
   }
@@ -37,16 +62,23 @@ function calcNearestDensities({ price, bids, asks, minNotional }) {
     const p = toNumber(pStr), q = toNumber(qStr)
     const notional = p * q
     if (notional >= minNotional) {
-      const distPct = ((p - price) / price) * 100
-      if (distPct >= 0) {
-        if (!nearestAsk || distPct < nearestAsk.distancePct) {
-          nearestAsk = { side: 'ask', price: p, qty: q, notional, distancePct: distPct }
-        }
+      const distPct = Math.abs((p - price) / price) * 100
+      if (distPct <= windowPct) {
+        filteredLevels.push({ 
+          side: 'ask', 
+          price: p, 
+          qty: q, 
+          notional, 
+          distancePct: distPct 
+        })
       }
     }
   }
 
-  return { nearestBid, nearestAsk }
+  const bidLevels = filteredLevels.filter(l => l.side === 'bid');
+  const askLevels = filteredLevels.filter(l => l.side === 'ask');
+
+  return { filteredLevels, bidLevels, askLevels };
 }
 
 // Simple concurrency limiter (no deps)
@@ -116,6 +148,9 @@ fastify.get('/densities/simple', async (req) => {
   const minNotional = Number(req.query.minNotional || 50000)
   const depthLimit = Number(req.query.depthLimit || 100)
   const concurrency = Number(req.query.concurrency || 6)
+  const mmMode = req.query.mmMode === 'true'
+  const windowPct = Number(req.query.windowPct || 1.0)  // 1% по умолчанию
+  const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
 
   let symbols = []
   if (req.query.symbols) {
@@ -138,42 +173,67 @@ fastify.get('/densities/simple', async (req) => {
     if (!price) return []
 
     const ob = await bget(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
-    const { nearestBid, nearestAsk } = calcNearestDensities({
+    const { filteredLevels, bidLevels, askLevels } = calcNearestDensities({
       price,
       bids: ob.bids,
       asks: ob.asks,
-      minNotional
+      minNotional,
+      windowPct
     })
 
-    const rows = []
-    if (nearestBid) rows.push({
-      symbol: sym,
-      side: 'bid',
-      markPrice: price,
-      levelPrice: nearestBid.price,
-      qty: nearestBid.qty,
-      notional: nearestBid.notional,
-      distancePct: nearestBid.distancePct
-    })
-    if (nearestAsk) rows.push({
-      symbol: sym,
-      side: 'ask',
-      markPrice: price,
-      levelPrice: nearestAsk.price,
-      qty: nearestAsk.qty,
-      notional: nearestAsk.notional,
-      distancePct: nearestAsk.distancePct
-    })
+    // Расчет базового notional для bid и ask
+    const bidNotionals = bidLevels.map(l => l.notional)
+    const askNotionals = askLevels.map(l => l.notional)
+    
+    const baseNotionalBid = percentile(bidNotionals, 70)
+    const baseNotionalAsk = percentile(askNotionals, 70)
+
+    // Фильтрация и перерасчет базы
+    const filteredBidNotionals = bidNotionals.filter(n => n <= baseNotionalBid * 2)
+    const filteredAskNotionals = askNotionals.filter(n => n <= baseNotionalAsk * 2)
+
+    const finalBaseNotionalBid = percentile(filteredBidNotionals, 70) 
+    const finalBaseNotionalAsk = percentile(filteredAskNotionals, 70)
+
+    const rows = filteredLevels.map(level => {
+      const isMM = level.side === 'bid' 
+        ? level.notional >= finalBaseNotionalBid * mmMultiplier
+        : level.notional >= finalBaseNotionalAsk * mmMultiplier
+
+      return {
+        symbol: sym,
+        side: level.side,
+        markPrice: price,
+        levelPrice: level.price,
+        qty: level.qty,
+        notional: level.notional,
+        distancePct: level.distancePct,
+        isMM,
+        baseNotionalBid: finalBaseNotionalBid,
+        baseNotionalAsk: finalBaseNotionalAsk,
+        windowPct,
+        mmMultiplier
+      }
+    }).filter(row => !mmMode || row.isMM)
 
     return rows
   })
 
   const data = rowsArr.flat()
-  return { count: data.length, minNotional, depthLimit, concurrency, data }
+  return { 
+    count: data.length, 
+    minNotional, 
+    depthLimit, 
+    concurrency, 
+    mmMode,
+    windowPct,
+    mmMultiplier,
+    data 
+  }
 })
 
 // ---- start ----
-const port = Number(process.env.PORT || 3100)
+const port = Number(process.env.PORT || 3200)
 
 const start = async () => {
   try {
