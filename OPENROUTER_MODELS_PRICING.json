@@ -1,0 +1,5 @@
+{
+    "note": "Для получения актуальных цен использовать curl с API-ключом",
+    "curl_command": "curl https://openrouter.ai/api/v1/models -H \"Authorization: Bearer $OPENROUTER_API_KEY\" | jq '.data[] | {id, pricing}'",
+    "last_updated": "2026-02-14"
+}
