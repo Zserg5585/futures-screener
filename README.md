@@ -4,47 +4,54 @@
 
 **Futures Screener** — Single-page аналитический инструмент для трейдеров, специализирующийся на фьючерсных контрактах Binance. Проект направлен на предоставление глубокого анализа рыночных плотностей и торговых возможностей.
 
-### MVP (текущая версия)
+### Текущая версия (MVP)
 - **Densities Tab**: Визуализация плотностей ордерных книг (orderbook liquidity)
+
+### Требования
+
+- Node.js 18+ 
+- npm 9+
+- Git
+
+### Установка
+
+```bash
+# Клонирование репозитория
+git clone https://github.com/[username]/futures-screener.git
+cd futures-screener
+
+# Установка зависимостей
+cd server && npm install
+cd ../app && npm install
+```
+
+### Запуск проекта
+
+```bash
+# Запуск backend (из директории server)
+cd server
+npm start  # Запустит Fastify на порту 3100
+
+# Запуск frontend 
+# Используйте локальный сервер разработки 
+# (например, live-server или python -m http.server)
+```
+
+### Зависимости
+
+Backend:
+- Fastify
+- node-fetch
+- pino (логирование)
+
+Frontend:
+- Vanilla JS
+- Никаких внешних библиотек
 
 ### Планируемые расширения
 - Movers / Volatility
 - Levels / VP
 - Strategy Signals
-
-## Структура проекта
-
-```
-futures-screener/
-├── app/                    # Клиентская часть (Frontend)
-│   ├── index.html          # Основной HTML-шаблон
-│   ├── app.js              # Основная frontend-логика
-│   └── styles.css          # Стили приложения
-│
-├── server/                 # Серверная часть (Backend)
-│   ├── index.js            # Основной серверный файл (Fastify)
-│   └── modules/            # Модули с бизнес-логикой
-│       ├── binance/        # Интеграция с API Binance
-│       └── densities/      # Логика работы с плотностями
-│
-├── tests/                  # Модули тестирования
-│
-├── ROADMAP.md              # План развития проекта
-└── VISION.md               # Стратегическое видение
-```
-
-### Технологический стек
-
-- JavaScript (ES6+)
-- Node.js
-- Fastify
-- OpenRouter AI
-- HTML5
-- CSS3
-
-## Snapshots
-
-- git tags + tar.gz в _snapshots (планируется)
 
 ## Статус проекта
 
@@ -53,3 +60,7 @@ futures-screener/
 - [x] Endpoint `/densities/simple`
 - [x] Базовый UI
 - [ ] Финальная документация
+
+## Лицензия
+
+[Указать лицензию]
