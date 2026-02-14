@@ -20,11 +20,40 @@ class DensitiesApp {
             side: 'all',
             interval: CONFIG.DEFAULT_INTERVAL,
             autoRefresh: false,
-            refreshTimer: null
+            refreshTimer: null,
+            cache: {
+                data: null,
+                timestamp: 0,
+                cacheKey: null
+            }
         }
 
         this.initializeUI()
         this.bindEvents()
+    }
+
+    getCacheKey() {
+        return JSON.stringify({
+            minNotional: this.state.minNotional,
+            symbols: this.state.symbols,
+            side: this.state.side
+        })
+    }
+
+    isCacheValid() {
+        const CACHE_DURATION = 30000 // 30 секунд
+        const currentKey = this.getCacheKey()
+        return this.state.cache.data && 
+               this.state.cache.cacheKey === currentKey && 
+               (Date.now() - this.state.cache.timestamp) < CACHE_DURATION
+    }
+
+    updateCache(data) {
+        this.state.cache = {
+            data,
+            timestamp: Date.now(),
+            cacheKey: this.getCacheKey()
+        }
     }
 
     initializeUI() {
@@ -51,29 +80,47 @@ class DensitiesApp {
         return `${CONFIG.API_BASE_URL}?${params.toString()}`
     }
 
-    async loadDensities() {
+    async loadDensities(forceRefresh = false) {
         const stateEl = el('state')
-        const tbodyEl = el('tbody')
         const errorEl = el('error')
 
         try {
+            // Добавляем анимацию загрузки
+            stateEl.classList.add('loading')
             stateEl.textContent = 'Loading...'
             errorEl.classList.add('hidden')
+
+            // Проверка кэша
+            if (!forceRefresh && this.isCacheValid()) {
+                this.renderDensities(this.state.cache.data)
+                stateEl.classList.remove('loading')
+                stateEl.textContent = `OK (Cached: ${this.state.cache.data?.length || 0} symbols)`
+                return
+            }
 
             const response = await fetch(this.buildQueryParams())
             if (!response.ok) {
                 throw new Error(`HTTP error! Status: ${response.status}`)
             }
 
-            const data = await response.json()
-            this.renderDensities(data.data || [])
+            const result = await response.json()
+            const data = result.data || []
 
-            stateEl.textContent = `OK (${data.data?.length || 0} symbols)`
+            // Обновляем кэш
+            this.updateCache(data)
+            this.renderDensities(data)
+
+            // Убираем анимацию
+            stateEl.classList.remove('loading')
+            stateEl.textContent = `OK (${data.length} symbols)`
             el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
         } catch (error) {
             console.error('Densities load error:', error)
             errorEl.textContent = error.message
             errorEl.classList.remove('hidden')
+            
+            // Убираем анимацию при ошибке
+            stateEl.classList.remove('loading')
             stateEl.textContent = 'Error'
         }
     }
