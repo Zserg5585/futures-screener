@@ -181,26 +181,46 @@ fastify.get('/densities/simple', async (req) => {
       windowPct
     })
 
-    // Расчет базового notional для bid и ask
-    const bidNotionals = bidLevels.map(l => l.notional)
-    const askNotionals = askLevels.map(l => l.notional)
-    
-    const baseNotionalBid = percentile(bidNotionals, 70)
-    const baseNotionalAsk = percentile(askNotionals, 70)
+    // Раздельная логика для bid и ask
+    const processSide = (levels, sideKey) => {
+      const notionals = levels.map(l => l.notional)
+      
+      // Двухшаговый percentile 70 для base
+      const baseAll = percentile(notionals, 70)
+      const filteredNotionals = notionals.filter(n => n <= baseAll * 2)
+      const finalBaseAll = percentile(filteredNotionals, 70)
 
-    // Фильтрация и перерасчет базы
-    const filteredBidNotionals = bidNotionals.filter(n => n <= baseNotionalBid * 2)
-    const filteredAskNotionals = askNotionals.filter(n => n <= baseNotionalAsk * 2)
+      // MM0 и кандидаты
+      const mm0 = finalBaseAll * mmSeedMultiplier
+      const mmCandidates = levels.filter(l => l.notional >= mm0)
 
-    const finalBaseNotionalBid = percentile(filteredBidNotionals, 70) 
-    const finalBaseNotionalAsk = percentile(filteredAskNotionals, 70)
-
-    const rows = filteredLevels.map(level => {
-      const isMM = level.side === 'bid' 
-        ? level.notional >= finalBaseNotionalBid * mmMultiplier
-        : level.notional >= finalBaseNotionalAsk * mmMultiplier
+      // Определение mmBase
+      const mmBase = mmCandidates.length >= 3 
+        ? percentile(mmCandidates.map(l => l.notional), 50) 
+        : mm0
 
       return {
+        finalBaseAll,
+        mm0,
+        mmCandidatesCount: mmCandidates.length,
+        mmBase,
+        levels: levels.map(level => ({
+          ...level,
+          isMM: level.notional >= mmBase * mmMultiplier,
+          sideKey,
+          finalBaseAll,
+          mm0,
+          mmBase
+        }))
+      }
+    }
+
+    const bidResult = processSide(bidLevels, 'bid')
+    const askResult = processSide(askLevels, 'ask')
+
+    const rows = [...bidResult.levels, ...askResult.levels]
+      .filter(row => !mmMode || row.isMM)
+      .map(level => ({
         symbol: sym,
         side: level.side,
         markPrice: price,
@@ -208,13 +228,19 @@ fastify.get('/densities/simple', async (req) => {
         qty: level.qty,
         notional: level.notional,
         distancePct: level.distancePct,
-        isMM,
-        baseNotionalBid: finalBaseNotionalBid,
-        baseNotionalAsk: finalBaseNotionalAsk,
+        isMM: level.isMM,
+        sideKey: level.sideKey,
+        baseAllBid: bidResult.finalBaseAll,
+        baseAllAsk: askResult.finalBaseAll,
+        mm0Bid: bidResult.mm0,
+        mm0Ask: askResult.mm0,
+        mmCandidatesCountBid: bidResult.mmCandidatesCount,
+        mmCandidatesCountAsk: askResult.mmCandidatesCount,
+        mmBaseBid: bidResult.mmBase,
+        mmBaseAsk: askResult.mmBase,
         windowPct,
         mmMultiplier
-      }
-    }).filter(row => !mmMode || row.isMM)
+      }))
 
     return rows
   })
