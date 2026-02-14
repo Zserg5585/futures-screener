@@ -59,3 +59,7 @@
 1. **Step 1** — server endpoint `/api/screener` с мок-данными → Phase 0, шаг 0.1
 2. **Step 2** — UI таблица в `app/` (горизонтальный скролл, сортировка, базовые фильтры) → Phase 1, шаги 1.1–1.5
 3. **Step 3** — подключение реального источника данных → Phase 2, шаг 2.1
+
+## Phase 1 (MVP Screener) - Densities (specific)
+- Goal: MVP implementation of Densities tab integrated with backend mock data.
+- Alignment: complements existing backend density module; frontend to be implemented in upcoming PR.
