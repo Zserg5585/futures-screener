@@ -3,272 +3,183 @@ const el = (id) => document.getElementById(id)
 const qs = (selector) => document.querySelector(selector)
 const qsa = (selector) => document.querySelectorAll(selector)
 
-// App State Management
-const AppState = {
-    currentTab: 'densities',
-    isMobile: window.innerWidth <= 768,
-    filters: {
-        densities: {
-            minNotional: 100000,
-            symbols: '',
+// Configuration and State Management
+const CONFIG = {
+    API_BASE_URL: '/densities/simple',
+    DEFAULT_MIN_NOTIONAL: 100000,
+    DEFAULT_SYMBOLS: 'BTCUSDT,ETHUSDT',
+    REFRESH_INTERVALS: [5000, 10000, 20000],
+    DEFAULT_INTERVAL: 10000
+}
+
+class DensitiesApp {
+    constructor() {
+        this.state = {
+            minNotional: CONFIG.DEFAULT_MIN_NOTIONAL,
+            symbols: CONFIG.DEFAULT_SYMBOLS,
             side: 'all',
-            interval: 10000,
-            autoRefresh: false
+            interval: CONFIG.DEFAULT_INTERVAL,
+            autoRefresh: false,
+            refreshTimer: null
         }
-    },
-    
-    // Tab Management
-    switchTab(tabName) {
-        this.currentTab = tabName
-        
-        // Hide all tabs
-        qsa('.tab-content').forEach(tab => {
-            tab.classList.remove('active')
+
+        this.initializeUI()
+        this.bindEvents()
+    }
+
+    initializeUI() {
+        el('minNotional').value = this.state.minNotional
+        el('symbols').value = this.state.symbols
+        el('interval').value = this.state.interval
+    }
+
+    bindEvents() {
+        el('refresh').addEventListener('click', () => this.loadDensities())
+        el('minNotional').addEventListener('change', () => this.updateMinNotional())
+        el('symbols').addEventListener('change', () => this.updateSymbols())
+        el('side').addEventListener('change', () => this.updateSide())
+        el('auto').addEventListener('change', () => this.toggleAutoRefresh())
+        el('interval').addEventListener('change', () => this.updateInterval())
+    }
+
+    buildQueryParams() {
+        const params = new URLSearchParams({
+            minNotional: this.state.minNotional,
+            symbols: this.state.symbols,
+            side: this.state.side
         })
-        qsa('.tab').forEach(tab => {
-            tab.classList.remove('active')
-        })
-        
-        // Show selected tab
-        el(`tab-${tabName}`).classList.add('active')
-        qs(`[data-tab="${tabName}"]`).classList.add('active')
-        
-        // Tab-specific initialization
-        if (tabName === 'densities') {
-            this.initDensitiesTab()
-        }
-    },
-    
-    initDensitiesTab() {
-        const state = this.filters.densities
-        el('minNotional').value = state.minNotional
-        el('symbols').value = state.symbols
-        el('side').value = state.side
-        el('interval').value = state.interval
-        el('auto').checked = state.autoRefresh
+        return `${CONFIG.API_BASE_URL}?${params.toString()}`
     }
-}
 
-// Formatting Utilities
-const Formatter = {
-    number(x, decimals = 0) {
-        if (x == null || isNaN(x)) return '—'
-        return new Intl.NumberFormat('en-US', { 
-            maximumFractionDigits: decimals 
-        }).format(x)
-    },
-    price(x) { return this.number(x, 8) },
-    percent(x) { return this.number(x, 3) }
-}
-
-// Error and State Management
-const UIManager = {
-    setState(s) { 
-        el('state').textContent = s 
-    },
-    
-    showError(msg) {
+    async loadDensities() {
+        const stateEl = el('state')
+        const tbodyEl = el('tbody')
         const errorEl = el('error')
-        errorEl.textContent = msg
-        errorEl.classList.remove('hidden')
-    },
-    
-    clearError() {
-        const errorEl = el('error')
-        errorEl.textContent = ''
-        errorEl.classList.add('hidden')
-    }
-}
 
-// API Interaction
-class DensitiesAPI {
-    static buildUrl(filters) {
-        const qs = new URLSearchParams()
-        qs.set('minNotional', String(filters.minNotional))
-        qs.set('depthLimit', '100')
-        
-        if (filters.symbols.trim()) {
-            qs.set('symbols', filters.symbols.trim())
-        }
-        
-        return `/densities/simple?${qs.toString()}`
-    }
-    
-    static async fetchData(filters) {
         try {
-            const url = this.buildUrl(filters)
-            const response = await fetch(url)
-            
+            stateEl.textContent = 'Loading...'
+            errorEl.classList.add('hidden')
+
+            const response = await fetch(this.buildQueryParams())
             if (!response.ok) {
                 throw new Error(`HTTP error! Status: ${response.status}`)
             }
-            
-            return await response.json()
-        } catch (error) {
-            UIManager.showError(error.message)
-            throw error
-        }
-    }
-}
 
-// Rendering Logic
-class DensitiesRenderer {
-    static groupBySymbol(rows) {
-        const map = new Map()
-        
-        for (const r of rows) {
-            if (!map.has(r.symbol)) {
-                map.set(r.symbol, { 
-                    symbol: r.symbol, 
-                    bid: null, 
-                    ask: null 
-                })
-            }
-            
-            const entry = map.get(r.symbol)
-            r.side === 'bid' ? entry.bid = r : entry.ask = r
-        }
-        
-        return Array.from(map.values())
-    }
-    
-    static sortEntries(entries) {
-        return entries.sort((a, b) => {
-            const distA = Math.min(
-                a.bid?.distancePct ?? Infinity, 
-                a.ask?.distancePct ?? Infinity
-            )
-            const distB = Math.min(
-                b.bid?.distancePct ?? Infinity, 
-                b.ask?.distancePct ?? Infinity
-            )
-            return distA - distB
-        })
-    }
-    
-    static renderTable(entries, sideFilter) {
-        const tbody = el('tbody')
-        
-        const rowsHtml = entries.map(entry => {
-            const { symbol, bid, ask } = entry
-            
-            const renderSide = (side, sideData) => 
-                sideFilter === (side === 'bid' ? 'ask' : 'bid')
-                    ? `<td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>`
-                    : `
-                        <td>${Formatter.price(sideData?.levelPrice)}</td>
-                        <td>${Formatter.percent(sideData?.distancePct)}</td>
-                        <td>${Formatter.number(sideData?.notional)}</td>
-                    `
-            
-            return `
-                <tr>
-                    <td class="sym">${symbol}</td>
-                    ${renderSide('bid', bid)}
-                    ${renderSide('ask', ask)}
-                </tr>
-            `
-        }).join('')
-        
-        tbody.innerHTML = rowsHtml || 
-            `<tr><td colspan="7" class="muted">No data</td></tr>`
-    }
-}
+            const data = await response.json()
+            this.renderDensities(data.data || [])
 
-// Main Load and Refresh Logic
-class DensitiesLoader {
-    static async load() {
-        UIManager.clearError()
-        UIManager.setState('Loading...')
-        
-        const filters = AppState.filters.densities
-        
-        try {
-            const result = await DensitiesAPI.fetchData(filters)
-            const entries = DensitiesRenderer.groupBySymbol(result.data || [])
-            const sortedEntries = DensitiesRenderer.sortEntries(entries)
-            
-            DensitiesRenderer.renderTable(sortedEntries, filters.side)
-            
+            stateEl.textContent = `OK (${data.data?.length || 0} symbols)`
             el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
-            UIManager.setState(`OK (${entries.length} symbols)`)
         } catch (error) {
-            UIManager.setState('Error')
+            console.error('Densities load error:', error)
+            errorEl.textContent = error.message
+            errorEl.classList.remove('hidden')
+            stateEl.textContent = 'Error'
         }
     }
-    
-    static setupAutoRefresh() {
-        const filters = AppState.filters.densities
-        const intervalMs = filters.interval
-        
-        // Clear any existing timer
-        if (window.refreshTimer) {
-            clearInterval(window.refreshTimer)
-        }
-        
-        if (filters.autoRefresh) {
-            window.refreshTimer = setInterval(
-                this.load.bind(this), 
-                intervalMs
-            )
-        }
-    }
-}
 
-// Event Listeners
-function initEventListeners() {
-    // Tab switching
-    qsa('.tab').forEach(tab => {
-        tab.addEventListener('click', (e) => {
-            const tabName = e.target.dataset.tab
-            AppState.switchTab(tabName)
+    renderDensities(entries) {
+        const tbodyEl = el('tbody')
+        const groupedEntries = this.groupEntriesBySymbol(entries)
+        
+        const rowsHtml = groupedEntries.map(entry => `
+            <tr>
+                <td>${entry.symbol}</td>
+                ${this.renderSideData(entry.bid, 'bid')}
+                ${this.renderSideData(entry.ask, 'ask')}
+            </tr>
+        `).join('')
+
+        tbodyEl.innerHTML = rowsHtml || 
+            `<tr><td colspan="7" class="muted">No data available</td></tr>`
+    }
+
+    groupEntriesBySymbol(entries) {
+        const symbolMap = new Map()
+
+        entries.forEach(entry => {
+            if (!symbolMap.has(entry.symbol)) {
+                symbolMap.set(entry.symbol, { symbol: entry.symbol, bid: null, ask: null })
+            }
+            const symbolEntry = symbolMap.get(entry.symbol)
+            entry.side === 'bid' ? symbolEntry.bid = entry : symbolEntry.ask = entry
         })
-    })
-    
-    // Densities Tab Specific
-    el('refresh').addEventListener('click', DensitiesLoader.load.bind(DensitiesLoader))
-    
-    el('auto').addEventListener('change', (e) => {
-        AppState.filters.densities.autoRefresh = e.target.checked
-        DensitiesLoader.setupAutoRefresh()
-    })
-    
-    el('interval').addEventListener('change', (e) => {
-        AppState.filters.densities.interval = Number(e.target.value)
-        if (AppState.filters.densities.autoRefresh) {
-            DensitiesLoader.setupAutoRefresh()
+
+        return Array.from(symbolMap.values())
+    }
+
+    renderSideData(sideData, side) {
+        if (!sideData) return `
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+        `
+
+        return `
+            <td>${this.formatPrice(sideData.levelPrice)}</td>
+            <td>${this.formatPercent(sideData.distancePct)}</td>
+            <td>${this.formatNotional(sideData.notional)}</td>
+        `
+    }
+
+    formatPrice(value) {
+        return value ? value.toFixed(8) : '—'
+    }
+
+    formatPercent(value) {
+        return value ? value.toFixed(2) + '%' : '—'
+    }
+
+    formatNotional(value) {
+        return value ? value.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'
+    }
+
+    updateMinNotional() {
+        this.state.minNotional = Number(el('minNotional').value)
+        this.loadDensities()
+    }
+
+    updateSymbols() {
+        this.state.symbols = el('symbols').value
+        this.loadDensities()
+    }
+
+    updateSide() {
+        this.state.side = el('side').value
+        this.loadDensities()
+    }
+
+    toggleAutoRefresh() {
+        this.state.autoRefresh = el('auto').checked
+        if (this.state.autoRefresh) {
+            this.startAutoRefresh()
+        } else {
+            this.stopAutoRefresh()
         }
-    })
-    
-    el('side').addEventListener('change', (e) => {
-        AppState.filters.densities.side = e.target.value
-        DensitiesLoader.load()
-    })
-    
-    el('minNotional').addEventListener('change', (e) => {
-        AppState.filters.densities.minNotional = Number(e.target.value)
-        DensitiesLoader.load()
-    })
-    
-    el('symbols').addEventListener('change', (e) => {
-        AppState.filters.densities.symbols = e.target.value
-        DensitiesLoader.load()
-    })
-    
-    // Responsive Design
-    window.addEventListener('resize', () => {
-        AppState.isMobile = window.innerWidth <= 768
-        // TODO: Add mobile-specific layout adjustments
-    })
+    }
+
+    startAutoRefresh() {
+        this.stopAutoRefresh()
+        this.state.refreshTimer = setInterval(() => this.loadDensities(), this.state.interval)
+    }
+
+    stopAutoRefresh() {
+        if (this.state.refreshTimer) {
+            clearInterval(this.state.refreshTimer)
+            this.state.refreshTimer = null
+        }
+    }
+
+    updateInterval() {
+        this.state.interval = Number(el('interval').value)
+        if (this.state.autoRefresh) {
+            this.startAutoRefresh()
+        }
+    }
 }
 
-// Initialization
-function init() {
-    // First load of densities tab
-    AppState.switchTab('densities')
-    DensitiesLoader.load()
-    initEventListeners()
-}
-
-// Start the application
-window.addEventListener('load', init)
+// Initialize the app when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    window.densitiesApp = new DensitiesApp()
+    window.densitiesApp.loadDensities()
+})
