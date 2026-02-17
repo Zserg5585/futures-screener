@@ -25,7 +25,9 @@ class DensitiesApp {
                 data: null,
                 timestamp: 0,
                 cacheKey: null
-            }
+            },
+            lastError: null,
+            lastUpdated: null
         }
 
         this.initializeUI()
@@ -116,6 +118,7 @@ class DensitiesApp {
             el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
         } catch (error) {
             console.error('Densities load error:', error)
+            this.state.lastError = error.message
             errorEl.textContent = error.message
             errorEl.classList.remove('hidden')
             

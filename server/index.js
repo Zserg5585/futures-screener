@@ -139,6 +139,21 @@ function setCached(req, data) {
   cache.set(key, { data, ts: Date.now() })
 }
 
+// Retry/backoff helper for Binance requests
+async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await bget(path)
+    } catch (err) {
+      if (attempt === maxRetries) {
+        throw new Error(`Binance GET ${path} failed after ${maxRetries} attempts: ${err.message}`)
+      }
+      const delay = baseDelay * Math.pow(2, attempt - 1)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+}
+
 // ---- UI (static files from ../app) ----
 const path = require('path')
 const fs = require('fs')
@@ -172,7 +187,7 @@ fastify.get('/health', async () => {
 })
 
 fastify.get('/symbols', async () => {
-  const info = await bget('/fapi/v1/exchangeInfo')
+  const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
   const symbols = (info.symbols || [])
     .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
     .map(s => s.symbol)
@@ -182,7 +197,7 @@ fastify.get('/symbols', async () => {
 fastify.get('/depth/:symbol', async (req) => {
   const symbol = String(req.params.symbol || '').toUpperCase()
   const limit = Number(req.query.limit || 100)
-  const ob = await bget(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=${limit}`)
+  const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=${limit}`)
   return { symbol, lastUpdateId: ob.lastUpdateId, bids: ob.bids, asks: ob.asks }
 })
 
@@ -204,7 +219,7 @@ fastify.get('/densities/simple', async (req) => {
   if (req.query.symbols) {
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
   } else {
-    const info = await bget('/fapi/v1/exchangeInfo')
+    const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
     symbols = (info.symbols || [])
       .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
       .map(s => s.symbol)
@@ -213,14 +228,14 @@ fastify.get('/densities/simple', async (req) => {
   const limitSymbols = Number(req.query.limitSymbols || 0)
   if (limitSymbols > 0) symbols = symbols.slice(0, limitSymbols)
 
-  const marks = await bget('/fapi/v1/premiumIndex')
+  const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
   const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
 
   const rowsArr = await mapLimit(symbols, concurrency, async (sym) => {
     const price = markMap.get(sym)
     if (!price) return []
 
-    const ob = await bget(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
+    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
     const { filteredLevels, bidLevels, askLevels } = calcNearestDensities({
       price,
       bids: ob.bids,

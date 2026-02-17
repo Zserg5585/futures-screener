@@ -181,6 +181,29 @@ th {
     color: var(--text-muted); 
 }
 
+/* Состояния UI */
+.error {
+    color: #ff5252;
+    padding: 12px;
+    background: rgba(255, 82, 82, 0.1);
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.error.hidden { display: none; }
+
+.loading::after {
+    content: '…';
+    animation: dots 1s steps(5, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60% { content: '...'; }
+    80%, 100% { content: ''; }
+}
+
 /* Медиа-запросы */
 @media screen and (max-width: 768px) {
     .top {
