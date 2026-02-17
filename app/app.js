@@ -1,235 +1,254 @@
+// Futures Screener - Densities UI
 // Utilities and Core Helpers
 const el = (id) => document.getElementById(id)
 const qs = (selector) => document.querySelector(selector)
 const qsa = (selector) => document.querySelectorAll(selector)
 
-// Configuration and State Management
+// Configuration
 const CONFIG = {
     API_BASE_URL: '/densities/simple',
-    DEFAULT_MIN_NOTIONAL: 100000,
-    DEFAULT_SYMBOLS: 'BTCUSDT,ETHUSDT',
+    DEFAULT_MIN_NOTIONAL: 50000,
+    DEFAULT_SYMBOLS: 'BTCUSDT,ETHUSDT,XRPUSDT',
     REFRESH_INTERVALS: [5000, 10000, 20000],
-    DEFAULT_INTERVAL: 10000
+    DEFAULT_INTERVAL: 10000,
+    CACHE_DURATION: 30000 // 30 seconds client-side cache
 }
 
-class DensitiesApp {
-    constructor() {
-        this.state = {
-            minNotional: CONFIG.DEFAULT_MIN_NOTIONAL,
-            symbols: CONFIG.DEFAULT_SYMBOLS,
-            side: 'all',
-            interval: CONFIG.DEFAULT_INTERVAL,
-            autoRefresh: false,
-            refreshTimer: null,
-            cache: {
-                data: null,
-                timestamp: 0,
-                cacheKey: null
-            },
-            lastError: null,
-            lastUpdated: null
+// State
+let state = {
+    minNotional: CONFIG.DEFAULT_MIN_NOTIONAL,
+    symbols: CONFIG.DEFAULT_SYMBOLS,
+    interval: CONFIG.DEFAULT_INTERVAL,
+    autoRefresh: false,
+    refreshTimer: null,
+    cache: {
+        data: null,
+        timestamp: 0,
+        cacheKey: null
+    },
+    lastError: null
+}
+
+// Initialize
+function init() {
+    setupEventListeners()
+    updateControlsFromState()
+    loadDensities()
+}
+
+function setupEventListeners() {
+    // Controls
+    el('minNotional').addEventListener('input', (e) => {
+        state.minNotional = Number(e.target.value)
+        loadDensities()
+    })
+
+    el('symbols').addEventListener('change', (e) => {
+        state.symbols = e.target.value
+        loadDensities()
+    })
+
+    el('interval').addEventListener('change', (e) => {
+        state.interval = Number(e.target.value)
+        if (state.autoRefresh) {
+            clearInterval(state.refreshTimer)
+            startAutoRefresh()
         }
+    })
 
-        this.initializeUI()
-        this.bindEvents()
-    }
-
-    getCacheKey() {
-        return JSON.stringify({
-            minNotional: this.state.minNotional,
-            symbols: this.state.symbols,
-            side: this.state.side
-        })
-    }
-
-    isCacheValid() {
-        const CACHE_DURATION = 30000 // 30 секунд
-        const currentKey = this.getCacheKey()
-        return this.state.cache.data && 
-               this.state.cache.cacheKey === currentKey && 
-               (Date.now() - this.state.cache.timestamp) < CACHE_DURATION
-    }
-
-    updateCache(data) {
-        this.state.cache = {
-            data,
-            timestamp: Date.now(),
-            cacheKey: this.getCacheKey()
-        }
-    }
-
-    initializeUI() {
-        el('minNotional').value = this.state.minNotional
-        el('symbols').value = this.state.symbols
-        el('interval').value = this.state.interval
-    }
-
-    bindEvents() {
-        el('refresh').addEventListener('click', () => this.loadDensities())
-        el('minNotional').addEventListener('change', () => this.updateMinNotional())
-        el('symbols').addEventListener('change', () => this.updateSymbols())
-        el('side').addEventListener('change', () => this.updateSide())
-        el('auto').addEventListener('change', () => this.toggleAutoRefresh())
-        el('interval').addEventListener('change', () => this.updateInterval())
-    }
-
-    buildQueryParams() {
-        const params = new URLSearchParams({
-            minNotional: this.state.minNotional,
-            symbols: this.state.symbols,
-            side: this.state.side
-        })
-        return `${CONFIG.API_BASE_URL}?${params.toString()}`
-    }
-
-    async loadDensities(forceRefresh = false) {
-        const stateEl = el('state')
-        const errorEl = el('error')
-
-        try {
-            // Добавляем анимацию загрузки
-            stateEl.classList.add('loading')
-            stateEl.textContent = 'Loading...'
-            errorEl.classList.add('hidden')
-
-            // Проверка кэша
-            if (!forceRefresh && this.isCacheValid()) {
-                this.renderDensities(this.state.cache.data)
-                stateEl.classList.remove('loading')
-                stateEl.textContent = `OK (Cached: ${this.state.cache.data?.length || 0} symbols)`
-                return
-            }
-
-            const response = await fetch(this.buildQueryParams())
-            if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`)
-            }
-
-            const result = await response.json()
-            const data = result.data || []
-
-            // Обновляем кэш
-            this.updateCache(data)
-            this.renderDensities(data)
-
-            // Убираем анимацию
-            stateEl.classList.remove('loading')
-            stateEl.textContent = `OK (${data.length} symbols)`
-            el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
-        } catch (error) {
-            console.error('Densities load error:', error)
-            this.state.lastError = error.message
-            errorEl.textContent = error.message
-            errorEl.classList.remove('hidden')
-            
-            // Убираем анимацию при ошибке
-            stateEl.classList.remove('loading')
-            stateEl.textContent = 'Error'
-        }
-    }
-
-    renderDensities(entries) {
-        const tbodyEl = el('tbody')
-        const groupedEntries = this.groupEntriesBySymbol(entries)
-        
-        const rowsHtml = groupedEntries.map(entry => `
-            <tr>
-                <td>${entry.symbol}</td>
-                ${this.renderSideData(entry.bid, 'bid')}
-                ${this.renderSideData(entry.ask, 'ask')}
-            </tr>
-        `).join('')
-
-        tbodyEl.innerHTML = rowsHtml || 
-            `<tr><td colspan="7" class="muted">No data available</td></tr>`
-    }
-
-    groupEntriesBySymbol(entries) {
-        const symbolMap = new Map()
-
-        entries.forEach(entry => {
-            if (!symbolMap.has(entry.symbol)) {
-                symbolMap.set(entry.symbol, { symbol: entry.symbol, bid: null, ask: null })
-            }
-            const symbolEntry = symbolMap.get(entry.symbol)
-            entry.side === 'bid' ? symbolEntry.bid = entry : symbolEntry.ask = entry
-        })
-
-        return Array.from(symbolMap.values())
-    }
-
-    renderSideData(sideData, side) {
-        if (!sideData) return `
-            <td class="muted">—</td>
-            <td class="muted">—</td>
-            <td class="muted">—</td>
-        `
-
-        return `
-            <td>${this.formatPrice(sideData.levelPrice)}</td>
-            <td>${this.formatPercent(sideData.distancePct)}</td>
-            <td>${this.formatNotional(sideData.notional)}</td>
-        `
-    }
-
-    formatPrice(value) {
-        return value ? value.toFixed(8) : '—'
-    }
-
-    formatPercent(value) {
-        return value ? value.toFixed(2) + '%' : '—'
-    }
-
-    formatNotional(value) {
-        return value ? value.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'
-    }
-
-    updateMinNotional() {
-        this.state.minNotional = Number(el('minNotional').value)
-        this.loadDensities()
-    }
-
-    updateSymbols() {
-        this.state.symbols = el('symbols').value
-        this.loadDensities()
-    }
-
-    updateSide() {
-        this.state.side = el('side').value
-        this.loadDensities()
-    }
-
-    toggleAutoRefresh() {
-        this.state.autoRefresh = el('auto').checked
-        if (this.state.autoRefresh) {
-            this.startAutoRefresh()
+    // Buttons
+    el('refresh').addEventListener('click', () => loadDensities(true))
+    el('auto').addEventListener('change', (e) => {
+        state.autoRefresh = e.target.checked
+        if (state.autoRefresh) {
+            startAutoRefresh()
         } else {
-            this.stopAutoRefresh()
+            stopAutoRefresh()
         }
-    }
+    })
 
-    startAutoRefresh() {
-        this.stopAutoRefresh()
-        this.state.refreshTimer = setInterval(() => this.loadDensities(), this.state.interval)
-    }
+    // Mobile filter toggle
+    el('filterToggle').addEventListener('click', () => {
+        el('filterModal').classList.remove('hidden')
+    })
 
-    stopAutoRefresh() {
-        if (this.state.refreshTimer) {
-            clearInterval(this.state.refreshTimer)
-            this.state.refreshTimer = null
-        }
-    }
+    // Modal controls
+    el('modalClose').addEventListener('click', () => el('filterModal').classList.add('hidden'))
+    el('modalApply').addEventListener('click', () => {
+        state.minNotional = Number(el('modalMinNotional').value)
+        state.symbols = el('modalSymbols').value
+        state.interval = Number(el('modalInterval').value)
+        el('filterModal').classList.add('hidden')
+        updateControlsFromState()
+        loadDensities()
+    })
+    el('modalClear').addEventListener('click', () => {
+        el('modalMinNotional').value = CONFIG.DEFAULT_MIN_NOTIONAL
+        el('modalSymbols').value = CONFIG.DEFAULT_SYMBOLS
+        el('modalInterval').value = CONFIG.DEFAULT_INTERVAL
+    })
+}
 
-    updateInterval() {
-        this.state.interval = Number(el('interval').value)
-        if (this.state.autoRefresh) {
-            this.startAutoRefresh()
-        }
+function updateControlsFromState() {
+    el('minNotional').value = state.minNotional
+    el('symbols').value = state.symbols
+    el('interval').value = state.interval
+    el('auto').checked = state.autoRefresh
+}
+
+function getCacheKey() {
+    return JSON.stringify({
+        symbols: state.symbols,
+        minNotional: state.minNotional,
+        interval: state.interval
+    })
+}
+
+function isCacheValid() {
+    const currentKey = getCacheKey()
+    return state.cache.data && 
+           state.cache.cacheKey === currentKey && 
+           (Date.now() - state.cache.timestamp) < CONFIG.CACHE_DURATION
+}
+
+function updateCache(data) {
+    state.cache = {
+        data,
+        timestamp: Date.now(),
+        cacheKey: getCacheKey()
     }
 }
 
-// Initialize the app when the page loads
-document.addEventListener('DOMContentLoaded', () => {
-    window.densitiesApp = new DensitiesApp()
-    window.densitiesApp.loadDensities()
-})
+// Load densities from API
+async function loadDensities(forceRefresh = false) {
+    const stateEl = el('state')
+    const errorEl = el('error')
+
+    // Show loading state
+    stateEl.textContent = 'Loading'
+    stateEl.classList.add('loading')
+    errorEl.classList.add('hidden')
+
+    try {
+        // Check cache
+        if (!forceRefresh && isCacheValid()) {
+            renderDensities(state.cache.data)
+            stateEl.textContent = `OK (${state.cache.data.length} rows)`
+            stateEl.classList.remove('loading')
+            return
+        }
+
+        // Build query params
+        const params = new URLSearchParams({
+            minNotional: state.minNotional,
+            symbols: state.symbols,
+            interval: state.interval
+        })
+        const url = `${CONFIG.API_BASE_URL}?${params.toString()}`
+
+        // Fetch data
+        const response = await fetch(url)
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`)
+        }
+
+        const result = await response.json()
+        const data = result.data || []
+
+        // Update cache
+        updateCache(data)
+
+        // Render
+        renderDensities(data)
+
+        // Update status
+        stateEl.textContent = `OK (${data.length} rows)`
+        stateEl.classList.remove('loading')
+        el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
+
+    } catch (error) {
+        console.error('Load error:', error)
+        state.lastError = error.message
+        errorEl.textContent = error.message
+        errorEl.classList.remove('hidden')
+        stateEl.textContent = 'Error'
+        stateEl.classList.remove('loading')
+    }
+}
+
+// Render table
+function renderDensities(entries) {
+    const tbody = el('tbody')
+    
+    if (!entries || entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="muted">No data available</td></tr>`
+        return
+    }
+
+    const rows = entries.map(entry => `
+        <tr class="${entry.isMM ? 'isMM' : ''}">
+            <td class="sym">${entry.symbol}</td>
+            ${renderSide(entry, 'bid')}
+            ${renderSide(entry, 'ask')}
+        </tr>
+    `).join('')
+
+    tbody.innerHTML = rows
+}
+
+function renderSide(entry, side) {
+    const sideData = entry[side]
+    if (!sideData) {
+        return `
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+        `
+    }
+
+    const isMM = sideData.isMM || entry.isMM
+
+    return `
+        <td ${isMM ? 'class="isMM"' : ''}>
+            ${formatNumber(sideData.levelPrice, 2)}
+            ${isMM ? '<span class="mm-badge">★</span>' : ''}
+        </td>
+        <td>${formatPercent(sideData.distancePct)}</td>
+        <td>${formatNotional(sideData.notional)}</td>
+    `
+}
+
+// Format helpers
+function formatNumber(value, decimals = 2) {
+    if (!value) return '—'
+    return Number(value).toFixed(decimals)
+}
+
+function formatPercent(value) {
+    if (!value) return '—'
+    return Number(value).toFixed(2) + '%'
+}
+
+function formatNotional(value) {
+    if (!value) return '—'
+    return new Intl.NumberFormat('en-US', {
+        maximumFractionDigits: 0,
+        notation: value >= 1000000 ? 'compact' : 'standard'
+    }).format(value)
+}
+
+// Auto refresh
+function startAutoRefresh() {
+    stopAutoRefresh()
+    state.refreshTimer = setInterval(() => loadDensities(), state.interval)
+}
+
+function stopAutoRefresh() {
+    if (state.refreshTimer) {
+        clearInterval(state.refreshTimer)
+        state.refreshTimer = null
+    }
+}
+
+// Initialize on DOM ready
+document.addEventListener('DOMContentLoaded', init)
