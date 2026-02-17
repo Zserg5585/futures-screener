@@ -111,6 +111,34 @@ function calcScore({ notional, distancePct, isMM }) {
   return n * d * boost
 }
 
+// In-memory cache (TTL: 3 seconds)
+const cache = new Map()
+const CACHE_TTL_MS = 3000
+
+function getCacheKey(req) {
+  return JSON.stringify({
+    symbols: req.query.symbols || 'all',
+    minNotional: req.query.minNotional || 50000,
+    depthLimit: req.query.depthLimit || 100,
+    windowPct: req.query.windowPct || 1.0,
+    concurrency: req.query.concurrency || 6
+  })
+}
+
+function getCached(req) {
+  const key = getCacheKey(req)
+  const entry = cache.get(key)
+  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) {
+    return entry.data
+  }
+  return null
+}
+
+function setCached(req, data) {
+  const key = getCacheKey(req)
+  cache.set(key, { data, ts: Date.now() })
+}
+
 // ---- UI (static files from ../app) ----
 const path = require('path')
 const fs = require('fs')
@@ -158,8 +186,14 @@ fastify.get('/depth/:symbol', async (req) => {
   return { symbol, lastUpdateId: ob.lastUpdateId, bids: ob.bids, asks: ob.asks }
 })
 
-// NEW: simple flat output for UI (no scoring, no sorting, no filters beyond minNotional)
+// NEW: simple flat output for UI (scoring, sorting, cache)
 fastify.get('/densities/simple', async (req) => {
+  // Try cache first
+  const cached = getCached(req)
+  if (cached) {
+    return cached
+  }
+
   const minNotional = Number(req.query.minNotional || 50000)
   const depthLimit = Number(req.query.depthLimit || 100)
   const concurrency = Number(req.query.concurrency || 6)
@@ -272,7 +306,7 @@ fastify.get('/densities/simple', async (req) => {
   })
 
   const data = rowsArr.flat()
-  return { 
+  const result = { 
     count: data.length, 
     minNotional, 
     depthLimit, 
@@ -282,7 +316,16 @@ fastify.get('/densities/simple', async (req) => {
     mmMultiplier,
     data 
   }
+  
+  setCached(req, result)
+  return result
 })
+
+// Cache stats endpoint
+fastify.get('/_cache/stats', async () => ({
+  size: cache.size,
+  keys: [...cache.keys()]
+}))
 
 // ---- start ----
 const port = Number(process.env.PORT || 3200)
