@@ -30,6 +30,9 @@ function percentile(arr, p) {
   return sorted[index];
 }
 
+// Multiplier for mm0 (minimum candidate) - default 0.5x
+const mmSeedMultiplier = Number(process.env.MM_SEED_MULTIPLIER) || 0.5
+
 function filterLevelsByWindow(levels, markPrice, windowPct) {
   return levels.filter(level => {
     const distPct = Math.abs(level.price - markPrice) / markPrice * 100;
@@ -152,7 +155,6 @@ fastify.get('/densities/simple', async (req) => {
   const windowPct = Number(req.query.windowPct || 1.0)  // 1% по умолчанию
   const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
 
-  let symbols = []
   if (req.query.symbols) {
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
   } else {
