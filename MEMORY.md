@@ -20,22 +20,31 @@
 ## Ключевые факты
 
 - **2026-02-17** — Futures Screener перенесён из `_trash/`. Запущен сервер (`node index.js`), порт 3200.
-- **2026-02-17** — добавлен `mmSeedMultiplier` (default `0.5`, требует обсуждения — планируется `2.0`).
-- **2026-02-17** — добавлен `detector.js` (stub, пока не используется).
-- **2026-02-17** — удалены OpenClaw-агентские файлы (AGENTS.md, AGENT_RULES.md и др.), перенесены в `/home/app/`.
-- **2026-02-17** — структурировано `docs/` (VISION, ROADMAP, STATUS, UI-SPEC).
-- **2026-02-17** — README обновлён под текущее состояние.
+- **2026-02-17** — `mmSeedMultiplier` = 2.0 (default, был 0.5).
+- **2026-02-17** — `detector.js` (stub, пока не используется).
+- **2026-02-17** — удалены OpenClaw-агентские файлы, структурировано `docs/`.
+- **2026-02-17** — добавлен scorинг: `score = log10(1 + notional) * exp(-d/0.45) * (isMM ? 1.8 : 1)`.
+- **2026-02-17** — добавлена сортировка: `score desc, distancePct asc, notional desc`.
+- **2026-02-17** — добавлен top-N: 20 на symbol.
+- **2026-02-17** — добавлен cache: in-memory Map (3 sec TTL).
+- **2026-02-17** — добавлен retry/backoff: 3 attempts, exponential delay.
+- **2026-02-17** — добавлены UI error states и loading animation.
+- **2026-02-17** — SSL certificate на `futures-screener.szhub.space` работает.
+- **2026-02-17** — UI-SPEC.md заполнен под скрины (desktop wide + mobile).
+- **2026-02-17** — Created systemd service template (`futures-screener.service`).
+- **2026-02-17** — `futures-screener.szhub.space` доступен по HTTPS.
 
 ## Текущее состояние
 
-- **Статус:** Phase 0 — завершён.
+- **Статус:** Phase 0 завершён, Phase 1 завершён.
 - **Ключевые файлы:**
   - `server/index.js` — API endpoint `/densities/simple`
   - `app/app.js` — UI с автообновлением
+  - `app/index.html` — HTML структура
+  - `app/styles.css` — CSS стили
 - **Проблемы:**
-  - `mmSeedMultiplier` = 0.5 (планируется 2.0)
-  - Нет scorинга (score)
-  - Нет кэша (in-memory Map)
+  - UI ещё не сверстан под новые скрины
+  - Backend запущен через `nohup` (не systemd service)
 - **Планы:**
-  - Phase 1 — Hardening + Scoring
-  - Phase 2 — UX и расширение
+  - Phase 2 — UX и расширение (верстка UI + пресеты + вкладки)
+  - Phase 3 — Production deployment (systemd + nginx config)

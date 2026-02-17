@@ -1,0 +1,16 @@
+[Unit]
+Description=Futures Screener Backend
+After=network.target
+
+[Service]
+Type=simple
+User=app
+WorkingDirectory=/home/app/futures-screener/server
+ExecStart=/usr/bin/node /home/app/futures-screener/server/index.js
+Restart=always
+RestartSec=10
+Environment=PORT=3200
+Environment=SERVICE_NAME=futures-screener
+
+[Install]
+WantedBy=multi-user.target

@@ -5,19 +5,31 @@
 
 ---
 
-## MVP-цель (тот, что делаем сейчас)
+## MVP-цель (ТЕКУЩИЙ СТАТУС)
 
 **Ключевые задачи:**
 - Быстрый скрин: показать ближайшие плотности по 10–50 символам.
 - Фильтрация: `minNotional`, `windowPct`, `depthLimit`, `symbols`.
-- Сортировка: по `distancePct`, `notional`.
+- Сортировка: по `score desc, distancePct asc, notional desc`.
 - Подсветка: флаг `isMM` для крупных уровней.
-- Auto-refresh: каждые 5–15 секунд (без DDOS — с кэшированием и пакетированием).
+- Auto-refresh: каждые 5–15 секунд (без DDOS — с кэшированием и retry/backoff).
 
-**Не делаем в MVP:**
-- Скоринг (score) — запланирован в Phase 1.
-- Вкладки (Top/By Symbol/Watchlist) — Phase 1+.
-- Алерты — Phase 1+.
+**Что уже сделано:**
+- ✅ API `/densities/simple` работает
+- ✅ Scoring формула: `score = log10(1 + notional) * exp(-d/0.45) * (isMM ? 1.8 : 1)`
+- ✅ Сортировка по score + distance + notional
+- ✅ Top-N: 20 на symbol
+- ✅ Cache: in-memory Map (3 sec TTL)
+- ✅ Retry/backoff: 3 attempts, exponential delay
+- ✅ UI error states + loading animation
+- ✅ SSL certificate на `futures-screener.szhub.space`
+
+**Осталось:**
+- ⏳ Верстка UI под скрины (desktop wide + mobile)
+- ⏳ Пресеты: `scalp tight (0.3–0.6%)`, `swing (1–2%)`
+- ⏳ Вкладки: Top Densities / By Symbol / Watchlist
+- ⏳ Алерты (Telegram)
+- ⏳ Systemd service
 
 ---
 
@@ -33,36 +45,33 @@
    - `baseAll = percentile(notionals, 70)`
    - `filteredNotionals = [n for n in notionals if n <= baseAll * 2]`
    - `finalBaseAll = percentile(filteredNotionals, 70)`
-   - `mm0 = finalBaseAll * mmSeedMultiplier`
+   - `mm0 = finalBaseAll * mmSeedMultiplier` (default 2.0)
    - `mmCandidates = levels.filter(notional >= mm0)`
    - `mmBase = mmCandidates.length >= 3 ? percentile(mmCandidates.notionals, 50) : mm0`
-   - `isMM = notional >= mmBase * mmMultiplier`
-
-**Минусы текущей логики:**
-- Нет scorинга (нельзя сравнить bid и ask между собой).
-- Нет top-N (возвращаются все уровни).
-- Нет сортировки по `score` (только по `distancePct`).
-
----
-
-## Что включено в MVP
-
-| Слой | Статус | Описание |
-|------|--------|----------|
-| Backend API | ✅ | `/densities/simple` возвращает `data[]` |
-| Frontend UI | ✅ | Таблица с автообновлением |
-| Сортировка | ⚠️ | По `distancePct`, `notional` (без scorинга) |
-| MM-флаг | ⚠️ | Есть `isMM`, но без scorинга |
-| Auto-refresh | ✅ | Каждые 10 сек (настраивается) |
-| Cache | ⏳ | Планируется (in-memory Map, ~3 сек TTL) |
+   - `isMM = notional >= mmBase * mmMultiplier` (default 4)
+4. **Scorинг:**
+   - `score = log10(1 + notional) * exp(-distancePct / 0.45) * (isMM ? 1.8 : 1)`
+   - `score rounded to 4 decimals`
+5. Сортировка: `score desc, distancePct asc, notional desc`
+6. Top-N: 20 на symbol
 
 ---
 
-## Следующий уровень (Phase 1+)
+## Состояние API
 
-- Добавить пресеты: `scalp tight`, `swing`.
-- Вкладки: `Top Densities`, `By Symbol`, `Watchlist`.
-- Scorинг: `score = log10(1 + notional) * exp(-distancePct / decayPct) * (isMM ? 1.8 : 1)`.
-- Сортировка по `score`.
-- Top-N (например, top 20 на символ).
-- Алерты: уведомления при приближении цены к уровню.
+| Эндпоинт | Статус | Описание |
+|----------|--------|----------|
+| `/health` | ✅ | healthcheck |
+| `/symbols` | ✅ | список всех USDT-PERP символов |
+| `/depth/:symbol` | ✅ | стакан по символу |
+| `/densities/simple` | ✅ | плотности с score, isMM, top-N |
+| `/_cache/stats` | ✅ | статистика кэша (для отладки) |
+
+---
+
+## Следующий уровень (Phase 2+)
+
+- Вкладки: `Top Densities`, `By Symbol`, `Watchlist`
+- Пресеты: `scalp tight (0.3–0.6%)`, `swing (1–2%)`
+- Алерты: уведомления при приближении цены к уровню (Telegram)
+- Systemd service для автостарта backend
