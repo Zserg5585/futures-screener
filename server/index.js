@@ -30,8 +30,12 @@ function percentile(arr, p) {
   return sorted[index];
 }
 
-// Multiplier for mm0 (minimum candidate) - default 0.5x
-const mmSeedMultiplier = Number(process.env.MM_SEED_MULTIPLIER) || 0.5
+// Multiplier for mm0 (minimum candidate) - default 2.0x
+const mmSeedMultiplier = Number(process.env.MM_SEED_MULTIPLIER) || 2.0
+
+// Scoring parameters
+const SCORE_DECAY_PCT = 0.45
+const SCORE_MM_BOOST = 1.8
 
 function filterLevelsByWindow(levels, markPrice, windowPct) {
   return levels.filter(level => {
@@ -97,6 +101,14 @@ async function mapLimit(items, limit, fn) {
   })
   await Promise.all(workers)
   return out
+}
+
+// Scoring function: score = log10(1 + notional) * exp(-distancePct / decayPct) * (isMM ? mmBoost : 1)
+function calcScore({ notional, distancePct, isMM }) {
+  const n = Math.log10(1 + notional)
+  const d = Math.exp(-distancePct / SCORE_DECAY_PCT)
+  const boost = isMM ? SCORE_MM_BOOST : 1
+  return n * d * boost
 }
 
 // ---- UI (static files from ../app) ----
@@ -201,18 +213,29 @@ fastify.get('/densities/simple', async (req) => {
         ? percentile(mmCandidates.map(l => l.notional), 50) 
         : mm0
 
+      // Вычисляем score и сортируем
+      const scoredLevels = levels.map(level => {
+        const isMM = level.notional >= mmBase * mmMultiplier
+        const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM })
+        return { ...level, isMM, score }
+      }).sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct
+        return b.notional - a.notional
+      })
+
+      // Берём top 20
+      const top20 = scoredLevels.slice(0, 20)
+
       return {
         finalBaseAll,
         mm0,
         mmCandidatesCount: mmCandidates.length,
         mmBase,
-        levels: levels.map(level => ({
-          ...level,
-          isMM: level.notional >= mmBase * mmMultiplier,
-          sideKey,
-          finalBaseAll,
-          mm0,
-          mmBase
+        levels: top20.map(l => ({
+          ...l,
+          score: Math.round(l.score * 10000) / 10000,
+          sideKey
         }))
       }
     }
@@ -231,6 +254,7 @@ fastify.get('/densities/simple', async (req) => {
         notional: level.notional,
         distancePct: level.distancePct,
         isMM: level.isMM,
+        score: level.score,
         sideKey: level.sideKey,
         baseAllBid: bidResult.finalBaseAll,
         baseAllAsk: askResult.finalBaseAll,
