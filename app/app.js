@@ -11,13 +11,41 @@ const CONFIG = {
     DEFAULT_SYMBOLS: 'BTCUSDT,ETHUSDT,XRPUSDT',
     REFRESH_INTERVALS: [5000, 10000, 20000],
     DEFAULT_INTERVAL: 10000,
-    CACHE_DURATION: 30000 // 30 seconds client-side cache
+    CACHE_DURATION: 30000, // 30 seconds client-side cache
+    PRESETS: {
+        'scalp-tight': {
+            name: 'Scalp Tight',
+            windowPct: 0.5,
+            minNotional: 100000,
+            depthLimit: 100
+        },
+        'scalp-wide': {
+            name: 'Scalp Wide',
+            windowPct: 1.0,
+            minNotional: 50000,
+            depthLimit: 100
+        },
+        'swing': {
+            name: 'Swing',
+            windowPct: 2.0,
+            minNotional: 30000,
+            depthLimit: 150
+        },
+        'custom': {
+            name: 'Custom',
+            windowPct: 1.0,
+            minNotional: 50000,
+            depthLimit: 100
+        }
+    }
 }
 
 // State
 let state = {
     minNotional: CONFIG.DEFAULT_MIN_NOTIONAL,
     symbols: CONFIG.DEFAULT_SYMBOLS,
+    windowPct: CONFIG.PRESETS['scalp-tight'].windowPct,
+    depthLimit: CONFIG.PRESETS['scalp-tight'].depthLimit,
     interval: CONFIG.DEFAULT_INTERVAL,
     autoRefresh: false,
     refreshTimer: null,
@@ -26,7 +54,8 @@ let state = {
         timestamp: 0,
         cacheKey: null
     },
-    lastError: null
+    lastError: null,
+    currentPreset: 'scalp-tight'
 }
 
 // Initialize
@@ -67,6 +96,19 @@ function setupEventListeners() {
         }
     })
 
+    // Preset selector
+    el('preset').addEventListener('change', (e) => {
+        const preset = CONFIG.PRESETS[e.target.value]
+        if (preset) {
+            state.currentPreset = e.target.value
+            state.windowPct = preset.windowPct
+            state.minNotional = preset.minNotional
+            state.depthLimit = preset.depthLimit
+            updateControlsFromState()
+            loadDensities()
+        }
+    })
+
     // Mobile filter toggle
     el('filterToggle').addEventListener('click', () => {
         el('filterModal').classList.remove('hidden')
@@ -94,12 +136,15 @@ function updateControlsFromState() {
     el('symbols').value = state.symbols
     el('interval').value = state.interval
     el('auto').checked = state.autoRefresh
+    el('preset').value = state.currentPreset || 'scalp-tight'
 }
 
 function getCacheKey() {
     return JSON.stringify({
         symbols: state.symbols,
         minNotional: state.minNotional,
+        windowPct: state.windowPct,
+        depthLimit: state.depthLimit,
         interval: state.interval
     })
 }
@@ -142,6 +187,8 @@ async function loadDensities(forceRefresh = false) {
         const params = new URLSearchParams({
             minNotional: state.minNotional,
             symbols: state.symbols,
+            windowPct: state.windowPct,
+            depthLimit: state.depthLimit,
             interval: state.interval
         })
         const url = `${CONFIG.API_BASE_URL}?${params.toString()}`

@@ -23,6 +23,7 @@
   - `depthLimit` (number, default 100)
   - `symbols` (comma-separated, placeholder: `BTCUSDT,ETHUSDT`)
   - `concurrency` (number, default 6)
+  - `Preset` dropdown: Scalp Tight (0.5%), Scalp Wide (1.0%), Swing (2.0%), Custom
   - Checkbox `Auto` + `Interval` (5s/10s/20s)
   - Кнопка `Refresh` (зелёная)
 - **Main content (занимает всё остальное пространство):**
