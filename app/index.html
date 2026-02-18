@@ -22,80 +22,76 @@
         </div>
     </header>
 
-    <div class="layout">
-        <!-- Sidebar Filters (Desktop) -->
-        <aside class="sidebar">
-            <div class="filter-group">
-                <label>
-                    <span>Min Notional ($)</span>
-                    <input id="minNotional" type="number" value="50000" min="0" step="1000" />
-                </label>
-                <label>
-                    <span>Window %</span>
-                    <input id="windowPct" type="number" value="1.0" min="0.1" step="0.1" />
-                </label>
-                <label>
-                    <span>Depth Limit</span>
-                    <input id="depthLimit" type="number" value="100" min="10" max="1000" step="10" />
-                </label>
-                <label>
-                    <span>Symbols (comma)</span>
-                    <input id="symbols" type="text" placeholder="BTCUSDT,ETHUSDT" value="BTCUSDT,ETHUSDT,XRPUSDT" />
-                </label>
-                <label>
-                    <span>Concurrency</span>
-                    <input id="concurrency" type="number" value="6" min="1" max="20" step="1" />
-                </label>
-                <label>
-                    <span>x Filter</span>
-                    <select id="xFilter">
-                        <option value="0" selected>Any (no filter)</option>
-                        <option value="2">x2+</option>
-                        <option value="4">x4+</option>
-                        <option value="6">x6+</option>
-                        <option value="10">x10+</option>
-                    </select>
-                </label>
-                <label>
-                    <span>Preset</span>
-                    <select id="preset">
-                        <option value="scalp-tight" selected>Scalp Tight (0.5%)</option>
-                        <option value="scalp-wide">Scalp Wide (1.0%)</option>
-                        <option value="swing">Swing (2.0%)</option>
-                        <option value="custom">Custom</option>
-                    </select>
-                </label>
+    <!-- Filters Panel (under header) -->
+    <div class="filters-panel">
+        <div class="filter-row">
+            <label>
+                <span>Min Notional ($)</span>
+                <input id="minNotional" type="number" value="0" min="0" step="1000" />
+            </label>
+            <label>
+                <span>Window %</span>
+                <input id="windowPct" type="number" value="5.0" min="0.1" step="0.1" />
+            </label>
+            <label>
+                <span>Depth Limit</span>
+                <input id="depthLimit" type="number" value="100" min="10" max="1000" step="10" />
+            </label>
+            <label>
+                <span>x Filter</span>
+                <select id="xFilter">
+                    <option value="0" selected>Any (no filter)</option>
+                    <option value="2">x2+</option>
+                    <option value="4">x4+</option>
+                    <option value="6">x6+</option>
+                    <option value="10">x10+</option>
+                </select>
+            </label>
+            <label>
+                <span>NATR % Filter</span>
+                <select id="natrFilter">
+                    <option value="0" selected>Any (no filter)</option>
+                    <option value="1">NATR >= 1%</option>
+                    <option value="2">NATR >= 2%</option>
+                    <option value="3">NATR >= 3%</option>
+                    <option value="5">NATR >= 5%</option>
+                </select>
+            </label>
+            <label class="checkbox">
+                <input id="auto" type="checkbox" /> Auto-refresh
+            </label>
+            <div class="interval-control">
+                <select id="interval">
+                    <option value="5000">5s</option>
+                    <option value="10000" selected>10s</option>
+                    <option value="20000">20s</option>
+                </select>
             </div>
-            <div class="filter-group">
-                <label class="checkbox">
-                    <input id="auto" type="checkbox" /> Auto-refresh
-                </label>
-                <div class="interval-control">
-                    <select id="interval">
-                        <option value="5000">5s</option>
-                        <option value="10000" selected>10s</option>
-                        <option value="20000">20s</option>
-                    </select>
-                </div>
-                <button id="refresh" class="btn-primary">Refresh</button>
-            </div>
-        </aside>
+            <button id="refreshBtn" class="btn-refresh">Refresh</button>
+        </div>
+    </div>
 
-        <!-- Main Table -->
+    <div class="layout">
         <main class="main">
-            <div id="error" class="error hidden"></div>
             <div class="table-container">
                 <table class="table">
                     <thead>
                         <tr>
                             <th>Symbol</th>
-                            <th colspan="3">BID</th>
-                            <th colspan="3">ASK</th>
-                        </tr>
-                        <tr class="subhead">
-                            <th></th>
-                            <th>Level</th><th>Dist %</th><th>Notional</th>
-                            <th>Level</th><th>Dist %</th><th>Notional</th>
+                            <th>BID level</th>
+                            <th>BID dist %</th>
+                            <th>BID notional</th>
+                            <th>BID x</th>
+                            <th>NATR %</th>
+                            <th>Vol 1×5m</th>
+                            <th>Vol 2×5m</th>
+                            <th>Vol 3×5m</th>
+                            <th>ASK level</th>
+                            <th>ASK dist %</th>
+                            <th>ASK notional</th>
+                            <th>ASK x</th>
+                            <th>Score</th>
+                            <th>isMM</th>
                         </tr>
                     </thead>
                     <tbody id="tbody"></tbody>
@@ -103,12 +99,12 @@
             </div>
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
-                <button id="filterToggle" class="btn-filters">Filter</button>
+                <button id="filterToggle" class="btn-filters" style="display:none;">Filter</button>
             </div>
         </main>
     </div>
 
-    <!-- Modal for Mobile Filters -->
+    <!-- Modal for Mobile Filters (hidden on desktop) -->
     <div id="filterModal" class="modal hidden">
         <div class="modal-content">
             <div class="modal-header">
@@ -122,28 +118,20 @@
                 </label>
                 <label>
                     <span>Window %</span>
-                    <input id="modalWindowPct" type="number" value="1.0" min="0.1" step="0.1" />
+                    <input id="modalWindowPct" type="number" value="5.0" min="0.1" step="0.1" />
                 </label>
                 <label>
                     <span>Depth Limit</span>
                     <input id="modalDepthLimit" type="number" value="100" min="10" max="1000" step="10" />
                 </label>
                 <label>
-                    <span>Symbols (comma)</span>
-                    <input id="modalSymbols" type="text" placeholder="BTCUSDT,ETHUSDT" value="BTCUSDT,ETHUSDT,XRPUSDT" />
-                </label>
-                <label>
-                    <span>Concurrency</span>
-                    <input id="modalConcurrency" type="number" value="6" min="1" max="20" step="1" />
-                </label>
-                <label>
-                    <span>x Filter</span>
-                    <select id="modalXFilter">
+                    <span>NATR % Filter</span>
+                    <select id="modalNatrFilter">
                         <option value="0" selected>Any (no filter)</option>
-                        <option value="2">x2+</option>
-                        <option value="4">x4+</option>
-                        <option value="6">x6+</option>
-                        <option value="10">x10+</option>
+                        <option value="1">NATR >= 1%</option>
+                        <option value="2">NATR >= 2%</option>
+                        <option value="3">NATR >= 3%</option>
+                        <option value="5">NATR >= 5%</option>
                     </select>
                 </label>
             </div>

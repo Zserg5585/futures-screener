@@ -34,18 +34,22 @@
   - Timestamp "Last updated: HH:MM"
 
 ### Таблица
-**Колонки (11 шт):**
+**Колонки (14 шт):**
 1. **Symbol** — имя тикера (жирный, `.sym`)
 2. **BID level** — цена уровня (2 знака после запятой)
 3. **BID dist %** — расстояние до markPrice в % (2 знака + `%`)
 4. **BID notional** — notional = price * qty (с разделителями, compact)
 5. **BID x** — **x = notional / mmBase** (во сколько раз больше маркет-мейкера)
-6. **ASK level**
-7. **ASK dist %**
-8. **ASK notional**
-9. **ASK x**
-10. **Score** — общий score уровня (цветная индикация)
-11. **isMM** — флаг Market Maker (зелёный фон или ⭐)
+6. **NATR %** — Normalized Average True Range % (фильтр)
+7. **Vol 1×5m** — объём за 1-ю (самую старую) 5-минутку
+8. **Vol 2×5m** — объём за 2-ю 5-минутку
+9. **Vol 3×5m** — объём за 3-ю (самую новую) 5-минутку
+10. **ASK level**
+11. **ASK dist %**
+12. **ASK notional**
+13. **ASK x**
+14. **Score** — общий score уровня (цветная индикация)
+15. **isMM** — флаг Market Maker (зелёный фон или ⭐)
 
 **Логика `x`:**
 ```

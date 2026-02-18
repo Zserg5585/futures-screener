@@ -42,11 +42,11 @@ const CONFIG = {
 
 // State
 let state = {
-    minNotional: CONFIG.DEFAULT_MIN_NOTIONAL,
-    symbols: CONFIG.DEFAULT_SYMBOLS,
-    windowPct: CONFIG.PRESETS['scalp-tight'].windowPct,
-    depthLimit: CONFIG.PRESETS['scalp-tight'].depthLimit,
-    xFilter: 0,
+    minNotional: 0, // 0 по умолчанию
+    windowPct: 5.0, // 5% по умолчанию
+    depthLimit: 100,
+    xFilter: 0, // Any (no filter)
+    natrFilter: 0, // Any (no filter)
     interval: CONFIG.DEFAULT_INTERVAL,
     autoRefresh: false,
     refreshTimer: null,
@@ -56,7 +56,7 @@ let state = {
         cacheKey: null
     },
     lastError: null,
-    currentPreset: 'scalp-tight'
+    currentPreset: null
 }
 
 // Initialize
@@ -73,11 +73,6 @@ function setupEventListeners() {
         loadDensities()
     })
 
-    el('symbols').addEventListener('change', (e) => {
-        state.symbols = e.target.value
-        loadDensities()
-    })
-
     el('interval').addEventListener('change', (e) => {
         state.interval = Number(e.target.value)
         if (state.autoRefresh) {
@@ -86,8 +81,7 @@ function setupEventListeners() {
         }
     })
 
-    // Buttons
-    el('refresh').addEventListener('click', () => loadDensities(true))
+    // Auto refresh checkbox
     el('auto').addEventListener('change', (e) => {
         state.autoRefresh = e.target.checked
         if (state.autoRefresh) {
@@ -103,17 +97,10 @@ function setupEventListeners() {
         loadDensities()
     })
 
-    // Preset selector
-    el('preset').addEventListener('change', (e) => {
-        const preset = CONFIG.PRESETS[e.target.value]
-        if (preset) {
-            state.currentPreset = e.target.value
-            state.windowPct = preset.windowPct
-            state.minNotional = preset.minNotional
-            state.depthLimit = preset.depthLimit
-            updateControlsFromState()
-            loadDensities()
-        }
+    // NATR Filter selector
+    el('natrFilter').addEventListener('change', (e) => {
+        state.natrFilter = Number(e.target.value)
+        loadDensities()
     })
 
     // Mobile filter toggle
@@ -128,6 +115,7 @@ function setupEventListeners() {
         state.symbols = el('modalSymbols').value
         state.interval = Number(el('modalInterval').value)
         state.xFilter = Number(el('modalXFilter').value)
+        state.natrFilter = Number(el('modalNatrFilter').value)
         el('filterModal').classList.add('hidden')
         updateControlsFromState()
         loadDensities()
@@ -141,20 +129,21 @@ function setupEventListeners() {
 
 function updateControlsFromState() {
     el('minNotional').value = state.minNotional
-    el('symbols').value = state.symbols
+    el('windowPct').value = state.windowPct
+    el('depthLimit').value = state.depthLimit
     el('interval').value = state.interval
     el('auto').checked = state.autoRefresh
-    el('preset').value = state.currentPreset || 'scalp-tight'
     el('xFilter').value = state.xFilter || 0
+    el('natrFilter').value = state.natrFilter || 0
 }
 
 function getCacheKey() {
     return JSON.stringify({
-        symbols: state.symbols,
         minNotional: state.minNotional,
         windowPct: state.windowPct,
         depthLimit: state.depthLimit,
         xFilter: state.xFilter,
+        natrFilter: state.natrFilter,
         interval: state.interval
     })
 }
@@ -180,7 +169,7 @@ async function loadDensities(forceRefresh = false) {
     const errorEl = el('error')
 
     // Show loading state
-    stateEl.textContent = 'Loading'
+    stateEl.textContent = 'Загрузка...'
     stateEl.classList.add('loading')
     errorEl.classList.add('hidden')
 
@@ -188,18 +177,18 @@ async function loadDensities(forceRefresh = false) {
         // Check cache
         if (!forceRefresh && isCacheValid()) {
             renderDensities(state.cache.data)
-            stateEl.textContent = `OK (${state.cache.data.length} rows)`
+            stateEl.textContent = `✅ Загружено: ${state.cache.data.length} уровней`
             stateEl.classList.remove('loading')
             return
         }
 
-        // Build query params
+        // Build query params (symbols убраны — сканируем все монеты кроме blacklisted)
         const params = new URLSearchParams({
             minNotional: state.minNotional,
-            symbols: state.symbols,
             windowPct: state.windowPct,
             depthLimit: state.depthLimit,
             xFilter: state.xFilter,
+            natrFilter: state.natrFilter,
             interval: state.interval
         })
         const url = `${CONFIG.API_BASE_URL}?${params.toString()}`
@@ -220,7 +209,7 @@ async function loadDensities(forceRefresh = false) {
         renderDensities(data)
 
         // Update status
-        stateEl.textContent = `OK (${data.length} rows)`
+        stateEl.textContent = `✅ Загружено: ${data.length} уровней`
         stateEl.classList.remove('loading')
         el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
 
@@ -229,7 +218,7 @@ async function loadDensities(forceRefresh = false) {
         state.lastError = error.message
         errorEl.textContent = error.message
         errorEl.classList.remove('hidden')
-        stateEl.textContent = 'Error'
+        stateEl.textContent = '❌ Ошибка'
         stateEl.classList.remove('loading')
     }
 }

@@ -7,6 +7,8 @@ const fastify = require('fastify')({
     }
 })
 
+const klinesModule = require('./modules/klines')
+
 // Binance Futures (USDT-M) REST base
 const BINANCE_FAPI = 'https://fapi.binance.com'
 
@@ -209,25 +211,36 @@ fastify.get('/densities/simple', async (req) => {
     return cached
   }
 
-  const minNotional = Number(req.query.minNotional || 50000)
+  const minNotional = Number(req.query.minNotional || 0)
   const depthLimit = Number(req.query.depthLimit || 100)
-  const concurrency = Number(req.query.concurrency || 6)
   const mmMode = req.query.mmMode === 'true'
-  const windowPct = Number(req.query.windowPct || 1.0)  // 1% по умолчанию
+  const windowPct = Number(req.query.windowPct || 5.0)  // 5% по умолчанию
   const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
   const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
+  const natrFilter = Number(req.query.natrFilter || 0)  // фильтр по NATR (0 = без фильтра)
+  const concurrency = Number(req.query.concurrency || 3)  // ускоренная загрузка (3 вместо 6)
+
+  // Blacklist монет (очень тяжелые — исключаем из сканирования, ТОЛЬКО если не переданы явные символы)
+  const blacklistedSymbols = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'REPEUSDT'])
 
   if (req.query.symbols) {
-    symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    // Если символы переданы явно — не фильтруем через blacklist (пользователь знает, что делает)
+    symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(s => s)
   } else {
     const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
     symbols = (info.symbols || [])
-      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
+      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING' && !blacklistedSymbols.has(s.symbol))
       .map(s => s.symbol)
   }
 
-  const limitSymbols = Number(req.query.limitSymbols || 0)
-  if (limitSymbols > 0) symbols = symbols.slice(0, limitSymbols)
+  // DEBUG: log symbols
+  // console.log(`DEBUG symbols: ${JSON.stringify(symbols.slice(0, 5))}`)
+
+  // Ограничиваем количество символов (чтобы не сканировать всё)
+  const limitSymbols = Number(req.query.limitSymbols || 30)
+  if (limitSymbols > 0 && symbols.length > limitSymbols) {
+    symbols = symbols.slice(0, limitSymbols)
+  }
 
   const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
   const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
@@ -235,6 +248,29 @@ fastify.get('/densities/simple', async (req) => {
   const rowsArr = await mapLimit(symbols, concurrency, async (sym) => {
     const price = markMap.get(sym)
     if (!price) return []
+
+    // Получаем Klines (5m) для расчета NATR
+    let klines = []
+    let natr = null
+    let vols = [0, 0, 0] // Vol 1, Vol 2, Vol 3 (последние 3 свечки 5m)
+    try {
+      klines = await klinesModule.getKlines({ symbol: sym, interval: '5m', limit: 10 })
+      if (klines.length > 0) {
+        const atrResult = klinesModule.calculateATR(klines, 14)
+        natr = atrResult ? atrResult.natr : null
+        // Берем последние 3 объема (в USDT)
+        if (klines.length >= 3) {
+          vols = [klines[klines.length - 3].volume, klines[klines.length - 2].volume, klines[klines.length - 1].volume]
+        } else if (klines.length === 2) {
+          vols = [klines[0].volume, klines[1].volume, 0]
+        } else if (klines.length === 1) {
+          vols = [klines[0].volume, 0, 0]
+        }
+      }
+    } catch (e) {
+      // Если не удалось получить Klines — просто продолжаем (NATR и объемы будут null/0)
+      console.error(`Klines error for ${sym}: ${e.message}`)
+    }
 
     const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
     const { filteredLevels, bidLevels, askLevels } = calcNearestDensities({
@@ -282,6 +318,9 @@ fastify.get('/densities/simple', async (req) => {
       const top20 = scoredLevels.slice(0, 20)
 
       return {
+        sym,
+        natr,
+        vols,
         finalBaseAll,
         mm0,
         mmCandidatesCount: mmCandidates.length,
@@ -301,42 +340,45 @@ fastify.get('/densities/simple', async (req) => {
     const bidResult = processSide(bidLevels, 'bid')
     const askResult = processSide(askLevels, 'ask')
 
-    const rows = [...bidResult.levels, ...askResult.levels]
-      .filter(row => !mmMode || row.isMM)
-      .map(level => ({
-        symbol: sym,
-        side: level.side,
-        markPrice: price,
-        levelPrice: level.price,
-        qty: level.qty,
-        notional: level.notional,
-        distancePct: level.distancePct,
-        isMM: level.isMM,
-        score: level.score,
-        sideKey: level.sideKey,
-        mmBase: level.mmBase || (level.side === 'bid' ? bidResult.mmBase : askResult.mmBase), // mmBase для уровня
-        x: level.x || (level.mmBase && level.mmBase > 0 ? level.notional / level.mmBase : 0), // x для уровня
-        baseAllBid: bidResult.finalBaseAll,
-        baseAllAsk: askResult.finalBaseAll,
-        mm0Bid: bidResult.mm0,
-        mm0Ask: askResult.mm0,
-        mmCandidatesCountBid: bidResult.mmCandidatesCount,
-        mmCandidatesCountAsk: askResult.mmCandidatesCount,
-        mmBaseBid: bidResult.mmBase,
-        mmBaseAsk: askResult.mmBase,
-        windowPct,
-        mmMultiplier
-      }))
+    // Сохраняем sym, natr, vols для всех уровней этого символа
+    const symVal = bidResult.sym
+    const natrVal = bidResult.natr
+    const volsVal = bidResult.vols
 
-    return rows
+    return [...bidResult.levels, ...askResult.levels].map(level => ({
+      ...level,
+      symbol: symVal,
+      natr: natrVal,
+      vol1: volsVal[0],
+      vol2: volsVal[1],
+      vol3: volsVal[2],
+      mmBaseBid: bidResult.mmBase,
+      mmBaseAsk: askResult.mmBase
+    }))
   })
 
-  const data = rowsArr.flat()
-  // Фильтрация по x (если xFilter > 0)
-  const filteredData = xFilter > 0 ? data.filter(d => d.x >= xFilter) : data
-  
+  // Получаем все уровни (без фильтрации по x)
+  const allLevels = rowsArr.flat()
+
+  // Step 1: Фильтрация символов — показываем только те, у которых есть уровни с x >= xFilter (если xFilter > 0)
+  let finalData = allLevels
+  if (xFilter > 0) {
+    // Группируем по symbol и проверяем, есть ли у каждого символа хотя бы один уровень с x >= xFilter
+    const symbolsWithHighX = new Set()
+    allLevels.forEach(d => {
+      if (d.x >= xFilter) {
+        symbolsWithHighX.add(d.symbol)
+      }
+    })
+    // Оставляем только уровни из символов, у которых есть высокий x
+    finalData = allLevels.filter(d => symbolsWithHighX.has(d.symbol))
+  }
+
+  // Фильтрация по NATR (если natrFilter > 0)
+  finalData = natrFilter > 0 ? finalData.filter(d => (d.natr || 0) >= natrFilter) : finalData
+
   const result = { 
-    count: filteredData.length, 
+    count: finalData.length, 
     minNotional, 
     depthLimit, 
     concurrency, 
@@ -344,7 +386,8 @@ fastify.get('/densities/simple', async (req) => {
     windowPct,
     mmMultiplier,
     xFilter,
-    data: filteredData 
+    natrFilter,
+    data: finalData 
   }
   
   setCached(req, result)
