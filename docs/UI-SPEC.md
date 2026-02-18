@@ -16,45 +16,54 @@
 - **Header:**
   - Заголовок "Futures Screener"
   - 3 вкладки: `Densities` (active), `Mini-Charts`, `Signals`
-- **Боковая панель слева (25% ширины):**
+  - Статус загрузки (Idle/Loading/Error)
+- **Боковая панель слева (280px фиксированная ширина):**
   - `minNotional` (number, default 50000)
   - `windowPct` (number, default 1.0)
   - `depthLimit` (number, default 100)
   - `symbols` (comma-separated, placeholder: `BTCUSDT,ETHUSDT`)
   - `concurrency` (number, default 6)
   - Checkbox `Auto` + `Interval` (5s/10s/20s)
-  - Кнопка `Refresh`
-- **Main content (75% ширины):**
-  - Таблица плотностей (с горизонтальной прокруткой, если ширина < 1200px)
-  - Статус: "Loading..." / "OK (X symbols)" / "Error"
-  - Last updated timestamp
+  - Кнопка `Refresh` (зелёная)
+- **Main content (занимает всё остальное пространство):**
+  - Таблица плотностей (с горизонтальной прокруткой при необходимости)
+  - Статус: "Idle", "Loading", "OK (X rows)", "Error"
+  - Timestamp "Last updated: HH:MM"
 
 ### Таблица
-**Колонки (8 шт):**
-1. **Symbol** — имя тикера (жирный)
-2. **BID level** — цена уровня
-3. **BID dist %** — расстояние до markPrice в %
-4. **BID notional** — notional = price * qty
+**Колонки (7 шт):**
+1. **Symbol** — имя тикера (жирный, `.sym`)
+2. **BID level** — цена уровня (2 знака после запятой)
+3. **BID dist %** — расстояние до markPrice в % (2 знака + `%`)
+4. **BID notional** — notional = price * qty (с разделителями, compact)
 5. **ASK level**
 6. **ASK dist %**
 7. **ASK notional**
-8. **isMM** — флаг MM (зелёный фон, если `true`)
 
 **Поведение:**
-- Горизонтальная прокрутка (если ширина таблицы > контейнера)
-- Сортировка по клику на заголовки (стрелки: ▲/▼)
+- Сортировка по клику на заголовки (стрелки ▲/▼ — пока не реализовано)
 - Hover-эффекты на строках
-- Loading spinner при загрузке
+- Зелёный фон (`isMM` класс) для строк с `isMM=true`
+- Кнопка Refresh в sidebar (или в header на mobile)
 
-**Формат ячеек:**
-- `level`: 8 знаков после запятой (например, `67225.10000000`)
-- `dist %`: 2 знака + `%` (например, `0.02%`)
-- `notional`: с разделителями (например, `1,234,567`)
-- `isMM`: зелёный фон для `true`, серый для `false`
+### Состояния UI
 
-### Desktop (768px–999px)
-- Боковая панель сворачивается в drawer (кнопка меню в header)
-- Таблица адаптируется: уменьшается padding, шрифт 13px
+**Idle:**
+- Статус: "Idle" (серый фон)
+- Таблица отображается
+
+**Loading:**
+- Статус: "Loading..." (анимация точек)
+- Затемнённый фон таблицы (опционально)
+
+**Success:**
+- Статус: "OK (X rows)"
+- Timestamp "Last updated: HH:MM"
+
+**Error:**
+- Красный фон блока ошибки
+- Текст ошибки (для отладки)
+- Кнопка "Retry"
 
 ---
 
@@ -63,56 +72,45 @@
 ### Global chrome
 - **Header:**
   - Заголовок "Futures Screener"
-  - Иконка меню (☰) для вызова фильтров
-  - Кнопка `Refresh` (слева от заголовка)
-  - Аватар пользователя (если есть)
-- **Фильтры (modal/drawer):**
+  - 3 вкладки (Densities, Mini-Charts, Signals)
+  - Кнопка `Filter` (шестерёнка или "Filter")
+- **Боковая панель скрыта**
+- **Фильтры в modal (выпадает по кнопке Filter):**
   - `minNotional`, `windowPct`, `depthLimit`, `symbols`, `concurrency`
-  - Checkbox `Auto` + `Interval`
-  - Кнопки: `Apply`, `Clear`, `Close`
+  - Кнопки: `Clear`, `Apply`
+- **Main:**
+  - Таблица с вертикальной прокруткой
+  - Кнопка `Refresh` в header (если нет auto-refresh)
+  - Timestamp и статус в footer
 
 ### Таблица
-**Вариант A (вертикальная прокрутка):**
-- Строки с вертикальной прокруткой
-- Каждая строка: `Symbol | BID | ASK` (в одной колонке)
-- BID/ASK данные на вкладках внутри строки (tap для переключения)
-- или: `Symbol + BID in row`, `ASK` — отдельная строка под BID
-
-**Вариант B (горизонтальная прокрутка):**
 - Компактные колонки: `Symbol | BID level | ASK level | isMM`
-- Детали (dist, notional) — по tap (modal с подробной информацией)
-- less readable, но экономит место
-
-### Поведение
+- or: `Symbol + BID in row`, `ASK` — отдельная строка под BID
 - Вертикальная прокрутка (основная)
-- Горизонтальной прокрутки быть не должно (контейнер фиксированной ширины)
-- Loading spinner в шапке при загрузке
-- Swipe для переключения между BID/ASK (если вариант A с вкладками)
+- Горизонтальной прокрутки быть не должно
 
-**Формат ячеек:**
-- `Symbol`: 12px, жирный
-- `BID/ASK level`: 11px
-- `dist %`: 10px (например, `0.02%`)
-- `notional`: 10px (сокращённый формат: `1.2M`, `500K`)
-- `isMM`: зелёный фон, маленький значок (✅)
+### Мобильные правила
+- `sidebar`display: none`
+- `btn-filters` — показывается только на mobile
+- `modal` — показывается по кнопке Filter
+- Шрифты: `11px` для таблицы
 
 ---
 
 ## Анимации и статусы
 
 ### Loading
-- Spinner (крутящееся колесо) в header
-- Текст "Loading..." в статус-панели
-- Затемнённый фон таблицы
+- Текст "Loading..." с анимацией точек (..)
+- Спиннер (круглый loader) — опционально
 
 ### Error
 - Красный фон блока ошибки
 - Текст ошибки (для отладки)
-- Кнопка "Retry"
+- Кнопка "Retry" (в modal или в header)
 
 ### Success
-- Текст "OK (X symbols)" в статус-панели
-- Timestamp "Last updated: 14:30"
+- Текст "OK (X rows)" в статус-панели
+- Timestamp "Last updated: HH:MM"
 
 ---
 
@@ -122,12 +120,23 @@
 {
   "count": 16,
   "minNotional": 50000,
+  "windowPct": 1.0,
   "data": [
     {
       "symbol": "BTCUSDT",
-      "bid": { "level": 67225.1, "distPct": 0.02, "notional": 81492 },
-      "ask": { "level": 67230.5, "distPct": 0.05, "notional": 102166 },
+      "side": "bid",
+      "levelPrice": 67225.1,
+      "distancePct": 0.02,
+      "notional": 81492,
       "isMM": false
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "ask",
+      "levelPrice": 67230.5,
+      "distancePct": 0.05,
+      "notional": 102166,
+      "isMM": true
     }
   ]
 }
@@ -138,14 +147,46 @@
 ## План реализации (Phase 0 → Phase 1)
 
 ### Phase 0 — MVP (точно сверстать)
-- [ ] Desktop wide: боковая панель + таблица
-- [ ] Mobile: фильтры в modal + таблица
-- [ ] Auto-refresh: checkbox + интервал (5s/10s/20s)
-- [ ] Loading/error states
-- [ ] isMM подсветка
+- [x] Desktop wide: боковая панель + таблица
+- [x] Mobile: фильтры в modal + таблица
+- [x] Auto-refresh: checkbox + интервал (5s/10s/20s)
+- [x] Loading/error states
+- [x] isMM подсветка
+- [x] Systemd service (автостарт)
 
 ### Phase 1 — Доработки
-- [ ] Сортировка по колонкам
-- [ ] Топ-N (20 на символ)
+- [ ] Сортировка по колонкам (стрелки ▲/▼)
+- [ ] Top-N (20 на символ) — частично реализовано
 - [ ] Пресеты: `scalp tight`, `swing`
 - [ ] Вкладки: Top Densities / By Symbol / Watchlist
+
+### Phase 2 — UX
+- [ ] Watchlist (сохранение в localStorage)
+- [ ] Алерты (Telegram)
+- [ ] Мобильная версия — доработать
+
+---
+
+## CSS классы
+
+| Класс | Назначение |
+|-------|-----------|
+| `.sidebar` | Боковая панель (desktop) |
+| `.main` | Основной контейнер |
+| `.table` | Таблица плотностей |
+| `.sym` | Жирный текст символа |
+| `.isMM` | Зелёный фон для MM-уровней |
+| `.error` | Блок ошибки |
+| `.modal` | Модальное окно фильтров |
+| `.btn-primary` | Основные кнопки |
+| `.btn-secondary` | Вспомогательные кнопки |
+
+---
+
+## Текущий статус
+
+✅ UI реализован под твои скрины (desktop wide + mobile)
+✅ Backend работает через systemd
+✅ HTTPS активен на `futures-screener.szhub.space`
+
+Следующие шаги: пресеты и вкладки (Phase 1).
