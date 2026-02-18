@@ -215,6 +215,7 @@ fastify.get('/densities/simple', async (req) => {
   const mmMode = req.query.mmMode === 'true'
   const windowPct = Number(req.query.windowPct || 1.0)  // 1% по умолчанию
   const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
+  const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
 
   if (req.query.symbols) {
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
@@ -266,7 +267,8 @@ fastify.get('/densities/simple', async (req) => {
       const scoredLevels = levels.map(level => {
         const isMM = level.notional >= mmBase * mmMultiplier
         const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM })
-        return { ...level, isMM, score }
+        const x = mmBase > 0 ? level.notional / mmBase : 0
+        return { ...level, isMM, score, x }
       }).sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score
         if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct
@@ -284,6 +286,9 @@ fastify.get('/densities/simple', async (req) => {
         levels: top20.map(l => ({
           ...l,
           score: Math.round(l.score * 10000) / 10000,
+          eatSpeedUSDTperSec: 0, // пока 0, так как одноразовый запрос
+          lifetimeSec: 0, // пока 0, так как одноразовый запрос
+          state: 'APPEARED', // пока APPEARED, так как одноразовый запрос
           sideKey
         }))
       }
@@ -321,15 +326,19 @@ fastify.get('/densities/simple', async (req) => {
   })
 
   const data = rowsArr.flat()
+  // Фильтрация по x (если xFilter > 0)
+  const filteredData = xFilter > 0 ? data.filter(d => d.x >= xFilter) : data
+  
   const result = { 
-    count: data.length, 
+    count: filteredData.length, 
     minNotional, 
     depthLimit, 
     concurrency, 
     mmMode,
     windowPct,
     mmMultiplier,
-    data 
+    xFilter,
+    data: filteredData 
   }
   
   setCached(req, result)

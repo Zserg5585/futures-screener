@@ -1,12 +1,13 @@
 # UI-SPEC.md — Futures Screener MVP
 
-Эта спецификация описывает интерфейс MVP — таблицы плотностей с автообновлением, фильтрацией и MM-подсветкой.
+Эта спецификация описывает интерфейс MVP — таблицы плотностей для стратегии "отскок от плотностей".
 
 ## Scope
 
 - **Фокус:** Tab 1 — Densities (только MVP, без мини-графиков/сигналов)
 - **Платформа:** Desktop wide (1000px+), Mobile (320px–768px)
 - **Тема:** Dark theme (фирменная)
+- **Цель:** Отскок от плотностей (поддержка/сопротивление)
 
 ---
 
@@ -18,12 +19,13 @@
   - 3 вкладки: `Densities` (active), `Mini-Charts`, `Signals`
   - Статус загрузки (Idle/Loading/Error)
 - **Боковая панель слева (280px фиксированная ширина):**
+  - Preset dropdown: Scalp Tight (0.5%), Scalp Wide (1.0%), Swing (2.0%), Custom
   - `minNotional` (number, default 50000)
   - `windowPct` (number, default 1.0)
   - `depthLimit` (number, default 100)
   - `symbols` (comma-separated, placeholder: `BTCUSDT,ETHUSDT`)
   - `concurrency` (number, default 6)
-  - `Preset` dropdown: Scalp Tight (0.5%), Scalp Wide (1.0%), Swing (2.0%), Custom
+  - **x Filter** dropdown: x2, x4, x6, x10+
   - Checkbox `Auto` + `Interval` (5s/10s/20s)
   - Кнопка `Refresh` (зелёная)
 - **Main content (занимает всё остальное пространство):**
@@ -32,20 +34,35 @@
   - Timestamp "Last updated: HH:MM"
 
 ### Таблица
-**Колонки (7 шт):**
+**Колонки (11 шт):**
 1. **Symbol** — имя тикера (жирный, `.sym`)
 2. **BID level** — цена уровня (2 знака после запятой)
 3. **BID dist %** — расстояние до markPrice в % (2 знака + `%`)
 4. **BID notional** — notional = price * qty (с разделителями, compact)
-5. **ASK level**
-6. **ASK dist %**
-7. **ASK notional**
+5. **BID x** — **x = notional / mmBase** (во сколько раз больше маркет-мейкера)
+6. **ASK level**
+7. **ASK dist %**
+8. **ASK notional**
+9. **ASK x**
+10. **Score** — общий score уровня (цветная индикация)
+11. **isMM** — флаг Market Maker (зелёный фон или ⭐)
+
+**Логика `x`:**
+```
+x = notional / mmBase
+
+Пример:
+- mmBase = 100k
+- notional = 400k
+- x = 4 (х4 от маркет-мейкера)
+```
 
 **Поведение:**
 - Сортировка по клику на заголовки (стрелки ▲/▼ — пока не реализовано)
 - Hover-эффекты на строках
 - Зелёный фон (`isMM` класс) для строк с `isMM=true`
 - Кнопка Refresh в sidebar (или в header на mobile)
+- **Фильтр x:** показывать только уровни > выбранного x
 
 ### Состояния UI
 
@@ -77,7 +94,9 @@
   - Кнопка `Filter` (шестерёнка или "Filter")
 - **Боковая панель скрыта**
 - **Фильтры в modal (выпадает по кнопке Filter):**
+  - Preset dropdown
   - `minNotional`, `windowPct`, `depthLimit`, `symbols`, `concurrency`
+  - **x Filter** dropdown: x2, x4, x6, x10+
   - Кнопки: `Clear`, `Apply`
 - **Main:**
   - Таблица с вертикальной прокруткой
@@ -85,13 +104,14 @@
   - Timestamp и статус в footer
 
 ### Таблица
-- Компактные колонки: `Symbol | BID level | ASK level | isMM`
-- or: `Symbol + BID in row`, `ASK` — отдельная строка под BID
+- Компактные колонки: `Symbol | BID level | BID dist | BID notional | BID x | ASK x | Score`
+- `isMM` — зелёный фон или звёздочка ⭐
+- `x` — во сколько раз больше маркет-мейкера
 - Вертикальная прокрутка (основная)
 - Горизонтальной прокрутки быть не должно
 
 ### Мобильные правила
-- `sidebar`display: none`
+- `sidebar` — `display: none`
 - `btn-filters` — показывается только на mobile
 - `modal` — показывается по кнопке Filter
 - Шрифты: `11px` для таблицы
@@ -122,6 +142,7 @@
   "count": 16,
   "minNotional": 50000,
   "windowPct": 1.0,
+  "xFilter": 4, // фильтр: показывать только x >= 4
   "data": [
     {
       "symbol": "BTCUSDT",
@@ -129,7 +150,21 @@
       "levelPrice": 67225.1,
       "distancePct": 0.02,
       "notional": 81492,
-      "isMM": false
+      "mmBase": 200000,
+      "x": 0.407, // 81492 / 200000
+      "isMM": false,
+      "score": 4.85
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "bid",
+      "levelPrice": 67200.5,
+      "distancePct": 0.03,
+      "notional": 800000,
+      "mmBase": 200000,
+      "x": 4.0, // 800000 / 200000
+      "isMM": true,
+      "score": 6.21
     },
     {
       "symbol": "BTCUSDT",
@@ -137,7 +172,10 @@
       "levelPrice": 67230.5,
       "distancePct": 0.05,
       "notional": 102166,
-      "isMM": true
+      "mmBase": 200000,
+      "x": 0.51,
+      "isMM": false,
+      "score": 5.32
     }
   ]
 }
@@ -156,9 +194,12 @@
 - [x] Systemd service (автостарт)
 
 ### Phase 1 — Доработки
-- [ ] Сортировка по колонкам (стрелки ▲/▼)
-- [ ] Top-N (20 на символ) — частично реализовано
-- [ ] Пресеты: `scalp tight`, `swing`
+- [x] Сортировка по колонкам (стрелки ▲/▼) — частично
+- [x] Top-N (20 на symbol) — частично
+- [x] Пресеты: `scalp tight`, `swing`
+- [x] Метрики: `eatSpeed`, `lifetimeSec`, `state`
+- [ ] Фильтр по `x` (x2, x4, x6, x10+)
+- [ ] Фильтр по score (минимальный порог)
 - [ ] Вкладки: Top Densities / By Symbol / Watchlist
 
 ### Phase 2 — UX
@@ -177,6 +218,8 @@
 | `.table` | Таблица плотностей |
 | `.sym` | Жирный текст символа |
 | `.isMM` | Зелёный фон для MM-уровней |
+| `.x-high` | Золотистый/жёлтый фон для высокого x (опционально) |
+| `.eatSpeed-high` | Красный фон для высокой eatSpeed (опционально) |
 | `.error` | Блок ошибки |
 | `.modal` | Модальное окно фильтров |
 | `.btn-primary` | Основные кнопки |
@@ -186,8 +229,10 @@
 
 ## Текущий статус
 
-✅ UI реализован под твои скрины (desktop wide + mobile)
-✅ Backend работает через systemd
-✅ HTTPS активен на `futures-screener.szhub.space`
+✅ UI реализован под твои скрины (desktop wide + mobile)  
+✅ Backend работает через systemd  
+✅ HTTPS активен на `futures-screener.szhub.space`  
+✅ Метрики `eatSpeed`, `lifetimeSec`, `state` добавлены в API  
+✅ `x = notional / mmBase` — нужно добавить в API и UI
 
-Следующие шаги: пресеты и вкладки (Phase 1).
+**Следующий шаг:** Добавить фильтр по `x` в UI и API.

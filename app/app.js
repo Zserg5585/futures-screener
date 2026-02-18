@@ -46,6 +46,7 @@ let state = {
     symbols: CONFIG.DEFAULT_SYMBOLS,
     windowPct: CONFIG.PRESETS['scalp-tight'].windowPct,
     depthLimit: CONFIG.PRESETS['scalp-tight'].depthLimit,
+    xFilter: 0,
     interval: CONFIG.DEFAULT_INTERVAL,
     autoRefresh: false,
     refreshTimer: null,
@@ -96,6 +97,12 @@ function setupEventListeners() {
         }
     })
 
+    // x Filter selector
+    el('xFilter').addEventListener('change', (e) => {
+        state.xFilter = Number(e.target.value)
+        loadDensities()
+    })
+
     // Preset selector
     el('preset').addEventListener('change', (e) => {
         const preset = CONFIG.PRESETS[e.target.value]
@@ -120,6 +127,7 @@ function setupEventListeners() {
         state.minNotional = Number(el('modalMinNotional').value)
         state.symbols = el('modalSymbols').value
         state.interval = Number(el('modalInterval').value)
+        state.xFilter = Number(el('modalXFilter').value)
         el('filterModal').classList.add('hidden')
         updateControlsFromState()
         loadDensities()
@@ -137,6 +145,7 @@ function updateControlsFromState() {
     el('interval').value = state.interval
     el('auto').checked = state.autoRefresh
     el('preset').value = state.currentPreset || 'scalp-tight'
+    el('xFilter').value = state.xFilter || 0
 }
 
 function getCacheKey() {
@@ -145,6 +154,7 @@ function getCacheKey() {
         minNotional: state.minNotional,
         windowPct: state.windowPct,
         depthLimit: state.depthLimit,
+        xFilter: state.xFilter,
         interval: state.interval
     })
 }
@@ -189,6 +199,7 @@ async function loadDensities(forceRefresh = false) {
             symbols: state.symbols,
             windowPct: state.windowPct,
             depthLimit: state.depthLimit,
+            xFilter: state.xFilter,
             interval: state.interval
         })
         const url = `${CONFIG.API_BASE_URL}?${params.toString()}`
