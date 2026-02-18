@@ -252,22 +252,25 @@ fastify.get('/densities/simple', async (req) => {
       // Двухшаговый percentile 70 для base
       const baseAll = percentile(notionals, 70)
       const filteredNotionals = notionals.filter(n => n <= baseAll * 2)
-      const finalBaseAll = percentile(filteredNotionals, 70)
+      const finalBaseAll = percentile(filteredNotionals, 70) || (baseAll || 50000)
 
       // MM0 и кандидаты
       const mm0 = finalBaseAll * mmSeedMultiplier
       const mmCandidates = levels.filter(l => l.notional >= mm0)
 
-      // Определение mmBase
+      // Определение mmBase (с проверкой на null)
       const mmBase = mmCandidates.length >= 3 
         ? percentile(mmCandidates.map(l => l.notional), 50) 
-        : mm0
+        : (mmCandidates.length > 0 ? mm0 : (finalBaseAll || 50000))
+      
+      // DEBUG
+      // console.log(`DEBUG ${sym} ${sideKey}: baseAll=${baseAll}, finalBaseAll=${finalBaseAll}, mm0=${mm0}, mmCandidates=${mmCandidates.length}, mmBase=${mmBase}`)
 
       // Вычисляем score и сортируем
       const scoredLevels = levels.map(level => {
-        const isMM = level.notional >= mmBase * mmMultiplier
+        const isMM = mmBase && mmMultiplier ? level.notional >= mmBase * mmMultiplier : false
         const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM })
-        const x = mmBase > 0 ? level.notional / mmBase : 0
+        const x = mmBase && mmBase > 0 ? level.notional / mmBase : 0
         return { ...level, isMM, score, x }
       }).sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score
@@ -286,6 +289,7 @@ fastify.get('/densities/simple', async (req) => {
         levels: top20.map(l => ({
           ...l,
           score: Math.round(l.score * 10000) / 10000,
+          mmBase: mmBase, // добавляем mmBase для фильтрации и отображения
           eatSpeedUSDTperSec: 0, // пока 0, так как одноразовый запрос
           lifetimeSec: 0, // пока 0, так как одноразовый запрос
           state: 'APPEARED', // пока APPEARED, так как одноразовый запрос
@@ -310,6 +314,8 @@ fastify.get('/densities/simple', async (req) => {
         isMM: level.isMM,
         score: level.score,
         sideKey: level.sideKey,
+        mmBase: level.mmBase || (level.side === 'bid' ? bidResult.mmBase : askResult.mmBase), // mmBase для уровня
+        x: level.x || (level.mmBase && level.mmBase > 0 ? level.notional / level.mmBase : 0), // x для уровня
         baseAllBid: bidResult.finalBaseAll,
         baseAllAsk: askResult.finalBaseAll,
         mm0Bid: bidResult.mm0,
