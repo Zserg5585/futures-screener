@@ -7,8 +7,6 @@ const fastify = require('fastify')({
     }
 })
 
-const klinesModule = require('./modules/klines')
-
 // Binance Futures (USDT-M) REST base
 const BINANCE_FAPI = 'https://fapi.binance.com'
 
@@ -39,11 +37,59 @@ const mmSeedMultiplier = Number(process.env.MM_SEED_MULTIPLIER) || 2.0
 const SCORE_DECAY_PCT = 0.45
 const SCORE_MM_BOOST = 1.8
 
+// K-lines timeframe (5 minutes in ms)
+const KLINE_INTERVAL = '5m'
+const KLINE_LIMIT = 3
+
+// Binance K-lines order: index 0 = oldest, last = newest
+// After reverse(): bars[0] = newest (t), bars[1] = prev (t-1), bars[2] = oldest (t-2)
+// So: vol1 = newest (t), vol2 = prev (t-1), vol3 = oldest (t-2)
+// Note: Variable names now match time order, not index order
+
 function filterLevelsByWindow(levels, markPrice, windowPct) {
   return levels.filter(level => {
     const distPct = Math.abs(level.price - markPrice) / markPrice * 100;
     return distPct <= windowPct;
   });
+}
+
+// Group close levels into clusters (for MM detection)
+// levels: array of {price, notional, distancePct}
+// maxGapPct: max distance between levels in same cluster (%)
+function groupCloseLevels(levels, maxGapPct = 0.2) {
+  if (!levels || levels.length === 0) return []
+  
+  // Sort by price
+  const sorted = [...levels].sort((a, b) => a.price - b.price)
+  
+  const clusters = []
+  let currentCluster = [sorted[0]]
+  
+  for (let i = 1; i < sorted.length; i++) {
+    const level = sorted[i]
+    const prevLevel = sorted[i - 1]
+    
+    // Calculate gap in % relative to price
+    const gapPct = Math.abs(level.price - prevLevel.price) / prevLevel.price * 100
+    
+    if (gapPct <= maxGapPct) {
+      // Add to current cluster
+      currentCluster.push(level)
+    } else {
+      // Close current cluster and start new one
+      if (currentCluster.length >= 2) {
+        clusters.push(currentCluster)
+      }
+      currentCluster = [level]
+    }
+  }
+  
+  // Don't forget the last cluster
+  if (currentCluster.length >= 2) {
+    clusters.push(currentCluster)
+  }
+  
+  return clusters
 }
 
 function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
@@ -156,10 +202,62 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
   }
 }
 
+// Получить K-lines и рассчитать объёмы + ATR
+async function getKlinesWithStats(symbol) {
+  try {
+    // Получаем K-lines: open, high, low, close, volume, time
+    const klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${KLINE_INTERVAL}&limit=${KLINE_LIMIT}`)
+    
+    if (!klines || klines.length < 3) {
+      return { vol1: 0, vol2: 0, vol3: 0, natr: 0 }
+    }
+
+    // Из K-line берём: [time, open, high, low, close, volume, ...]
+    const convert = (k) => ({
+      open: toNumber(k[1]),
+      high: toNumber(k[2]),
+      low: toNumber(k[3]),
+      close: toNumber(k[4]),
+      volume: toNumber(k[5])
+    })
+    
+    const bars = klines.map(convert).reverse() // Binance returns oldest first; reverse => [newest, prev, oldest]
+
+    // Объёмы: vol1=newest (t), vol2=prev (t-1), vol3=oldest (t-2)
+    const vol1 = bars[0] ? bars[0].volume : 0 // newest (t)
+    const vol2 = bars[1] ? bars[1].volume : 0 // prev (t-1)
+    const vol3 = bars[2] ? bars[2].volume : 0 // oldest (t-2)
+
+    // Расчёт ATR (Average True Range)
+    // True Range = max(high - low, |high - prev_close|, |low - prev_close|)
+    if (bars.length < 3) return { vol1, vol2, vol3, natr: 0 }
+
+    const trValues = []
+    for (let i = 1; i < bars.length; i++) {
+      const highLow = bars[i].high - bars[i].low
+      const highPrevClose = Math.abs(bars[i].high - bars[i - 1].close)
+      const lowPrevClose = Math.abs(bars[i].low - bars[i - 1].close)
+      const tr = Math.max(highLow, highPrevClose, lowPrevClose)
+      trValues.push(tr)
+    }
+
+    // ATR = среднее по последним (period) TR
+    const period = 14 // стандартный период ATR
+    const natrPeriod = Math.min(period, trValues.length)
+    const atrValues = trValues.slice(-natrPeriod)
+    const natr = (atrValues.reduce((a, b) => a + b, 0) / natrPeriod)
+
+    return { vol1, vol2, vol3, natr }
+
+  } catch (err) {
+    // Если не удалось получить K-lines, возвращаем нули
+    return { vol1: 0, vol2: 0, vol3: 0, natr: 0 }
+  }
+}
+
 // ---- UI (static files from ../app) ----
 const path = require('path')
 const fs = require('fs')
-
 const APP_DIR = path.resolve(__dirname, '..', 'app')
 
 function readFileSafe(relPath) {
@@ -205,12 +303,6 @@ fastify.get('/depth/:symbol', async (req) => {
 
 // NEW: simple flat output for UI (scoring, sorting, cache)
 fastify.get('/densities/simple', async (req) => {
-  // Try cache first
-  const cached = getCached(req)
-  if (cached) {
-    return cached
-  }
-
   const minNotional = Number(req.query.minNotional || 0)
   const depthLimit = Number(req.query.depthLimit || 100)
   const mmMode = req.query.mmMode === 'true'
@@ -218,11 +310,12 @@ fastify.get('/densities/simple', async (req) => {
   const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
   const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
   const natrFilter = Number(req.query.natrFilter || 0)  // фильтр по NATR (0 = без фильтра)
-  const concurrency = Number(req.query.concurrency || 3)  // ускоренная загрузка (3 вместо 6)
+  const concurrency = Number(req.query.concurrency || 5)  // ускоренная загрузка (5 вместо 3)
 
-  // Blacklist монет (очень тяжелые — исключаем из сканирования, ТОЛЬКО если не переданы явные символы)
-  const blacklistedSymbols = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'REPEUSDT'])
+  // Blacklist монет (топовые не торгуем в этой стратегии — исключаем из сканирования)
+  const blacklistedSymbols = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'REPEUSDT', 'AVAXUSDT', 'TRXUSDT', 'NEARUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT', 'LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'AAVEUSDT', 'UNIUSDT', 'COMPUSDT'])
 
+  let symbols
   if (req.query.symbols) {
     // Если символы переданы явно — не фильтруем через blacklist (пользователь знает, что делает)
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(s => s)
@@ -249,28 +342,8 @@ fastify.get('/densities/simple', async (req) => {
     const price = markMap.get(sym)
     if (!price) return []
 
-    // Получаем Klines (5m) для расчета NATR
-    let klines = []
-    let natr = null
-    let vols = [0, 0, 0] // Vol 1, Vol 2, Vol 3 (последние 3 свечки 5m)
-    try {
-      klines = await klinesModule.getKlines({ symbol: sym, interval: '5m', limit: 10 })
-      if (klines.length > 0) {
-        const atrResult = klinesModule.calculateATR(klines, 14)
-        natr = atrResult ? atrResult.natr : null
-        // Берем последние 3 объема (в USDT)
-        if (klines.length >= 3) {
-          vols = [klines[klines.length - 3].volume, klines[klines.length - 2].volume, klines[klines.length - 1].volume]
-        } else if (klines.length === 2) {
-          vols = [klines[0].volume, klines[1].volume, 0]
-        } else if (klines.length === 1) {
-          vols = [klines[0].volume, 0, 0]
-        }
-      }
-    } catch (e) {
-      // Если не удалось получить Klines — просто продолжаем (NATR и объемы будут null/0)
-      console.error(`Klines error for ${sym}: ${e.message}`)
-    }
+    // Получить K-lines для объёмов и ATR
+    const klinesStats = await getKlinesWithStats(sym)
 
     const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
     const { filteredLevels, bidLevels, askLevels } = calcNearestDensities({
@@ -281,11 +354,17 @@ fastify.get('/densities/simple', async (req) => {
       windowPct
     })
 
+    // MM cluster parameters
+    const MM_WINDOW_PCT = 2.0  // искать MM в ±2% от цены
+    const MAX_GAP_PCT = 0.2    // макс расстояние в кластере
+    const MIN_CLUSTER_NOTIONAL = 20000
+    const MIN_LEVELS_IN_CLUSTER = 2
+
     // Раздельная логика для bid и ask
     const processSide = (levels, sideKey) => {
       const notionals = levels.map(l => l.notional)
       
-      // Двухшаговый percentile 70 для base
+      // Двухшаговый percentile 70 для base (без кластеров)
       const baseAll = percentile(notionals, 70)
       const filteredNotionals = notionals.filter(n => n <= baseAll * 2)
       const finalBaseAll = percentile(filteredNotionals, 70) || (baseAll || 50000)
@@ -294,44 +373,77 @@ fastify.get('/densities/simple', async (req) => {
       const mm0 = finalBaseAll * mmSeedMultiplier
       const mmCandidates = levels.filter(l => l.notional >= mm0)
 
-      // Определение mmBase (с проверкой на null)
-      const mmBase = mmCandidates.length >= 3 
-        ? percentile(mmCandidates.map(l => l.notional), 50) 
-        : (mmCandidates.length > 0 ? mm0 : (finalBaseAll || 50000))
+      // === MM CLUSTERIZATION ===
+      // Группируем уровни в кластеры
+      const clusters = groupCloseLevels(levels, MAX_GAP_PCT)
       
-      // DEBUG
-      // console.log(`DEBUG ${sym} ${sideKey}: baseAll=${baseAll}, finalBaseAll=${finalBaseAll}, mm0=${mm0}, mmCandidates=${mmCandidates.length}, mmBase=${mmBase}`)
-
+      // Фильтруем кластеры по минимальному notional и кол-ву уровней
+      const validClusters = clusters.filter(c => {
+        const totalNotional = c.reduce((sum, l) => sum + l.notional, 0)
+        return totalNotional >= MIN_CLUSTER_NOTIONAL && c.length >= MIN_LEVELS_IN_CLUSTER
+      })
+      
+      // Расчёт mmBase из valid clusters
+      const clusterNotionals = validClusters.map(c => 
+        c.reduce((sum, l) => sum + l.notional, 0)
+      )
+      
+      const mmBase = clusterNotionals.length >= 3
+        ? percentile(clusterNotionals, 50)
+        : (clusterNotionals.length > 0 ? percentile(clusterNotionals, 50) : (finalBaseAll || 50000))
+      
+      // === ПЕРЕСЧЁТ x ДЛЯ КАЖДОГО УРОВНЯ ===
+      // Для каждого уровня считаем, к какому кластеру он относится
+      const levelsWithX = levels.map(level => {
+        // Находим ближайший кластер для этого уровня
+        let bestCluster = null
+        let minDist = Infinity
+        
+        validClusters.forEach(cluster => {
+          cluster.forEach(cLevel => {
+            const dist = Math.abs(level.price - cLevel.price) / cLevel.price * 100
+            if (dist < minDist) {
+              minDist = dist
+              bestCluster = cluster
+            }
+          })
+        })
+        
+        // Считаем totalNotional кластера
+        const clusterTotalNotional = bestCluster 
+          ? bestCluster.reduce((sum, l) => sum + l.notional, 0)
+          : level.notional
+        
+        // x = level.notional / mmBase (для каждого уровня)
+        const x = mmBase > 0 ? level.notional / mmBase : 0
+        const mmCount = bestCluster ? bestCluster.length : 1
+        
+        return { ...level, x, mmCount }
+      })
+      
       // Вычисляем score и сортируем
-      const scoredLevels = levels.map(level => {
-        const isMM = mmBase && mmMultiplier ? level.notional >= mmBase * mmMultiplier : false
-        const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM })
-        const x = mmBase && mmBase > 0 ? level.notional / mmBase : 0
-        return { ...level, isMM, score, x }
+      const scoredLevels = levelsWithX.map(level => {
+        const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM: false })
+        return { ...level, score }
       }).sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score
         if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct
         return b.notional - a.notional
       })
 
-      // Берём top 20
-      const top20 = scoredLevels.slice(0, 20)
+      // Берём top-N (настраиваемый через depthLimit)
+      const topN = scoredLevels.slice(0, depthLimit)
 
       return {
         sym,
-        natr,
-        vols,
         finalBaseAll,
         mm0,
         mmCandidatesCount: mmCandidates.length,
         mmBase,
-        levels: top20.map(l => ({
+        levels: topN.map(l => ({
           ...l,
           score: Math.round(l.score * 10000) / 10000,
-          mmBase: mmBase, // добавляем mmBase для фильтрации и отображения
-          eatSpeedUSDTperSec: 0, // пока 0, так как одноразовый запрос
-          lifetimeSec: 0, // пока 0, так как одноразовый запрос
-          state: 'APPEARED', // пока APPEARED, так как одноразовый запрос
+          mmBase: mmBase,
           sideKey
         }))
       }
@@ -340,18 +452,16 @@ fastify.get('/densities/simple', async (req) => {
     const bidResult = processSide(bidLevels, 'bid')
     const askResult = processSide(askLevels, 'ask')
 
-    // Сохраняем sym, natr, vols для всех уровней этого символа
+    // Сохраняем sym для всех уровней этого символа
     const symVal = bidResult.sym
-    const natrVal = bidResult.natr
-    const volsVal = bidResult.vols
 
     return [...bidResult.levels, ...askResult.levels].map(level => ({
       ...level,
       symbol: symVal,
-      natr: natrVal,
-      vol1: volsVal[0],
-      vol2: volsVal[1],
-      vol3: volsVal[2],
+      natr: klinesStats.natr,
+      vol1: klinesStats.vol1,
+      vol2: klinesStats.vol2,
+      vol3: klinesStats.vol3,
       mmBaseBid: bidResult.mmBase,
       mmBaseAsk: askResult.mmBase
     }))
@@ -360,7 +470,7 @@ fastify.get('/densities/simple', async (req) => {
   // Получаем все уровни (без фильтрации по x)
   const allLevels = rowsArr.flat()
 
-  // Step 1: Фильтрация символов — показываем только те, у которых есть уровни с x >= xFilter (если xFilter > 0)
+  // Фильтрация символов — показываем только те, у которых есть уровни с x >= xFilter (если xFilter > 0)
   let finalData = allLevels
   if (xFilter > 0) {
     // Группируем по symbol и проверяем, есть ли у каждого символа хотя бы один уровень с x >= xFilter
@@ -374,8 +484,10 @@ fastify.get('/densities/simple', async (req) => {
     finalData = allLevels.filter(d => symbolsWithHighX.has(d.symbol))
   }
 
-  // Фильтрация по NATR (если natrFilter > 0)
-  finalData = natrFilter > 0 ? finalData.filter(d => (d.natr || 0) >= natrFilter) : finalData
+  // Фильтрация по NATR (если natrFilter > 0, показываем только уровни с natr >= natrFilter%)
+  if (natrFilter > 0) {
+    finalData = finalData.filter(d => d.natr !== null && d.natr >= natrFilter)
+  }
 
   const result = { 
     count: finalData.length, 
@@ -390,7 +502,8 @@ fastify.get('/densities/simple', async (req) => {
     data: finalData 
   }
   
-  setCached(req, result)
+  // Return raw data — UI will handle sorting and filtering
+  
   return result
 })
 

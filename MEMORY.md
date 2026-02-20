@@ -33,6 +33,12 @@
 - **2026-02-17** — UI-SPEC.md заполнен под скрины (desktop wide + mobile).
 - **2026-02-17** — Created systemd service template (`futures-screener.service`).
 - **2026-02-17** — `futures-screener.szhub.space` доступен по HTTPS.
+- **2026-02-20** — Исправлен `ReferenceError` в `server/index.js` (переменная `symbols` не была объявлена через `let`).
+- **2026-02-20** — Исправлен `state.onlyMM` в `app.js` — чекбокс `Only MM` теперь влияет на запрос (`mmMode` добавлен в API params).
+- **2026-02-20** — Исправлен `isMobile = true` жёстко в `app.js` — UI теперь корректно переключается между mobile/desktop.
+- **2026-02-20** — Добавлены поля `natr`, `vol1`, `vol2`, `vol3` в API через K-lines Binance (`/fapi/v1/klines`), реализована фильтрация по `natrFilter`.
+- **2026-02-20** — Добавлен watchlist (localStorage) — кнопки ⭐/☆ для добавления/удаления символов, вкладка "Watchlist".
+- **2026-02-20** — Обновлён UI мобильной версии — карточки в стиле "вариант А", колонки: level, dist, notional, x, isMM.
 
 ## Текущее состояние
 

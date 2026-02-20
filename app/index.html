@@ -58,6 +58,9 @@
                 </select>
             </label>
             <label class="checkbox">
+                <input id="onlyMM" type="checkbox" /> Only MM (mmCount > 1)
+            </label>
+            <label class="checkbox">
                 <input id="auto" type="checkbox" /> Auto-refresh
             </label>
             <div class="interval-control">
@@ -68,6 +71,7 @@
                 </select>
             </div>
             <button id="refreshBtn" class="btn-refresh">Refresh</button>
+            <button id="resetBtn" class="btn-secondary">Reset</button>
         </div>
     </div>
 
@@ -81,22 +85,22 @@
                             <th>BID level</th>
                             <th>BID dist %</th>
                             <th>BID notional</th>
-                            <th>BID x</th>
-                            <th>NATR %</th>
-                            <th>Vol 1×5m</th>
-                            <th>Vol 2×5m</th>
-                            <th>Vol 3×5m</th>
+                            <th>BID mmCount</th>
                             <th>ASK level</th>
                             <th>ASK dist %</th>
                             <th>ASK notional</th>
-                            <th>ASK x</th>
+                            <th>ASK mmCount</th>
                             <th>Score</th>
-                            <th>isMM</th>
+                            <th>Vol 3×5m</th>
                         </tr>
                     </thead>
                     <tbody id="tbody"></tbody>
                 </table>
             </div>
+            
+            <!-- Mobile Cards View -->
+            <div class="cards-container" id="cardsContent" style="display:none;"></div>
+            
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
                 <button id="filterToggle" class="btn-filters" style="display:none;">Filter</button>
@@ -142,6 +146,6 @@
         </div>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260220-4"></script>
 </body>
 </html>
