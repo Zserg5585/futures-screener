@@ -39,7 +39,7 @@ const SCORE_MM_BOOST = 1.8
 
 // K-lines timeframe (5 minutes in ms)
 const KLINE_INTERVAL = '5m'
-const KLINE_LIMIT = 3
+const KLINE_LIMIT = 20
 
 // Binance K-lines order: index 0 = oldest, last = newest
 // After reverse(): bars[0] = newest (t), bars[1] = prev (t-1), bars[2] = oldest (t-2)
@@ -239,8 +239,8 @@ async function getKlinesWithStats(symbol) {
     // Получаем K-lines: open, high, low, close, volume, time
     const klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${KLINE_INTERVAL}&limit=${KLINE_LIMIT}`)
 
-    if (!klines || klines.length < 3) {
-      return { vol1: 0, vol2: 0, vol3: 0, natr: 0 }
+    if (!klines || klines.length < 5) {
+      return { vol1: 0, vol2: 0, vol3: 0, vol4: 0, vol5: 0, natr: 0 }
     }
 
     // Из K-line берём: [time, open, high, low, close, volume, ...]
@@ -258,10 +258,12 @@ async function getKlinesWithStats(symbol) {
     const vol1 = bars[0] ? bars[0].volume : 0 // newest (t)
     const vol2 = bars[1] ? bars[1].volume : 0 // prev (t-1)
     const vol3 = bars[2] ? bars[2].volume : 0 // oldest (t-2)
+    const vol4 = bars[3] ? bars[3].volume : 0
+    const vol5 = bars[4] ? bars[4].volume : 0
 
     // Расчёт ATR (Average True Range)
     // True Range = max(high - low, |high - prev_close|, |low - prev_close|)
-    if (bars.length < 3) return { vol1, vol2, vol3, natr: 0 }
+    if (bars.length < 5) return { vol1, vol2, vol3, vol4, vol5, natr: 0 }
 
     const trValues = []
     for (let i = 1; i < bars.length; i++) {
@@ -278,11 +280,11 @@ async function getKlinesWithStats(symbol) {
     const atrValues = trValues.slice(-natrPeriod)
     const natr = (atrValues.reduce((a, b) => a + b, 0) / natrPeriod)
 
-    return { vol1, vol2, vol3, natr }
+    return { vol1, vol2, vol3, vol4, vol5, natr }
 
   } catch (err) {
     // Если не удалось получить K-lines, возвращаем нули
-    return { vol1: 0, vol2: 0, vol3: 0, natr: 0 }
+    return { vol1: 0, vol2: 0, vol3: 0, vol4: 0, vol5: 0, natr: 0 }
   }
 }
 
@@ -558,6 +560,8 @@ Score: <b>${level.score.toFixed(1)}</b>`)
         vol1: klinesStats.vol1,
         vol2: klinesStats.vol2,
         vol3: klinesStats.vol3,
+        vol4: klinesStats.vol4,
+        vol5: klinesStats.vol5,
         mmBaseBid: bidResult.mmBase,
         mmBaseAsk: askResult.mmBase,
         lifetimeSec: Math.floor(lifetimeSec),

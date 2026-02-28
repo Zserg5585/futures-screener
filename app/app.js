@@ -30,7 +30,7 @@ let state = {
     minScore: 0, // фильтр по Score
     symbols: '',
     concurrency: 6,
-    xFilter: 0,
+    xFilter: 4,
     natrFilter: 0,
     interval: CONFIG.DEFAULT_INTERVAL,
     sortField: 'score', // сортировка по умолчанию
@@ -164,7 +164,7 @@ function setupEventListeners() {
             el('modalSymbols').value = ''
             el('modalConcurrency').value = 6
             el('modalNatrFilter').value = 0
-            el('xFilter').value = 0
+            el('xFilter').value = 4
         })
         el('modalApply').addEventListener('click', () => {
             state.minNotional = Number(el('modalMinNotional').value)
@@ -398,7 +398,8 @@ function renderTable(entries) {
             <td>${sideBlock}</td>
             <td>${formatPercent(entry.distancePct)}</td>
             <td style="font-family: monospace; font-size: 14px;">${formatNotional(entry.notional)}</td>
-            <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.notional)}</td>
+            <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</td>
+            <td class="natr">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</td>
             <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(4)}</td>
             <td class="state-cell">${stateDot}</td>
             <td style="font-family: monospace;">${formatNotional(entry.eatSpeed || 0)}/s</td>
@@ -532,10 +533,12 @@ function renderCards(entries) {
                 </div>
                 <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
                     <span class="label">Vol Indicator:</span>
-                    <span class="value">${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.notional)}</span>
+                    <span class="value">${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</span>
                 </div>
                 <div class="card-row" style="margin-top:4px;">
-                    <span class="label">Score:</span>
+                    <span class="label">NATR:</span>
+                    <span class="value">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</span>
+                    <span class="label" style="margin-left:10px">Score:</span>
                     <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
                     <span class="label" style="margin-left:10px">Eat Speed:</span>
                     <span class="value">${formatNotional(entry.eatSpeed || 0)}/s</span>
