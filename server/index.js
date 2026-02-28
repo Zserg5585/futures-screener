@@ -1,10 +1,10 @@
-const fastify = require('fastify')({ 
-    logger: true,
-    cors: {
-        origin: '*',
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization']
-    }
+const fastify = require('fastify')({
+  logger: true,
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }
 })
 
 // Binance Futures (USDT-M) REST base
@@ -58,20 +58,20 @@ function filterLevelsByWindow(levels, markPrice, windowPct) {
 // maxGapPct: max distance between levels in same cluster (%)
 function groupCloseLevels(levels, maxGapPct = 0.2) {
   if (!levels || levels.length === 0) return []
-  
+
   // Sort by price
   const sorted = [...levels].sort((a, b) => a.price - b.price)
-  
+
   const clusters = []
   let currentCluster = [sorted[0]]
-  
+
   for (let i = 1; i < sorted.length; i++) {
     const level = sorted[i]
     const prevLevel = sorted[i - 1]
-    
+
     // Calculate gap in % relative to price
     const gapPct = Math.abs(level.price - prevLevel.price) / prevLevel.price * 100
-    
+
     if (gapPct <= maxGapPct) {
       // Add to current cluster
       currentCluster.push(level)
@@ -83,12 +83,12 @@ function groupCloseLevels(levels, maxGapPct = 0.2) {
       currentCluster = [level]
     }
   }
-  
+
   // Don't forget the last cluster
   if (currentCluster.length >= 2) {
     clusters.push(currentCluster)
   }
-  
+
   return clusters
 }
 
@@ -102,12 +102,12 @@ function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
     if (notional >= minNotional) {
       const distPct = Math.abs((price - p) / price) * 100
       if (distPct <= windowPct) {
-        filteredLevels.push({ 
-          side: 'bid', 
-          price: p, 
-          qty: q, 
-          notional, 
-          distancePct: distPct 
+        filteredLevels.push({
+          side: 'bid',
+          price: p,
+          qty: q,
+          notional,
+          distancePct: distPct
         })
       }
     }
@@ -119,12 +119,12 @@ function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
     if (notional >= minNotional) {
       const distPct = Math.abs((p - price) / price) * 100
       if (distPct <= windowPct) {
-        filteredLevels.push({ 
-          side: 'ask', 
-          price: p, 
-          qty: q, 
-          notional, 
-          distancePct: distPct 
+        filteredLevels.push({
+          side: 'ask',
+          price: p,
+          qty: q,
+          notional,
+          distancePct: distPct
         })
       }
     }
@@ -163,12 +163,43 @@ function calcScore({ notional, distancePct, isMM }) {
 const cache = new Map()
 const CACHE_TTL_MS = 3000
 
+// --- Level History State ---
+const levelHistory = new Map()
+// Очистка старых уровней (TTL: 1 минута без обновлений)
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, val] of levelHistory.entries()) {
+    if (now - val.lastUpdate > 60000) {
+      levelHistory.delete(key)
+    }
+  }
+}, 30000)
+
+// --- Telegram Alerts Scaffold ---
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || ''
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || ''
+
+async function sendTelegramAlert(msg) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' })
+    })
+  } catch (e) {
+    console.error('Telegram Error:', e.message)
+  }
+}
+
 function getCacheKey(req) {
   return JSON.stringify({
     symbols: req.query.symbols || 'all',
     minNotional: req.query.minNotional || 50000,
     depthLimit: req.query.depthLimit || 100,
     windowPct: req.query.windowPct || 1.0,
+    minScore: req.query.minScore || 0,
     concurrency: req.query.concurrency || 6
   })
 }
@@ -207,7 +238,7 @@ async function getKlinesWithStats(symbol) {
   try {
     // Получаем K-lines: open, high, low, close, volume, time
     const klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${KLINE_INTERVAL}&limit=${KLINE_LIMIT}`)
-    
+
     if (!klines || klines.length < 3) {
       return { vol1: 0, vol2: 0, vol3: 0, natr: 0 }
     }
@@ -220,7 +251,7 @@ async function getKlinesWithStats(symbol) {
       close: toNumber(k[4]),
       volume: toNumber(k[5])
     })
-    
+
     const bars = klines.map(convert).reverse() // Binance returns oldest first; reverse => [newest, prev, oldest]
 
     // Объёмы: vol1=newest (t), vol2=prev (t-1), vol3=oldest (t-2)
@@ -310,6 +341,7 @@ fastify.get('/densities/simple', async (req) => {
   const mmMultiplier = Number(req.query.mmMultiplier || 4)  // 4x по умолчанию
   const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
   const natrFilter = Number(req.query.natrFilter || 0)  // фильтр по NATR (0 = без фильтра)
+  const minScore = Number(req.query.minScore || 0) // фильтр по Score
   const concurrency = Number(req.query.concurrency || 5)  // ускоренная загрузка (5 вместо 3)
 
   // Blacklist монет (топовые не торгуем в этой стратегии — исключаем из сканирования)
@@ -363,7 +395,7 @@ fastify.get('/densities/simple', async (req) => {
     // Раздельная логика для bid и ask
     const processSide = (levels, sideKey) => {
       const notionals = levels.map(l => l.notional)
-      
+
       // Двухшаговый percentile 70 для base (без кластеров)
       const baseAll = percentile(notionals, 70)
       const filteredNotionals = notionals.filter(n => n <= baseAll * 2)
@@ -376,29 +408,29 @@ fastify.get('/densities/simple', async (req) => {
       // === MM CLUSTERIZATION ===
       // Группируем уровни в кластеры
       const clusters = groupCloseLevels(levels, MAX_GAP_PCT)
-      
+
       // Фильтруем кластеры по минимальному notional и кол-ву уровней
       const validClusters = clusters.filter(c => {
         const totalNotional = c.reduce((sum, l) => sum + l.notional, 0)
         return totalNotional >= MIN_CLUSTER_NOTIONAL && c.length >= MIN_LEVELS_IN_CLUSTER
       })
-      
+
       // Расчёт mmBase из valid clusters
-      const clusterNotionals = validClusters.map(c => 
+      const clusterNotionals = validClusters.map(c =>
         c.reduce((sum, l) => sum + l.notional, 0)
       )
-      
+
       const mmBase = clusterNotionals.length >= 3
         ? percentile(clusterNotionals, 50)
         : (clusterNotionals.length > 0 ? percentile(clusterNotionals, 50) : (finalBaseAll || 50000))
-      
+
       // === ПЕРЕСЧЁТ x ДЛЯ КАЖДОГО УРОВНЯ ===
       // Для каждого уровня считаем, к какому кластеру он относится
       const levelsWithX = levels.map(level => {
         // Находим ближайший кластер для этого уровня
         let bestCluster = null
         let minDist = Infinity
-        
+
         validClusters.forEach(cluster => {
           cluster.forEach(cLevel => {
             const dist = Math.abs(level.price - cLevel.price) / cLevel.price * 100
@@ -408,19 +440,19 @@ fastify.get('/densities/simple', async (req) => {
             }
           })
         })
-        
+
         // Считаем totalNotional кластера
-        const clusterTotalNotional = bestCluster 
+        const clusterTotalNotional = bestCluster
           ? bestCluster.reduce((sum, l) => sum + l.notional, 0)
           : level.notional
-        
+
         // x = level.notional / mmBase (для каждого уровня)
         const x = mmBase > 0 ? level.notional / mmBase : 0
         const mmCount = bestCluster ? bestCluster.length : 1
-        
+
         return { ...level, x, mmCount }
       })
-      
+
       // Вычисляем score и сортируем
       const scoredLevels = levelsWithX.map(level => {
         const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM: false })
@@ -455,16 +487,84 @@ fastify.get('/densities/simple', async (req) => {
     // Сохраняем sym для всех уровней этого символа
     const symVal = bidResult.sym
 
-    return [...bidResult.levels, ...askResult.levels].map(level => ({
-      ...level,
-      symbol: symVal,
-      natr: klinesStats.natr,
-      vol1: klinesStats.vol1,
-      vol2: klinesStats.vol2,
-      vol3: klinesStats.vol3,
-      mmBaseBid: bidResult.mmBase,
-      mmBaseAsk: askResult.mmBase
-    }))
+    return [...bidResult.levels, ...askResult.levels].map(level => {
+      const isBid = level.sideKey === 'bid'
+      const cacheKey = `${symVal}:${isBid ? 'BID' : 'ASK'}:${level.price}`
+      const now = Date.now()
+      let history = levelHistory.get(cacheKey)
+      let isMoved = false
+
+      if (!history) {
+        // Проверяем MOVED: ищем старые уровни для того же символа/стороны
+        for (const [k, v] of levelHistory.entries()) {
+          if (k.startsWith(`${symVal}:${isBid ? 'BID' : 'ASK'}`)) {
+            const oldPrice = parseFloat(k.split(':')[2])
+            const dist = Math.abs(level.price - oldPrice) / oldPrice * 100
+            const volDiff = Math.abs(level.notional - v.maxNotional) / v.maxNotional
+
+            // Если дистанция < 0.2%, объем совпадает на 85%, и старый уровень давно не обновлялся
+            if (dist < 0.2 && dist > 0 && volDiff < 0.15 && (now - v.lastUpdate) > 1000) {
+              isMoved = true
+              history = { ...v, lastUpdate: now, state: 'MOVED' }
+              levelHistory.delete(k) // переносим историю на новый ключ
+              break
+            }
+          }
+        }
+
+        if (!history) {
+          history = {
+            firstSeen: now,
+            lastUpdate: now,
+            maxNotional: level.notional,
+            state: 'APPEARED'
+          }
+        }
+      } else {
+        history.lastUpdate = now
+        if (level.notional > history.maxNotional) {
+          history.maxNotional = level.notional
+        }
+        if (level.notional < history.maxNotional * 0.95 && history.state !== 'MOVED') {
+          history.state = 'UPDATED' // объем съедают
+        }
+      }
+
+      levelHistory.set(cacheKey, history)
+
+      const lifetimeSec = (now - history.firstSeen) / 1000
+      let eatSpeed = 0
+      if (lifetimeSec > 3) {
+        eatSpeed = (history.maxNotional - level.notional) / lifetimeSec
+      }
+
+      // Telegram Alerts
+      if (level.score >= 5.0 && level.distancePct <= 0.3 && history.state !== 'MOVED') {
+        if (!history.alerted || (now - history.alerted) > 300000) { // раз в 5 минут на уровень
+          const sideIcon = isBid ? '🟢' : '🔴'
+          sendTelegramAlert(`🚨 <b>${symVal}</b> ${sideIcon} ${isBid ? 'LONG (BID)' : 'SHORT (ASK)'}
+Цена: <b>${level.price}</b>
+Дистанция: <b>${level.distancePct.toFixed(2)}%</b>
+Объем: <b>$${(level.notional / 1000000).toFixed(2)}M</b>
+Score: <b>${level.score.toFixed(1)}</b>`)
+          history.alerted = now
+        }
+      }
+
+      return {
+        ...level,
+        symbol: symVal,
+        natr: klinesStats.natr,
+        vol1: klinesStats.vol1,
+        vol2: klinesStats.vol2,
+        vol3: klinesStats.vol3,
+        mmBaseBid: bidResult.mmBase,
+        mmBaseAsk: askResult.mmBase,
+        lifetimeSec: Math.floor(lifetimeSec),
+        eatSpeed: Math.max(0, Math.floor(eatSpeed)),
+        state: history.state
+      }
+    })
   })
 
   // Получаем все уровни (без фильтрации по x)
@@ -489,21 +589,26 @@ fastify.get('/densities/simple', async (req) => {
     finalData = finalData.filter(d => d.natr !== null && d.natr >= natrFilter)
   }
 
-  const result = { 
-    count: finalData.length, 
-    minNotional, 
-    depthLimit, 
-    concurrency, 
+  // Фильтрация по Score
+  if (minScore > 0) {
+    finalData = finalData.filter(d => d.score >= minScore)
+  }
+
+  const result = {
+    count: finalData.length,
+    minNotional,
+    depthLimit,
+    concurrency,
     mmMode,
     windowPct,
     mmMultiplier,
     xFilter,
     natrFilter,
-    data: finalData 
+    data: finalData
   }
-  
+
   // Return raw data — UI will handle sorting and filtering
-  
+
   return result
 })
 

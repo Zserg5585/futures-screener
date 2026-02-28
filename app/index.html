@@ -1,13 +1,18 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>Futures Screener — Densities</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
 </head>
+
 <body>
     <!-- Header -->
     <header class="top">
@@ -22,85 +27,113 @@
         </div>
     </header>
 
-    <!-- Filters Panel (under header) -->
-    <div class="filters-panel">
-        <div class="filter-row">
-            <label>
-                <span>Min Notional ($)</span>
-                <input id="minNotional" type="number" value="0" min="0" step="1000" />
-            </label>
-            <label>
-                <span>Window %</span>
-                <input id="windowPct" type="number" value="5.0" min="0.1" step="0.1" />
-            </label>
-            <label>
-                <span>Depth Limit</span>
-                <input id="depthLimit" type="number" value="100" min="10" max="1000" step="10" />
-            </label>
-            <label>
-                <span>x Filter</span>
-                <select id="xFilter">
-                    <option value="0" selected>Any (no filter)</option>
-                    <option value="2">x2+</option>
-                    <option value="4">x4+</option>
-                    <option value="6">x6+</option>
-                    <option value="10">x10+</option>
-                </select>
-            </label>
-            <label>
-                <span>NATR % Filter</span>
-                <select id="natrFilter">
-                    <option value="0" selected>Any (no filter)</option>
-                    <option value="1">NATR >= 1%</option>
-                    <option value="2">NATR >= 2%</option>
-                    <option value="3">NATR >= 3%</option>
-                    <option value="5">NATR >= 5%</option>
-                </select>
-            </label>
-            <label class="checkbox">
-                <input id="onlyMM" type="checkbox" /> Only MM (mmCount > 1)
-            </label>
-            <label class="checkbox">
-                <input id="auto" type="checkbox" /> Auto-refresh
-            </label>
-            <div class="interval-control">
-                <select id="interval">
-                    <option value="5000">5s</option>
-                    <option value="10000" selected>10s</option>
-                    <option value="20000">20s</option>
-                </select>
-            </div>
-            <button id="refreshBtn" class="btn-refresh">Refresh</button>
-            <button id="resetBtn" class="btn-secondary">Reset</button>
-        </div>
-    </div>
-
     <div class="layout">
+        <aside class="sidebar">
+            <div class="filter-group">
+                <label>
+                    <span>Min Notional ($)</span>
+                    <input id="minNotional" type="number" value="0" min="0" step="1000" />
+                </label>
+                <label>
+                    <span>Min Score</span>
+                    <input id="minScore" type="number" value="0" min="0" step="1" />
+                </label>
+                <label>
+                    <span>Window %</span>
+                    <input id="windowPct" type="number" value="5.0" min="0.1" step="0.1" />
+                </label>
+                <label>
+                    <span>Depth Limit</span>
+                    <input id="depthLimit" type="number" value="100" min="10" max="1000" step="10" />
+                </label>
+                <label>
+                    <span>Symbols (empty = all)</span>
+                    <input id="symbols" type="text" placeholder="BTCUSDT,ETHUSDT" />
+                </label>
+                <label>
+                    <span>Concurrency</span>
+                    <input id="concurrency" type="number" value="6" min="1" max="20" />
+                </label>
+            </div>
+            <div class="filter-group">
+                <label>
+                    <span>x Filter</span>
+                    <select id="xFilter">
+                        <option value="0" selected>Any (no filter)</option>
+                        <option value="2">x2+</option>
+                        <option value="4">x4+</option>
+                        <option value="6">x6+</option>
+                        <option value="10">x10+</option>
+                    </select>
+                </label>
+                <label>
+                    <span>NATR % Filter</span>
+                    <select id="natrFilter">
+                        <option value="0" selected>Any (no filter)</option>
+                        <option value="1">NATR >= 1%</option>
+                        <option value="2">NATR >= 2%</option>
+                        <option value="3">NATR >= 3%</option>
+                        <option value="5">NATR >= 5%</option>
+                    </select>
+                </label>
+            </div>
+            <div class="filter-group">
+                <label class="checkbox">
+                    <input id="onlyMM" type="checkbox" />
+                    <span>Only MM (mmCount > 1)</span>
+                </label>
+                <label class="checkbox">
+                    <input id="auto" type="checkbox" />
+                    <span>Auto-refresh</span>
+                </label>
+                <div class="interval-control">
+                    <select id="interval">
+                        <option value="5000">5s</option>
+                        <option value="10000" selected>10s</option>
+                        <option value="20000">20s</option>
+                    </select>
+                </div>
+            </div>
+            <div class="filter-group">
+                <button id="refreshBtn" class="btn-primary">Refresh</button>
+                <button id="resetBtn" class="btn-secondary">Reset</button>
+            </div>
+        </aside>
+
         <main class="main">
-            <div class="table-container">
+            <div id="error" class="error hidden"></div>
+            <div class="table-container" id="table-container">
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Symbol</th>
-                            <th>BID level</th>
-                            <th>BID dist %</th>
-                            <th>BID notional</th>
-                            <th>BID mmCount</th>
-                            <th>ASK level</th>
-                            <th>ASK dist %</th>
-                            <th>ASK notional</th>
-                            <th>ASK mmCount</th>
-                            <th>Score</th>
-                            <th>Vol 3×5m</th>
+                            <th class="sortable" data-sort="symbol">Symbol</th>
+                            <th>BID Px</th>
+                            <th class="sortable" data-sort="distance">BID %</th>
+                            <th class="sortable" data-sort="notional">BID Vol</th>
+                            <th class="sortable" data-sort="x">BID x</th>
+                            <th class="sortable" data-sort="natr">NATR</th>
+                            <th class="sortable" data-sort="vol1">1×5m</th>
+                            <th class="sortable" data-sort="vol2">2×5m</th>
+                            <th class="sortable" data-sort="vol3">3×5m</th>
+                            <th>ASK Px</th>
+                            <th class="sortable" data-sort="distance">ASK %</th>
+                            <th class="sortable" data-sort="notional">ASK Vol</th>
+                            <th class="sortable" data-sort="x">ASK x</th>
+                            <th class="sortable" data-sort="score">Score</th>
+                            <th class="sortable" data-sort="state">State</th>
+                            <th class="sortable" data-sort="life">Life</th>
+                            <th class="sortable" data-sort="speed">Speed</th>
+                            <th>MM</th>
+                            <th></th>
                         </tr>
                     </thead>
                     <tbody id="tbody"></tbody>
                 </table>
             </div>
-            
+
             <!-- Mobile Cards View -->
             <div class="cards-container" id="cardsContent" style="display:none;"></div>
-            
+
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
                 <button id="filterToggle" class="btn-filters" style="display:none;">Filter</button>
@@ -121,12 +154,24 @@
                     <input id="modalMinNotional" type="number" value="50000" min="0" step="1000" />
                 </label>
                 <label>
+                    <span>Min Score</span>
+                    <input id="modalMinScore" type="number" value="0" min="0" step="1" />
+                </label>
+                <label>
                     <span>Window %</span>
                     <input id="modalWindowPct" type="number" value="5.0" min="0.1" step="0.1" />
                 </label>
                 <label>
                     <span>Depth Limit</span>
                     <input id="modalDepthLimit" type="number" value="100" min="10" max="1000" step="10" />
+                </label>
+                <label>
+                    <span>Symbols (empty = all)</span>
+                    <input id="modalSymbols" type="text" placeholder="BTCUSDT,ETHUSDT" />
+                </label>
+                <label>
+                    <span>Concurrency</span>
+                    <input id="modalConcurrency" type="number" value="6" min="1" max="20" />
                 </label>
                 <label>
                     <span>NATR % Filter</span>
@@ -148,4 +193,5 @@
 
     <script src="/app.js?v=20260220-4"></script>
 </body>
+
 </html>
