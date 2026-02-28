@@ -334,108 +334,82 @@ async function loadDensities(forceRefresh = false) {
     }
 }
 
+// Функция для индикатора объемов (3 свечи по 5 минут)
+function renderVolIndicator(vol1, vol2, vol3, density) {
+    const getColor = (v) => {
+        if (!v || !density) return 'low';
+        if (v >= density * 0.5) return 'high';
+        if (v >= density * 0.2) return 'med';
+        return 'low';
+    };
+
+    // vol1 - самая новая свеча. Слева показываем самую старую (vol3), справа - самую новую (vol1)
+    return `
+        <div class="vol-indicator" title="Объемы (старые -> новые): ${formatNotional(vol3)} | ${formatNotional(vol2)} | ${formatNotional(vol1)}">
+            <div class="vol-block ${getColor(vol3)}"></div>
+            <div class="vol-block ${getColor(vol2)}"></div>
+            <div class="vol-block ${getColor(vol1)}"></div>
+        </div>
+    `;
+}
+
 // Render table (desktop)
 function renderTable(entries) {
     const tbody = el('tbody')
 
     if (!entries || entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="16" class="muted">Нет данных</td></tr>`
+        tbody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center; padding: 20px;">Нет данных</td></tr>'
         return
     }
 
-    // Группируем по symbol (BID + ASK в одну строку)
-    const grouped = new Map()
-    entries.forEach(entry => {
-        if (!grouped.has(entry.symbol)) {
-            grouped.set(entry.symbol, { bid: null, ask: null })
-        }
-        if (entry.side === 'bid') {
-            grouped.get(entry.symbol).bid = entry
-        } else if (entry.side === 'ask') {
-            grouped.get(entry.symbol).ask = entry
-        }
-    })
-
-    // Преобразуем в массив и сортируем по максимальному значению поля
-    const sorted = [...grouped.entries()].sort((a, b) => {
-        const getVal = (data, field) => {
-            const v1 = data.bid ? data.bid[field] : -999999999
-            const v2 = data.ask ? data.ask[field] : -999999999
-            return Math.max(v1 || 0, v2 || 0)
-        }
-
-        // Для символа сортируем как строки
+    // Сортируем данные напрямую (без группировки)
+    const sorted = [...entries].sort((a, b) => {
         if (state.sortField === 'symbol') {
-            return state.sortAsc ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0])
+            return state.sortAsc ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol)
         }
 
-        // Мапинг полей сортировки
         let fieldMap = state.sortField
         if (fieldMap === 'distance') fieldMap = 'distancePct'
         if (fieldMap === 'speed') fieldMap = 'eatSpeed'
-        if (fieldMap === 'life') fieldMap = 'lifetimeSec'
 
-        const valA = getVal(a[1], fieldMap)
-        const valB = getVal(b[1], fieldMap)
+        const valA = a[fieldMap] || 0
+        const valB = b[fieldMap] || 0
 
         return state.sortAsc ? (valA - valB) : (valB - valA)
     })
 
-    const rows = sorted.map(([symbol, data]) => {
-        const { bid, ask } = data
-        const score = Math.max(bid?.score || 0, ask?.score || 0)
-        const vol3 = bid?.vol3 || ask?.vol3 || 0
+    const rows = sorted.map(entry => {
+        const symbol = entry.symbol
         const inWatchlist = isSymbolInWatchlist(symbol)
+        const isMM = (entry.mmCount || 0) > 1
 
-        // Вспомогательная функция для рендера ячейки side
-        const renderSideCell = (sideEntry) => {
-            if (!sideEntry) {
-                return `<td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>`
-            }
-            return `
-                <td>${formatNumber(sideEntry.price, 2)}</td>
-                <td>${formatPercent(sideEntry.distancePct)}</td>
-                <td>${formatNotional(sideEntry.notional)}</td>
-                <td>${sideEntry.x ? sideEntry.x.toFixed(2) + 'x' : '—'}</td>
-            `
-        }
-
-        const natr = bid?.natr || ask?.natr || 0
-        const vol1 = bid?.vol1 || ask?.vol1 || 0
-        const vol2 = bid?.vol2 || ask?.vol2 || 0
-        const isMM = ((bid?.mmCount || 0) > 1) || ((ask?.mmCount || 0) > 1)
-
-        const topState = bid?.state || ask?.state || 'APPEARED'
         let stateDot = '<span style="color:#10b981;">●</span> APPEARED' // green
-        if (topState === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED' // yellow
-        if (topState === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED' // red
-        if (topState === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING' // blue
+        if (entry.state === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED' // yellow
+        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED' // red
+        if (entry.state === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING' // blue
 
-        const life = Math.max(bid?.lifetimeSec || 0, ask?.lifetimeSec || 0)
-        const lifeStr = life > 60 ? `${Math.floor(life / 60)}m ${life % 60}s` : `${life}s`
-        const speed = Math.max(bid?.eatSpeed || 0, ask?.eatSpeed || 0)
+        const sideBlock = entry.side === 'bid'
+            ? '<span style="color:var(--neon-green); font-weight:600;">LONG (BID)</span>'
+            : '<span style="color:var(--neon-red); font-weight:600;">SHORT (ASK)</span>'
 
         return `
         <tr class="${isMM ? 'isMM' : ''}">
             <td class="sym">${symbol}</td>
-            ${renderSideCell(bid)}
-            <td>${natr > 0 ? natr.toFixed(2) + '%' : '—'}</td>
-            <td>${formatNotional(vol1)}</td>
-            <td>${formatNotional(vol2)}</td>
-            <td>${formatNotional(vol3)}</td>
-            ${renderSideCell(ask)}
-            <td class="score">${score.toFixed(4)}</td>
+            <td>${sideBlock}</td>
+            <td>${formatPercent(entry.distancePct)}</td>
+            <td style="font-family: monospace; font-size: 14px;">${formatNotional(entry.notional)}</td>
+            <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.notional)}</td>
+            <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(4)}</td>
             <td class="state-cell">${stateDot}</td>
-            <td>${lifeStr}</td>
-            <td>${formatNotional(speed)}/s</td>
-            <td style="text-align: center;">${isMM ? '⭐' : '—'}</td>
+            <td style="font-family: monospace;">${formatNotional(entry.eatSpeed || 0)}/s</td>
             <td class="watchlist-btn">
                 <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
                     ${inWatchlist ? '⭐' : '☆'}
                 </button>
             </td>
         </tr>
-        `}).join('')
+        `
+    }).join('')
 
     tbody.innerHTML = rows
 }
@@ -515,43 +489,27 @@ function renderCards(entries) {
         return
     }
 
-    // Группируем по symbol (BID + ASK в одну карточку)
-    const grouped = new Map()
-    entries.forEach(entry => {
-        if (!grouped.has(entry.symbol)) {
-            grouped.set(entry.symbol, { bid: null, ask: null })
-        }
-        if (entry.side === 'bid') {
-            grouped.get(entry.symbol).bid = entry
-        } else if (entry.side === 'ask') {
-            grouped.get(entry.symbol).ask = entry
-        }
+    const sorted = [...entries].sort((a, b) => {
+        let fieldMap = state.sortField
+        if (fieldMap === 'distance') fieldMap = 'distancePct'
+        if (fieldMap === 'speed') fieldMap = 'eatSpeed'
+        const valA = a[fieldMap] || 0
+        const valB = b[fieldMap] || 0
+        return state.sortAsc ? (valA - valB) : (valB - valA)
     })
 
-    if (grouped.size === 0) {
-        container.innerHTML = `<div style="padding:20px;color:#f00;">DEBUG: grouped.size == 0</div>`
-        return
-    }
-
-    const cards = [...grouped.entries()].map(([symbol, data]) => {
-        const { bid, ask } = data
-        const score = Math.max(bid?.score || 0, ask?.score || 0)
-        const vol1 = bid?.vol1 || ask?.vol1 || 0
-        const vol2 = bid?.vol2 || ask?.vol2 || 0
-        const vol3 = bid?.vol3 || ask?.vol3 || 0
-        const natr = bid?.natr || ask?.natr || 0
-        const isMM = ((bid?.mmCount || 0) > 1) || ((ask?.mmCount || 0) > 1)
+    const cards = sorted.map(entry => {
+        const symbol = entry.symbol
+        const isMM = (entry.mmCount || 0) > 1
         const inWatchlist = isSymbolInWatchlist(symbol)
 
-        const topState = bid?.state || ask?.state || 'APPEARED'
         let stateDot = '<span style="color:#10b981;">●</span> APPEARED'
-        if (topState === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED'
-        if (topState === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED'
-        if (topState === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING'
+        if (entry.state === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED'
+        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED'
+        if (entry.state === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING'
 
-        const life = Math.max(bid?.lifetimeSec || 0, ask?.lifetimeSec || 0)
-        const lifeStr = life > 60 ? `${Math.floor(life / 60)}m ${life % 60}s` : `${life}s`
-        const speed = Math.max(bid?.eatSpeed || 0, ask?.eatSpeed || 0)
+        const sideClass = entry.side === 'bid' ? 'bid' : 'ask'
+        const sideIcon = entry.side === 'bid' ? '🔴 LONG (BID)' : '🟢 SHORT (ASK)'
 
         return `
         <div class="card ${isMM ? 'isMM' : ''}" data-symbol="${symbol}">
@@ -564,37 +522,23 @@ function renderCards(entries) {
                 <div style="font-size:12px; opacity:0.8">${stateDot}</div>
             </div>
             <div class="card-body">
-                <div class="card-row bid ${(bid?.mmCount || 0) > 1 ? 'isMM' : ''}">
-                    <span class="label">🔴 BID</span>
+                <div class="card-row ${sideClass} ${isMM ? 'isMM' : ''}">
+                    <span class="label">${sideIcon}</span>
                     <span class="value">
-                        ${bid ? formatNumber(bid.price, 2) : '—'}
-                        <span class="dist">${bid ? formatPercent(bid.distancePct) : '—'}</span>
+                        ${formatNumber(entry.price, 2)}
+                        <span class="dist">${formatPercent(entry.distancePct)}</span>
                     </span>
-                    <span class="notional">${bid ? formatNotional(bid.notional) : '—'} <span style="font-size:10px; opacity:0.6">${bid?.x ? bid.x.toFixed(1) + 'x' : ''}</span></span>
+                    <span class="notional">${formatNotional(entry.notional)}</span>
                 </div>
-                <div class="card-row ask ${(ask?.mmCount || 0) > 1 ? 'isMM' : ''}">
-                    <span class="label">🟢 ASK</span>
-                    <span class="value">
-                        ${ask ? formatNumber(ask.price, 2) : '—'}
-                        <span class="dist">${ask ? formatPercent(ask.distancePct) : '—'}</span>
-                    </span>
-                    <span class="notional">${ask ? formatNotional(ask.notional) : '—'} <span style="font-size:10px; opacity:0.6">${ask?.x ? ask.x.toFixed(1) + 'x' : ''}</span></span>
-                </div>
-                <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid #333;">
-                    <span class="label">NATR:</span>
-                    <span class="value">${natr > 0 ? natr.toFixed(2) + '%' : '—'}</span>
-                    <span class="label" style="margin-left:10px">Score:</span>
-                    <span class="value" style="color:var(--text-bright)">${score.toFixed(2)}</span>
+                <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                    <span class="label">Vol Indicator:</span>
+                    <span class="value">${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.notional)}</span>
                 </div>
                 <div class="card-row" style="margin-top:4px;">
-                    <span class="label">Time:</span>
-                    <span class="value">${lifeStr}</span>
-                    <span class="label" style="margin-left:10px">Speed:</span>
-                    <span class="value">${formatNotional(speed)}/s</span>
-                </div>
-                <div class="card-row" style="margin-top:4px;">
-                    <span class="label">Vols (1/2/3):</span>
-                    <span class="value" style="font-size:12px">${formatNotional(vol1)}/${formatNotional(vol2)}/${formatNotional(vol3)}</span>
+                    <span class="label">Score:</span>
+                    <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
+                    <span class="label" style="margin-left:10px">Eat Speed:</span>
+                    <span class="value">${formatNotional(entry.eatSpeed || 0)}/s</span>
                 </div>
             </div>
         </div>
@@ -602,29 +546,6 @@ function renderCards(entries) {
     }).join('')
 
     container.innerHTML = cards
-}
-
-function renderCardRow(entry, side) {
-    const sideData = entry[side]
-    if (!sideData) {
-        return `<div class="card-row muted"><span class="label">${side.toUpperCase()} —</span></div>`
-    }
-
-    const isMM = entry.isMM || false
-
-    return `
-        <div class="card-row ${side} ${isMM ? 'isMM' : ''}">
-            <span class="label">
-                ${side === 'bid' ? '🔴' : '🟢'} ${side.toUpperCase()}
-            </span>
-            <span class="value">
-                <span>${formatNumber(sideData.levelPrice, 2)}</span>
-                <span>${formatPercent(sideData.distancePct)}</span>
-                <span>${formatNotional(sideData.notional)}</span>
-                <span class="x-val">${(sideData.x || 0).toFixed(2)}x</span>
-            </span>
-        </div>
-    `
 }
 
 // Auto refresh
@@ -702,7 +623,7 @@ function renderWatchlist(entries) {
         if (el('cardsContent').style.display !== 'none') {
             container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">Watchlist пуст. Добавьте символы, нажав на ⭐.</p>`
         } else {
-            table.innerHTML = `<table class="table"><thead><tr><th colspan="19" style="text-align:center;color:var(--text-muted);">Watchlist пуст. Добавьте символы, нажав на ⭐.</th></tr></thead></table>`
+            table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">Watchlist пуст. Добавьте символы, нажав на ⭐.</th></tr></thead></table>`
         }
         return
     }
@@ -714,7 +635,7 @@ function renderWatchlist(entries) {
         if (el('cardsContent').style.display !== 'none') {
             container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</p>`
         } else {
-            table.innerHTML = `<table class="table"><thead><tr><th colspan="19" style="text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</th></tr></thead></table>`
+            table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</th></tr></thead></table>`
         }
         return
     }
