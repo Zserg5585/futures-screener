@@ -151,12 +151,17 @@ async function mapLimit(items, limit, fn) {
   return out
 }
 
-// Scoring function: score = log10(1 + notional) * exp(-distancePct / decayPct) * (isMM ? mmBoost : 1)
-function calcScore({ notional, distancePct, isMM }) {
-  const n = Math.log10(1 + notional)
-  const d = Math.exp(-distancePct / SCORE_DECAY_PCT)
-  const boost = isMM ? SCORE_MM_BOOST : 1
-  return n * d * boost
+// Scoring function: enhanced with Time To Eat, NATR, and lifetime
+function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifetimeSec }) {
+  let score = notional / 1000000; // Base score in millions
+  score = score / (1 + distancePct); // Penalty for distance
+
+  if (timeToEatMinutes > 60) score *= 1.5; // Huge wall compared to 25m passing volume
+  if (natr > 1.0) score *= 1.2; // Bonus for high volatility coins
+  if (lifetimeSec > 300) score *= 1.2; // Bonus for proven walls (5+ mins old)
+  if (isMM) score *= 1.5; // Bonus for clustered MM levels
+
+  return score;
 }
 
 // In-memory cache (TTL: 3 seconds)
@@ -249,22 +254,13 @@ async function getKlinesWithStats(symbol) {
       high: toNumber(k[2]),
       low: toNumber(k[3]),
       close: toNumber(k[4]),
-      volume: toNumber(k[5])
+      volume: toNumber(k[7]) // Quote asset volume (USDT)
     })
 
-    const bars = klines.map(convert).reverse() // Binance returns oldest first; reverse => [newest, prev, oldest]
-
-    // Объёмы: vol1=newest (t), vol2=prev (t-1), vol3=oldest (t-2)
-    const vol1 = bars[0] ? bars[0].volume : 0 // newest (t)
-    const vol2 = bars[1] ? bars[1].volume : 0 // prev (t-1)
-    const vol3 = bars[2] ? bars[2].volume : 0 // oldest (t-2)
-    const vol4 = bars[3] ? bars[3].volume : 0
-    const vol5 = bars[4] ? bars[4].volume : 0
+    const bars = klines.map(convert) // Binance returns oldest first
 
     // Расчёт ATR (Average True Range)
     // True Range = max(high - low, |high - prev_close|, |low - prev_close|)
-    if (bars.length < 5) return { vol1, vol2, vol3, vol4, vol5, natr: 0 }
-
     const trValues = []
     for (let i = 1; i < bars.length; i++) {
       const highLow = bars[i].high - bars[i].low
@@ -276,9 +272,20 @@ async function getKlinesWithStats(symbol) {
 
     // ATR = среднее по последним (period) TR
     const period = 14 // стандартный период ATR
-    const natrPeriod = Math.min(period, trValues.length)
+    const natrPeriod = Math.min(period, trValues.length > 0 ? trValues.length : 1)
     const atrValues = trValues.slice(-natrPeriod)
-    const natr = (atrValues.reduce((a, b) => a + b, 0) / natrPeriod)
+    const atr = (atrValues.reduce((a, b) => a + b, 0) / natrPeriod)
+
+    const latestClose = bars[bars.length - 1] ? bars[bars.length - 1].close : 0
+    const natr = latestClose > 0 ? (atr / latestClose) * 100 : 0
+
+    const revBars = [...bars].reverse() // [newest, prev, oldest...]
+    // Объёмы: vol1=newest (t), vol2=prev (t-1), vol3=oldest (t-2)
+    const vol1 = revBars[0] ? revBars[0].volume : 0 // newest (t)
+    const vol2 = revBars[1] ? revBars[1].volume : 0 // prev (t-1)
+    const vol3 = revBars[2] ? revBars[2].volume : 0 // oldest (t-2)
+    const vol4 = revBars[3] ? revBars[3].volume : 0
+    const vol5 = revBars[4] ? revBars[4].volume : 0
 
     return { vol1, vol2, vol3, vol4, vol5, natr }
 
@@ -426,47 +433,160 @@ fastify.get('/densities/simple', async (req) => {
         ? percentile(clusterNotionals, 50)
         : (clusterNotionals.length > 0 ? percentile(clusterNotionals, 50) : (finalBaseAll || 50000))
 
-      // === ПЕРЕСЧЁТ x ДЛЯ КАЖДОГО УРОВНЯ ===
-      // Для каждого уровня считаем, к какому кластеру он относится
-      const levelsWithX = levels.map(level => {
-        // Находим ближайший кластер для этого уровня
-        let bestCluster = null
-        let minDist = Infinity
+      // === ГРУППИРОВКА УРОВНЕЙ В UI-КЛАСТЕРЫ (OPTION 1) ===
+      const CLUSTER_UI_GAP_PCT = 0.5
+      const uiGroupedLevels = []
+      let currentGroup = []
 
-        validClusters.forEach(cluster => {
-          cluster.forEach(cLevel => {
-            const dist = Math.abs(level.price - cLevel.price) / cLevel.price * 100
-            if (dist < minDist) {
-              minDist = dist
-              bestCluster = cluster
-            }
-          })
-        })
+      for (let i = 0; i < levels.length; i++) {
+        const lvl = levels[i]
+        if (currentGroup.length === 0) {
+          currentGroup.push(lvl)
+        } else {
+          const frontPrice = currentGroup[0].price
+          const dist = Math.abs(lvl.price - frontPrice) / frontPrice * 100
+          if (dist <= CLUSTER_UI_GAP_PCT) {
+            currentGroup.push(lvl)
+          } else {
+            uiGroupedLevels.push(currentGroup)
+            currentGroup = [lvl]
+          }
+        }
+      }
+      if (currentGroup.length > 0) {
+        uiGroupedLevels.push(currentGroup)
+      }
 
-        // Считаем totalNotional кластера
-        const clusterTotalNotional = bestCluster
-          ? bestCluster.reduce((sum, l) => sum + l.notional, 0)
-          : level.notional
+      // Превращаем группы в единичные "плотности"
+      const levelsWithX = uiGroupedLevels.map(group => {
+        const frontLevel = group[0]
+        const sumNotional = group.reduce((sum, l) => sum + l.notional, 0)
 
-        // x = level.notional / mmBase (для каждого уровня)
-        const x = mmBase > 0 ? level.notional / mmBase : 0
-        const mmCount = bestCluster ? bestCluster.length : 1
+        // Считаем x для суммарного объема
+        const x = mmBase > 0 ? sumNotional / mmBase : 0
+        const mmCount = group.length
 
-        return { ...level, x, mmCount }
+        return {
+          ...frontLevel,
+          notional: sumNotional,
+          x,
+          mmCount,
+          isUiCluster: mmCount > 1
+        }
       })
 
-      // Вычисляем score и сортируем
+      // ============================================
+      // Вычисляем Time To Eat, историю (Touches), Score и сортируем
+      // ============================================
+      const now = Date.now()
+      const isBid = sideKey === 'bid'
+
+      const totalVol = klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5
+      const avgVolPerMin = totalVol / 25
+
       const scoredLevels = levelsWithX.map(level => {
-        const score = calcScore({ notional: level.notional, distancePct: level.distancePct, isMM: false })
-        return { ...level, score }
+        const cacheKey = `${sym}:${isBid ? 'BID' : 'ASK'}:${level.price}`
+        let history = levelHistory.get(cacheKey)
+        let isMoved = false
+
+        if (!history) {
+          // Проверяем: ищем этот же кластер по старой цене (если цена сдвинулась)
+          for (const [k, v] of levelHistory.entries()) {
+            if (k.startsWith(`${sym}:${isBid ? 'BID' : 'ASK'}`)) {
+              const oldPrice = parseFloat(k.split(':')[2])
+              const dist = Math.abs(level.price - oldPrice) / oldPrice * 100
+              // Кластеры у нас шириной 0.5%, поэтому если старая цена в пределах 0.5% - это тот же кластер
+              if (dist < 0.5 && (now - v.lastUpdate) > 1000) {
+                isMoved = true
+                history = { ...v, lastUpdate: now, state: 'MOVED' }
+                levelHistory.delete(k)
+                break
+              }
+            }
+          }
+
+          if (!history) {
+            history = {
+              firstSeen: now,
+              lastUpdate: now,
+              maxNotional: level.notional,
+              touches: 0,
+              isCurrentlyTouching: false,
+              state: 'APPEARED'
+            }
+          }
+        } else {
+          history.lastUpdate = now
+          if (level.notional > history.maxNotional) {
+            history.maxNotional = level.notional
+          }
+
+          // Логика Касаний (Touches)
+          if (level.distancePct <= 0.15) {
+            history.isCurrentlyTouching = true
+          } else {
+            if (history.isCurrentlyTouching) {
+              history.touches = (history.touches || 0) + 1
+              history.isCurrentlyTouching = false
+            }
+          }
+
+          if (level.notional < history.maxNotional * 0.95 && history.state !== 'MOVED') {
+            history.state = 'UPDATED' // объем съедают
+          } else {
+            if (history.state !== 'MOVED') history.state = 'APPEARED'
+          }
+        }
+        levelHistory.set(cacheKey, history)
+
+        const lifetimeSec = Math.floor((now - history.firstSeen) / 1000)
+        let eatSpeed = 0
+        if (lifetimeSec > 3) {
+          eatSpeed = (history.maxNotional - level.notional) / lifetimeSec
+        }
+
+        const timeToEatMinutes = avgVolPerMin > 0 ? (level.notional / avgVolPerMin) : Infinity
+
+        const score = calcScore({
+          notional: level.notional,
+          distancePct: level.distancePct,
+          isMM: level.mmCount > 1,
+          timeToEatMinutes,
+          natr: klinesStats.natr,
+          lifetimeSec
+        })
+
+        // Telegram Alerts
+        if (score >= 5.0 && level.distancePct <= 0.3 && history.state !== 'MOVED') {
+          if (!history.alerted || (now - history.alerted) > 300000) { // раз в 5 минут на уровень
+            const sideIcon = isBid ? '🟢' : '🔴'
+            sendTelegramAlert(`🚨 <b>${sym}</b> ${sideIcon} ${isBid ? 'LONG (BID)' : 'SHORT (ASK)'}
+Цена: <b>${level.price}</b>
+Дистанция: <b>${level.distancePct.toFixed(2)}%</b>
+Объем: <b>$${(level.notional / 1000000).toFixed(2)}M</b>
+Score: <b>${score.toFixed(1)}</b>`)
+            history.alerted = now
+          }
+        }
+
+        return {
+          ...level,
+          score,
+          lifetimeSec,
+          timeToEatMinutes,
+          touches: history.touches || 0,
+          state: history.state,
+          maxNotional: history.maxNotional,
+          eatSpeed: Math.max(0, Math.floor(eatSpeed))
+        }
       }).sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score
         if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct
         return b.notional - a.notional
       })
 
-      // Берём top-N (настраиваемый через depthLimit)
-      const topN = scoredLevels.slice(0, depthLimit)
+      // Оставляем только 1 лучший кластер на каждую сторону для монеты, чтобы не спамить таблицу
+      const topN = scoredLevels.slice(0, 1)
 
       return {
         sym,
@@ -478,114 +598,34 @@ fastify.get('/densities/simple', async (req) => {
           ...l,
           score: Math.round(l.score * 10000) / 10000,
           mmBase: mmBase,
-          sideKey
+          sideKey,
+          symbol: sym,
+          natr: klinesStats.natr,
+          vol1: klinesStats.vol1,
+          vol2: klinesStats.vol2,
+          vol3: klinesStats.vol3,
+          vol4: klinesStats.vol4,
+          vol5: klinesStats.vol5,
+          mmBaseBid: sideKey === 'bid' ? mmBase : undefined,
+          mmBaseAsk: sideKey === 'ask' ? mmBase : undefined,
         }))
-      }
-    }
+      };
+    };
 
-    const bidResult = processSide(bidLevels, 'bid')
-    const askResult = processSide(askLevels, 'ask')
+    const bidResult = processSide(bidLevels, 'bid');
+    const askResult = processSide(askLevels, 'ask');
 
-    // Сохраняем sym для всех уровней этого символа
-    const symVal = bidResult.sym
-
-    return [...bidResult.levels, ...askResult.levels].map(level => {
-      const isBid = level.sideKey === 'bid'
-      const cacheKey = `${symVal}:${isBid ? 'BID' : 'ASK'}:${level.price}`
-      const now = Date.now()
-      let history = levelHistory.get(cacheKey)
-      let isMoved = false
-
-      if (!history) {
-        // Проверяем MOVED: ищем старые уровни для того же символа/стороны
-        for (const [k, v] of levelHistory.entries()) {
-          if (k.startsWith(`${symVal}:${isBid ? 'BID' : 'ASK'}`)) {
-            const oldPrice = parseFloat(k.split(':')[2])
-            const dist = Math.abs(level.price - oldPrice) / oldPrice * 100
-            const volDiff = Math.abs(level.notional - v.maxNotional) / v.maxNotional
-
-            // Если дистанция < 0.2%, объем совпадает на 85%, и старый уровень давно не обновлялся
-            if (dist < 0.2 && dist > 0 && volDiff < 0.15 && (now - v.lastUpdate) > 1000) {
-              isMoved = true
-              history = { ...v, lastUpdate: now, state: 'MOVED' }
-              levelHistory.delete(k) // переносим историю на новый ключ
-              break
-            }
-          }
-        }
-
-        if (!history) {
-          history = {
-            firstSeen: now,
-            lastUpdate: now,
-            maxNotional: level.notional,
-            state: 'APPEARED'
-          }
-        }
-      } else {
-        history.lastUpdate = now
-        if (level.notional > history.maxNotional) {
-          history.maxNotional = level.notional
-        }
-        if (level.notional < history.maxNotional * 0.95 && history.state !== 'MOVED') {
-          history.state = 'UPDATED' // объем съедают
-        }
-      }
-
-      levelHistory.set(cacheKey, history)
-
-      const lifetimeSec = (now - history.firstSeen) / 1000
-      let eatSpeed = 0
-      if (lifetimeSec > 3) {
-        eatSpeed = (history.maxNotional - level.notional) / lifetimeSec
-      }
-
-      // Telegram Alerts
-      if (level.score >= 5.0 && level.distancePct <= 0.3 && history.state !== 'MOVED') {
-        if (!history.alerted || (now - history.alerted) > 300000) { // раз в 5 минут на уровень
-          const sideIcon = isBid ? '🟢' : '🔴'
-          sendTelegramAlert(`🚨 <b>${symVal}</b> ${sideIcon} ${isBid ? 'LONG (BID)' : 'SHORT (ASK)'}
-Цена: <b>${level.price}</b>
-Дистанция: <b>${level.distancePct.toFixed(2)}%</b>
-Объем: <b>$${(level.notional / 1000000).toFixed(2)}M</b>
-Score: <b>${level.score.toFixed(1)}</b>`)
-          history.alerted = now
-        }
-      }
-
-      return {
-        ...level,
-        symbol: symVal,
-        natr: klinesStats.natr,
-        vol1: klinesStats.vol1,
-        vol2: klinesStats.vol2,
-        vol3: klinesStats.vol3,
-        vol4: klinesStats.vol4,
-        vol5: klinesStats.vol5,
-        mmBaseBid: bidResult.mmBase,
-        mmBaseAsk: askResult.mmBase,
-        lifetimeSec: Math.floor(lifetimeSec),
-        eatSpeed: Math.max(0, Math.floor(eatSpeed)),
-        state: history.state
-      }
-    })
-  })
+    // Теперь нам не нужен второй мап, мы всё сделали внутри processSide!
+    return [...bidResult.levels, ...askResult.levels];
+  });
 
   // Получаем все уровни (без фильтрации по x)
   const allLevels = rowsArr.flat()
 
-  // Фильтрация символов — показываем только те, у которых есть уровни с x >= xFilter (если xFilter > 0)
+  // Фильтрация уровней — показываем только те плотности, у которых x >= xFilter
   let finalData = allLevels
   if (xFilter > 0) {
-    // Группируем по symbol и проверяем, есть ли у каждого символа хотя бы один уровень с x >= xFilter
-    const symbolsWithHighX = new Set()
-    allLevels.forEach(d => {
-      if (d.x >= xFilter) {
-        symbolsWithHighX.add(d.symbol)
-      }
-    })
-    // Оставляем только уровни из символов, у которых есть высокий x
-    finalData = allLevels.filter(d => symbolsWithHighX.has(d.symbol))
+    finalData = allLevels.filter(d => d.x >= xFilter)
   }
 
   // Фильтрация по NATR (если natrFilter > 0, показываем только уровни с natr >= natrFilter%)

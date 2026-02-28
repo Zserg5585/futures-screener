@@ -16,7 +16,11 @@
 <body>
     <!-- Header -->
     <header class="top">
-        <div class="brand">Futures Screener</div>
+        <div class="brand">
+            <button id="toggleFiltersBtn" class="btn-icon" title="Toggle Filters"
+                style="background:none; border:none; color:var(--text-secondary); font-size:20px; cursor:pointer; margin-right:10px; vertical-align:middle;">⚙️</button>
+            <span style="vertical-align:middle;">Futures Screener</span>
+        </div>
         <div class="tabs">
             <button class="tab active" data-tab="densities">Densities</button>
             <button class="tab" data-tab="mini-charts">Mini-Charts</button>
@@ -28,36 +32,17 @@
     </header>
 
     <div class="layout">
-        <aside class="sidebar">
-            <div class="filter-group">
-                <label>
-                    <span>Min Notional ($)</span>
-                    <input id="minNotional" type="number" value="0" min="0" step="1000" />
-                </label>
-                <label>
-                    <span>Min Score</span>
-                    <input id="minScore" type="number" value="0" min="0" step="1" />
-                </label>
-                <label>
-                    <span>Window %</span>
-                    <input id="windowPct" type="number" value="5.0" min="0.1" step="0.1" />
-                </label>
-                <label>
-                    <span>Depth Limit</span>
-                    <input id="depthLimit" type="number" value="100" min="10" max="1000" step="10" />
-                </label>
-                <label>
-                    <span>Symbols (empty = all)</span>
-                    <input id="symbols" type="text" placeholder="BTCUSDT,ETHUSDT" />
-                </label>
-                <label>
-                    <span>Concurrency</span>
-                    <input id="concurrency" type="number" value="6" min="1" max="20" />
-                </label>
+        <!-- Overlay Sidebar (Mobile & Desktop) -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header"
+                style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 24px; border-bottom: 1px solid var(--glass-border); padding-bottom: 15px;">
+                <h3 style="margin:0; font-size:16px; font-weight: 600;">Settings & Filters</h3>
+                <button id="closeFiltersBtn"
+                    style="background:none; border:none; color:var(--text-secondary); font-size:24px; cursor:pointer;">&times;</button>
             </div>
             <div class="filter-group">
                 <label>
-                    <span>x Filter</span>
+                    <span>x Filter (Multiplier)</span>
                     <select id="xFilter">
                         <option value="0">Any (no filter)</option>
                         <option value="2">x2+</option>
@@ -67,7 +52,7 @@
                     </select>
                 </label>
                 <label>
-                    <span>NATR % Filter</span>
+                    <span>Volatility (NATR %)</span>
                     <select id="natrFilter">
                         <option value="0" selected>Any (no filter)</option>
                         <option value="1">NATR >= 1%</option>
@@ -76,15 +61,19 @@
                         <option value="5">NATR >= 5%</option>
                     </select>
                 </label>
+                <label>
+                    <span>Blacklist (comma separated)</span>
+                    <input id="blacklist" type="text" placeholder="BTCUSDT, ETHUSDT" />
+                </label>
             </div>
             <div class="filter-group">
                 <label class="checkbox">
-                    <input id="onlyMM" type="checkbox" />
-                    <span>Only MM (mmCount > 1)</span>
+                    <input id="hideSqueezes" type="checkbox" />
+                    <span>Hide Squeezes (MM) 🚫</span>
                 </label>
                 <label class="checkbox">
                     <input id="auto" type="checkbox" />
-                    <span>Auto-refresh</span>
+                    <span>Auto-refresh ⏱</span>
                 </label>
                 <div class="interval-control">
                     <select id="interval">
@@ -94,9 +83,10 @@
                     </select>
                 </div>
             </div>
-            <div class="filter-group">
-                <button id="refreshBtn" class="btn-primary">Refresh</button>
-                <button id="resetBtn" class="btn-secondary">Reset</button>
+            <div class="filter-group" style="margin-top: 30px;">
+                <button id="refreshBtn" class="btn-primary"
+                    style="width:100%; margin-bottom:10px; font-weight:600; font-size:14px; padding:10px;">Apply &
+                    Refresh</button>
             </div>
         </aside>
 
@@ -113,8 +103,9 @@
                             <th>Vol 5x5m</th>
                             <th class="sortable" data-sort="natr">NATR</th>
                             <th class="sortable" data-sort="score">Score</th>
+                            <th class="sortable" data-sort="age">Age</th>
                             <th class="sortable" data-sort="state">Status</th>
-                            <th class="sortable" data-sort="speed">Eat Speed</th>
+                            <th class="sortable" data-sort="speed">Time to Eat</th>
                             <th></th>
                         </tr>
                     </thead>

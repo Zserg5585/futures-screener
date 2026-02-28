@@ -144,16 +144,27 @@ body {
     min-height: calc(100vh - 54px);
 }
 
-/* Sidebar (Desktop) */
+/* Sidebar (Overlay on all screens) */
 .sidebar {
-    width: 280px;
+    position: fixed;
+    top: 0;
+    left: -320px;
+    width: 320px;
+    height: 100vh;
     padding: 20px;
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    background: rgba(10, 15, 25, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
     border-right: 1px solid var(--glass-border);
-    display: none;
+    z-index: 1000;
+    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.5);
     overflow-y: auto;
+    display: block !important;
+}
+
+.sidebar.open {
+    left: 0;
 }
 
 /* Volume Indicator */
@@ -546,12 +557,9 @@ body {
 }
 
 @media screen and (max-width: 900px) {
-    .sidebar {
-        display: none;
-    }
-
     .btn-filters {
-        display: block;
+        display: none !important;
+        /* Hide old bottom filter button */
     }
 
     .layout {
@@ -680,7 +688,5 @@ body {
 }
 
 @media screen and (min-width: 901px) {
-    .sidebar {
-        display: block;
-    }
+    /* Main left padding is no longer needed since sidebar is overlay */
 }

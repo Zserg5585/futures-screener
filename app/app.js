@@ -24,12 +24,8 @@ const CONFIG = {
 
 // State
 let state = {
-    minNotional: 0,
-    windowPct: 5.0,
-    depthLimit: 100,
-    minScore: 0, // фильтр по Score
-    symbols: '',
-    concurrency: 6,
+    blacklist: '', // Список монет для исключения
+    hideSqueezes: false, // скрывать маркет-мейкеров (Squeeze)
     xFilter: 4,
     natrFilter: 0,
     interval: CONFIG.DEFAULT_INTERVAL,
@@ -61,36 +57,14 @@ function init() {
 
 function setupEventListeners() {
     // Controls
-    el('minNotional').addEventListener('input', (e) => {
-        state.minNotional = Number(e.target.value)
-        loadDensities()
+    el('blacklist').addEventListener('input', (e) => {
+        state.blacklist = e.target.value.toUpperCase()
+        if (state.cache.data) renderDensities(state.cache.data)
     })
 
-    if (el('minScore')) {
-        el('minScore').addEventListener('input', (e) => {
-            state.minScore = Number(e.target.value)
-            loadDensities()
-        })
-    }
-
-    el('windowPct').addEventListener('input', (e) => {
-        state.windowPct = Number(e.target.value)
-        loadDensities()
-    })
-
-    el('depthLimit').addEventListener('input', (e) => {
-        state.depthLimit = Number(e.target.value)
-        loadDensities()
-    })
-
-    el('symbols').addEventListener('input', (e) => {
-        state.symbols = e.target.value
-        loadDensities()
-    })
-
-    el('concurrency').addEventListener('input', (e) => {
-        state.concurrency = Number(e.target.value)
-        loadDensities()
+    el('hideSqueezes').addEventListener('change', (e) => {
+        state.hideSqueezes = e.target.checked
+        if (state.cache.data) renderDensities(state.cache.data)
     })
 
     el('interval').addEventListener('change', (e) => {
@@ -111,19 +85,6 @@ function setupEventListeners() {
         }
     })
 
-    // Only MM checkbox
-    el('onlyMM').addEventListener('change', (e) => {
-        state.onlyMM = e.target.checked
-        loadDensities()
-    })
-
-    // Reset button
-    el('resetBtn').addEventListener('click', () => {
-        state.cache.data = null
-        el('tbody').innerHTML = `<tr><td colspan="16" class="muted">No data available</td></tr>`
-        el('state').textContent = 'Загружаем...'
-    })
-
     // x Filter selector
     el('xFilter').addEventListener('change', (e) => {
         state.xFilter = Number(e.target.value)
@@ -137,47 +98,25 @@ function setupEventListeners() {
     })
 
     // Refresh button
-    el('refreshBtn').addEventListener('click', () => {
-        loadDensities(true) // force refresh
-    })
+    if (el('refreshBtn')) {
+        el('refreshBtn').addEventListener('click', () => {
+            loadDensities(true) // force refresh
+            if (el('sidebar').classList.contains('open')) {
+                el('sidebar').classList.remove('open')
+            }
+        })
+    }
 
-    // Modal controls (mobile)
-    if (el('filterToggle') && el('filterModal')) {
-        el('filterToggle').addEventListener('click', () => {
-            el('modalMinNotional').value = state.minNotional
-            el('modalMinScore').value = state.minScore
-            el('modalWindowPct').value = state.windowPct
-            el('modalDepthLimit').value = state.depthLimit
-            el('modalSymbols').value = state.symbols
-            el('modalConcurrency').value = state.concurrency
-            el('modalNatrFilter').value = state.natrFilter
-            el('filterModal').classList.remove('hidden')
+    // Sidebar overlay toggle
+    if (el('toggleFiltersBtn') && el('sidebar')) {
+        el('toggleFiltersBtn').addEventListener('click', () => {
+            el('sidebar').classList.add('open')
         })
-        el('modalClose').addEventListener('click', () => {
-            el('filterModal').classList.add('hidden')
-        })
-        el('modalClear').addEventListener('click', () => {
-            el('modalMinNotional').value = CONFIG.DEFAULT_MIN_NOTIONAL
-            if (el('modalMinScore')) el('modalMinScore').value = 0
-            el('modalWindowPct').value = 5.0
-            el('modalDepthLimit').value = 100
-            el('modalSymbols').value = ''
-            el('modalConcurrency').value = 6
-            el('modalNatrFilter').value = 0
-            el('xFilter').value = 4
-        })
-        el('modalApply').addEventListener('click', () => {
-            state.minNotional = Number(el('modalMinNotional').value)
-            if (el('modalMinScore')) state.minScore = Number(el('modalMinScore').value)
-            state.windowPct = Number(el('modalWindowPct').value)
-            state.depthLimit = Number(el('modalDepthLimit').value)
-            state.symbols = el('modalSymbols').value
-            state.concurrency = Number(el('modalConcurrency').value)
-            state.natrFilter = Number(el('modalNatrFilter').value)
-            updateControlsFromState()
-            el('filterModal').classList.add('hidden')
-            loadDensities()
-        })
+        if (el('closeFiltersBtn')) {
+            el('closeFiltersBtn').addEventListener('click', () => {
+                el('sidebar').classList.remove('open')
+            })
+        }
     }
 
     // Вкладки (tabs)
@@ -221,31 +160,20 @@ function setupEventListeners() {
 }
 
 function updateControlsFromState() {
-    el('minNotional').value = state.minNotional
-    if (el('minScore')) el('minScore').value = state.minScore
-    el('windowPct').value = state.windowPct
-    el('depthLimit').value = state.depthLimit
-    el('symbols').value = state.symbols
-    el('concurrency').value = state.concurrency
+    if (el('blacklist')) el('blacklist').value = state.blacklist
+    if (el('hideSqueezes')) el('hideSqueezes').checked = state.hideSqueezes
     el('interval').value = state.interval
     el('auto').checked = state.autoRefresh
-    el('onlyMM').checked = state.onlyMM || true
     el('xFilter').value = state.xFilter || 0
     el('natrFilter').value = state.natrFilter || 0
 }
 
 function getCacheKey() {
     return JSON.stringify({
-        minNotional: state.minNotional,
-        minScore: state.minScore,
-        windowPct: state.windowPct,
-        depthLimit: state.depthLimit,
-        symbols: state.symbols,
-        concurrency: state.concurrency,
         xFilter: state.xFilter,
         natrFilter: state.natrFilter,
-        onlyMM: state.onlyMM || false,
         interval: state.interval
+        // blacklist and hideSqueezes apply locally, so they don't invalidate cache
     })
 }
 
@@ -289,19 +217,16 @@ async function loadDensities(forceRefresh = false) {
 
         // Build query params
         const params = new URLSearchParams({
-            minNotional: state.minNotional,
-            minScore: state.minScore,
-            windowPct: state.windowPct,
-            depthLimit: state.depthLimit,
+            minNotional: 0,
+            minScore: 0,
+            windowPct: 5.0,
+            depthLimit: 100,
             xFilter: state.xFilter,
             natrFilter: state.natrFilter,
-            concurrency: state.concurrency,
-            mmMode: state.onlyMM ? 'true' : 'false'
+            concurrency: 6,
+            mmMode: 'false' // backend handles clustering logic natively
         })
-        if (state.symbols && state.symbols.trim() !== '') {
-            params.set('symbols', state.symbols.trim())
-        }
-        const url = `${CONFIG.API_BASE_URL}?${params.toString()}`
+        const url = `${CONFIG.API_BASE_URL}?${params.toString()}&_t=${Date.now()}`
 
         // Fetch data
         const response = await fetch(url)
@@ -334,8 +259,8 @@ async function loadDensities(forceRefresh = false) {
     }
 }
 
-// Функция для индикатора объемов (3 свечи по 5 минут)
-function renderVolIndicator(vol1, vol2, vol3, density) {
+// Функция для индикатора объемов (5 свечей по 5 минут)
+function renderVolIndicator(vol1, vol2, vol3, vol4, vol5, density) {
     const getColor = (v) => {
         if (!v || !density) return 'low';
         if (v >= density * 0.5) return 'high';
@@ -343,9 +268,11 @@ function renderVolIndicator(vol1, vol2, vol3, density) {
         return 'low';
     };
 
-    // vol1 - самая новая свеча. Слева показываем самую старую (vol3), справа - самую новую (vol1)
+    // vol1 - самая новая свеча. Слева показываем самую старую (vol5), справа - самую новую (vol1)
     return `
-        <div class="vol-indicator" title="Объемы (старые -> новые): ${formatNotional(vol3)} | ${formatNotional(vol2)} | ${formatNotional(vol1)}">
+        <div class="vol-indicator" title="Объемы (старые -> новые): ${formatNotional(vol5)} | ${formatNotional(vol4)} | ${formatNotional(vol3)} | ${formatNotional(vol2)} | ${formatNotional(vol1)}">
+            <div class="vol-block ${getColor(vol5)}"></div>
+            <div class="vol-block ${getColor(vol4)}"></div>
             <div class="vol-block ${getColor(vol3)}"></div>
             <div class="vol-block ${getColor(vol2)}"></div>
             <div class="vol-block ${getColor(vol1)}"></div>
@@ -370,7 +297,8 @@ function renderTable(entries) {
 
         let fieldMap = state.sortField
         if (fieldMap === 'distance') fieldMap = 'distancePct'
-        if (fieldMap === 'speed') fieldMap = 'eatSpeed'
+        if (fieldMap === 'speed') fieldMap = 'timeToEatMinutes'
+        if (fieldMap === 'age') fieldMap = 'lifetimeSec'
 
         const valA = a[fieldMap] || 0
         const valB = b[fieldMap] || 0
@@ -381,28 +309,60 @@ function renderTable(entries) {
     const rows = sorted.map(entry => {
         const symbol = entry.symbol
         const inWatchlist = isSymbolInWatchlist(symbol)
-        const isMM = (entry.mmCount || 0) > 1
 
-        let stateDot = '<span style="color:#10b981;">●</span> APPEARED' // green
-        if (entry.state === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED' // yellow
-        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED' // red
-        if (entry.state === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING' // blue
+        if (entry.isSqueeze) {
+            const sideBlock = '<span style="color:#a855f7; font-weight:600; background:rgba(168,85,247,0.1); padding:4px 8px; border-radius:6px; border: 1px solid rgba(168,85,247,0.3);">MARKET MAKER</span>'
+            const distBlock = `<span style="color:var(--neon-green)">${formatPercent(entry.bid.distancePct)}</span> / <span style="color:var(--neon-red)">${formatPercent(entry.ask.distancePct)}</span>`
+            const volBlock = `<span style="color:var(--neon-green)">${formatNotional(entry.bid.notional)}</span> / <span style="color:var(--neon-red)">${formatNotional(entry.ask.notional)}</span>`
+
+            const maxEntry = entry.bid.notional > entry.ask.notional ? entry.bid : entry.ask
+            const vol5x5m = renderVolIndicator(maxEntry.vol1, maxEntry.vol2, maxEntry.vol3, maxEntry.vol4, maxEntry.vol5, entry.notional)
+
+            return `
+            <tr class="isMM" style="background: rgba(168,85,247, 0.05);">
+                <td class="sym">${symbol}</td>
+                <td>${sideBlock}</td>
+                <td style="font-size: 13px;">${distBlock}</td>
+                <td style="font-family: monospace; font-size: 13px;">${volBlock}</td>
+                <td>${vol5x5m}</td>
+                <td class="natr">${(maxEntry.natr || 0) > 0 ? maxEntry.natr.toFixed(2) + '%' : '—'}</td>
+                <td class="score" style="color:#a855f7; font-weight:600;">${(entry.score || 0).toFixed(4)}</td>
+                <td style="font-family: monospace; color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</td>
+                <td class="state-cell"><span style="color:#a855f7;">↕️</span> Squeeze</td>
+                <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
+                <td class="watchlist-btn">
+                    <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
+                        ${inWatchlist ? '⭐' : '☆'}
+                    </button>
+                </td>
+            </tr>
+            `
+        }
+
+        const isMM = (entry.mmCount || 0) > 1
+        let touchesText = entry.touches > 0 ? ` (${entry.touches})` : ''
+        let stateDot = '<span style="color:#10b981;">🛡️</span> Untouched'
+        if (entry.touches > 0) stateDot = `<span style="color:#f59e0b;">⚠️</span> Touch${touchesText}`
+        if (entry.state === 'UPDATED') stateDot = `<span style="color:#ef4444;">⚔️</span> Eating${touchesText}`
+        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">❌</span> MOVED'
 
         const sideBlock = entry.side === 'bid'
             ? '<span style="color:var(--neon-green); font-weight:600;">LONG (BID)</span>'
             : '<span style="color:var(--neon-red); font-weight:600;">SHORT (ASK)</span>'
+        const clusterBadge = isMM ? `<br><span style="font-size:10px; color:#fcd34d; background:rgba(251,191,36,0.1); padding:2px 4px; border-radius:4px; display:inline-block; margin-top:4px;">⛓️ Cluster (${entry.mmCount})</span>` : ''
 
         return `
         <tr class="${isMM ? 'isMM' : ''}">
             <td class="sym">${symbol}</td>
-            <td>${sideBlock}</td>
+            <td>${sideBlock}${clusterBadge}</td>
             <td>${formatPercent(entry.distancePct)}</td>
             <td style="font-family: monospace; font-size: 14px;">${formatNotional(entry.notional)}</td>
             <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</td>
             <td class="natr">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</td>
             <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(4)}</td>
+            <td style="font-family: monospace; color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</td>
             <td class="state-cell">${stateDot}</td>
-            <td style="font-family: monospace;">${formatNotional(entry.eatSpeed || 0)}/s</td>
+            <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
             <td class="watchlist-btn">
                 <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
                     ${inWatchlist ? '⭐' : '☆'}
@@ -417,9 +377,54 @@ function renderTable(entries) {
 
 // Render table
 function renderDensities(entries) {
+    if (!entries) return
+
+    // === ОБЪЕДИНЕНИЕ В SQUEEZE (МАРКЕТ-МЕЙКЕР) ===
+    const grouped = {}
+    entries.forEach(e => {
+        if (!grouped[e.symbol]) grouped[e.symbol] = { bid: null, ask: null }
+        grouped[e.symbol][e.side] = e
+    })
+
+    const mergedEntries = []
+    for (const sym in grouped) {
+        const { bid, ask } = grouped[sym]
+        if (bid && ask) {
+            mergedEntries.push({
+                isSqueeze: true,
+                symbol: sym,
+                bid,
+                ask,
+                score: Math.max(bid.score || 0, ask.score || 0),
+                notional: bid.notional + ask.notional,
+                distancePct: Math.min(bid.distancePct, ask.distancePct),
+                lifetimeSec: Math.min(bid.lifetimeSec, ask.lifetimeSec),
+                timeToEatMinutes: Math.min(bid.timeToEatMinutes, ask.timeToEatMinutes)
+            })
+        } else {
+            mergedEntries.push({ isSqueeze: false, ...(bid || ask) })
+        }
+    }
+
+    // Применяем локальные фильтры (Blacklist и HideSqueezes)
+    let finalEntries = mergedEntries
+
+    if (state.hideSqueezes) {
+        finalEntries = finalEntries.filter(e => !e.isSqueeze)
+    }
+
+    if (state.blacklist && state.blacklist.trim() !== '') {
+        const blacklistArray = state.blacklist.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+        if (blacklistArray.length > 0) {
+            finalEntries = finalEntries.filter(e => !blacklistArray.some(b => e.symbol.includes(b)))
+        }
+    }
+
     // Авто-определение mobile/desktop
     const isMobile = window.innerWidth <= 768 || /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-    console.log('renderDensities:', isMobile, 'entries:', entries?.length)
+    console.log('renderDensities:', isMobile, 'entries:', finalEntries.length)
+
+    entries = finalEntries
 
     const cardsContainer = el('cardsContent')
     const tableContainer = el('table-container')
@@ -481,6 +486,27 @@ function formatNotional(value) {
     }).format(value)
 }
 
+function formatTimeToEat(minutes) {
+    if (!minutes || minutes === Infinity) return '∞'
+    if (minutes < 60) return `${Math.floor(minutes)}m`
+    const hours = Math.floor(minutes / 60)
+    const mins = Math.floor(minutes % 60)
+    if (hours < 24) return `${hours}h ${mins}m`
+    const days = Math.floor(hours / 24)
+    return `${days}d ${hours % 24}h`
+}
+
+function formatAge(seconds) {
+    if (seconds == null || isNaN(seconds)) return '—'
+    if (seconds < 60) return `${seconds}s`
+    const mins = Math.floor(seconds / 60)
+    if (mins < 60) return `${mins}m ${seconds % 60}s`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ${mins % 60}m`
+    const days = Math.floor(hours / 24)
+    return `${days}d ${hours % 24}h`
+}
+
 // Render cards (mobile)
 function renderCards(entries) {
     const container = el('cardsContent')
@@ -493,7 +519,8 @@ function renderCards(entries) {
     const sorted = [...entries].sort((a, b) => {
         let fieldMap = state.sortField
         if (fieldMap === 'distance') fieldMap = 'distancePct'
-        if (fieldMap === 'speed') fieldMap = 'eatSpeed'
+        if (fieldMap === 'speed') fieldMap = 'timeToEatMinutes'
+        if (fieldMap === 'age') fieldMap = 'lifetimeSec'
         const valA = a[fieldMap] || 0
         const valB = b[fieldMap] || 0
         return state.sortAsc ? (valA - valB) : (valB - valA)
@@ -501,13 +528,50 @@ function renderCards(entries) {
 
     const cards = sorted.map(entry => {
         const symbol = entry.symbol
-        const isMM = (entry.mmCount || 0) > 1
         const inWatchlist = isSymbolInWatchlist(symbol)
 
-        let stateDot = '<span style="color:#10b981;">●</span> APPEARED'
-        if (entry.state === 'UPDATED') stateDot = '<span style="color:#f59e0b;">●</span> UPDATED'
-        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">●</span> MOVED'
-        if (entry.state === 'STANDING') stateDot = '<span style="color:#3b82f6;">●</span> STANDING'
+        if (entry.isSqueeze) {
+            const sideIcon = '↕️ MARKET MAKER'
+            const maxEntry = entry.bid.notional > entry.ask.notional ? entry.bid : entry.ask
+
+            return `
+            <div class="card isMM" data-symbol="${symbol}" style="border: 1px solid rgba(168,85,247,0.3); background: rgba(168,85,247, 0.05)">
+                <div class="card-header">
+                    <div>
+                        <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol}</a>
+                        <span class="mm-badge active" style="background:rgba(168,85,247,0.2); color:#cb88ff; border-color:#a855f7">Squeeze</span>
+                        <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="card-row isMM">
+                        <span class="label" style="color:#cb88ff; font-weight:600">${sideIcon}</span>
+                        <span class="value">
+                            <span style="color:var(--neon-green)">${formatPercent(entry.bid.distancePct)}</span> / <span style="color:var(--neon-red)">${formatPercent(entry.ask.distancePct)}</span>
+                        </span>
+                        <span class="notional" style="font-size:12px; margin-left: 10px;">B: ${formatNotional(entry.bid.notional)} / A: ${formatNotional(entry.ask.notional)}</span>
+                    </div>
+                    <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                        <span class="label">Vol Indicator:</span>
+                        <span class="value">${renderVolIndicator(maxEntry.vol1, maxEntry.vol2, maxEntry.vol3, maxEntry.vol4, maxEntry.vol5, entry.notional)}</span>
+                    </div>
+                    <div class="card-row" style="margin-top:4px;">
+                        <span class="label">NATR:</span>
+                        <span class="value">${(maxEntry.natr || 0) > 0 ? maxEntry.natr.toFixed(2) + '%' : '—'}</span>
+                        <span class="label" style="margin-left:10px">Score:</span>
+                        <span class="value" style="color:#cb88ff; font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
+                    </div>
+                </div>
+            </div>
+            `
+        }
+
+        const isMM = (entry.mmCount || 0) > 1
+        let touchesText = entry.touches > 0 ? ` (${entry.touches})` : ''
+        let stateDot = '<span style="color:#10b981;">🛡️</span> Untouched'
+        if (entry.touches > 0) stateDot = `<span style="color:#f59e0b;">⚠️</span> Touch${touchesText}`
+        if (entry.state === 'UPDATED') stateDot = `<span style="color:#ef4444;">⚔️</span> Eating${touchesText}`
+        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">❌</span> MOVED'
 
         const sideClass = entry.side === 'bid' ? 'bid' : 'ask'
         const sideIcon = entry.side === 'bid' ? '🔴 LONG (BID)' : '🟢 SHORT (ASK)'
@@ -517,7 +581,7 @@ function renderCards(entries) {
             <div class="card-header">
                 <div>
                     <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol}</a>
-                    <span class="mm-badge ${isMM ? 'active' : ''}">${isMM ? 'MM' : ''}</span>
+                    <span class="mm-badge ${isMM ? 'active' : ''}">${isMM ? `⛓️ Cluster (${entry.mmCount})` : ''}</span>
                     <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
                 </div>
                 <div style="font-size:12px; opacity:0.8">${stateDot}</div>
@@ -540,8 +604,12 @@ function renderCards(entries) {
                     <span class="value">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</span>
                     <span class="label" style="margin-left:10px">Score:</span>
                     <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
-                    <span class="label" style="margin-left:10px">Eat Speed:</span>
-                    <span class="value">${formatNotional(entry.eatSpeed || 0)}/s</span>
+                </div>
+                <div class="card-row" style="margin-top:4px;">
+                    <span class="label">Age:</span>
+                    <span class="value" style="color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</span>
+                    <span class="label" style="margin-left:10px">Time To Eat:</span>
+                    <span class="value" style="color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</span>
                 </div>
             </div>
         </div>
