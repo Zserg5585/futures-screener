@@ -916,9 +916,23 @@ function renderSidebar() {
     });
 }
 
+function getPricePrecision(price) {
+    if (price >= 1000) return 2;
+    if (price >= 1) return 4;
+    if (price >= 0.01) return 5;
+    if (price >= 0.001) return 6;
+    return 8;
+}
+
 function createChartInstance(sym) {
     const chartEl = el(`mc-body-${sym}`);
     if (!chartEl || mc.charts[sym]) return;
+
+    // Get price for precision
+    const pair = mc.allPairs.find(p => p.symbol === sym);
+    const price = pair ? pair.lastPrice : 1;
+    const prec = getPricePrecision(price);
+    const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
     const chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
@@ -934,7 +948,8 @@ function createChartInstance(sym) {
     const series = chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
         borderVisible: false,
-        wickUpColor: '#22c55e', wickDownColor: '#ef4444'
+        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+        priceFormat: { type: 'price', precision: prec, minMove: minMove }
     });
 
     mc.charts[sym] = { chart, series, lines: [] };
