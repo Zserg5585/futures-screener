@@ -328,6 +328,14 @@ fastify.get('/app.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('app.js'))
 })
 
+fastify.get('/densities.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('densities.js'))
+})
+
+fastify.get('/mini-charts.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('mini-charts.js'))
+})
+
 fastify.get('/styles.css', async (req, reply) => {
   reply.type('text/css; charset=utf-8').send(readFileSafe('styles.css'))
 })
