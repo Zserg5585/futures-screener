@@ -13,7 +13,10 @@ const mc = {
     observer: null,      // IntersectionObserver
     loadQueue: [],       // queue for staggered loading
     loadingActive: false,
-    filters: { minVol: 50, minNatr: 0, minTrades: 0 }
+    filters: { minVol: 50, minNatr: 0, minTrades: 0 },
+    ws: null,            // Binance kline WebSocket
+    wsStreams: new Set(), // currently subscribed streams
+    wsPending: new Set() // streams waiting to subscribe
 };
 
 async function initMiniCharts() {
@@ -82,11 +85,17 @@ async function initMiniCharts() {
                         processLoadQueue();
                     }
                 } else {
-                    // Card scrolled out — destroy chart to free memory
+                    // Card scrolled out — destroy chart & unsubscribe WS
                     if (mc.charts[sym]) {
                         mc.charts[sym].chart.remove();
                         delete mc.charts[sym];
                         delete mc.loadedData[sym];
+                        // Unsub this symbol's stream
+                        const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
+                        if (mc.wsStreams.has(stream) && mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+                            mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [stream], id: Date.now() }));
+                        }
+                        mc.wsStreams.delete(stream);
                     }
                 }
             });
@@ -160,6 +169,9 @@ function applyFiltersAndRebuild() {
 }
 
 function rebuildGrid() {
+    // Unsubscribe all WS streams
+    wsUnsubscribeAll();
+
     // Destroy all existing charts
     Object.keys(mc.charts).forEach(sym => {
         mc.charts[sym].chart.remove();
@@ -313,7 +325,7 @@ async function processLoadQueue() {
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
-        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=200`);
+        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=300`);
         const json = await res.json();
 
         if (!Array.isArray(json)) return;
@@ -324,19 +336,26 @@ async function loadChartData(sym, tf) {
             high: parseFloat(k[2]),
             low: parseFloat(k[3]),
             close: parseFloat(k[4]),
-            highRaw: parseFloat(k[2]),
-            lowRaw: parseFloat(k[3])
         }));
 
         if (!mc.charts[sym]) return; // check again after await
 
         const series = mc.charts[sym].series;
         series.setData(data);
-        mc.charts[sym].chart.timeScale().fitContent();
         mc.loadedData[sym] = true;
 
+        // Show last ~80 candles (rest is scrollable history)
+        const visibleBars = 80;
+        const from = Math.max(0, data.length - visibleBars);
+        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
+
+        // Subscribe to live kline updates
+        wsSubscribe(sym);
+
         setTimeout(() => {
-            if (mc.charts[sym]) mc.charts[sym].chart.timeScale().fitContent();
+            if (mc.charts[sym]) {
+                mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
+            }
         }, 150);
 
         // Auto-levels disabled for now
@@ -407,6 +426,67 @@ function drawAutoLevels(sym, data, series) {
         });
         mc.charts[sym].lines.push(line);
     });
+}
+
+// ==========================================
+// Live WebSocket — Binance kline stream
+// ==========================================
+const BINANCE_WS = 'wss://fstream.binance.com/stream';
+
+function wsConnect() {
+    if (mc.ws && mc.ws.readyState <= 1) return; // CONNECTING or OPEN
+
+    mc.ws = new WebSocket(BINANCE_WS);
+    mc.ws.onopen = () => {
+        console.log('[MC-WS] Connected');
+        // Subscribe any pending streams
+        if (mc.wsStreams.size > 0) {
+            const params = [...mc.wsStreams];
+            mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id: 1 }));
+        }
+    };
+    mc.ws.onmessage = (evt) => {
+        try {
+            const msg = JSON.parse(evt.data);
+            if (!msg.data || msg.data.e !== 'kline') return;
+            const k = msg.data.k;
+            const sym = k.s; // e.g. BTCUSDT
+            if (!mc.charts[sym]) return;
+
+            // Update the last candle in realtime
+            mc.charts[sym].series.update({
+                time: Math.floor(k.t / 1000),
+                open: parseFloat(k.o),
+                high: parseFloat(k.h),
+                low: parseFloat(k.l),
+                close: parseFloat(k.c),
+            });
+        } catch (e) { /* ignore parse errors */ }
+    };
+    mc.ws.onclose = () => {
+        console.log('[MC-WS] Disconnected, reconnecting in 3s...');
+        setTimeout(wsConnect, 3000);
+    };
+    mc.ws.onerror = () => {}; // onclose will handle reconnect
+}
+
+function wsSubscribe(sym) {
+    const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
+    if (mc.wsStreams.has(stream)) return;
+    mc.wsStreams.add(stream);
+
+    if (!mc.ws || mc.ws.readyState !== WebSocket.OPEN) {
+        wsConnect();
+        return; // onopen will subscribe all pending
+    }
+    mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [stream], id: Date.now() }));
+}
+
+function wsUnsubscribeAll() {
+    if (mc.ws && mc.ws.readyState === WebSocket.OPEN && mc.wsStreams.size > 0) {
+        mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc.wsStreams], id: Date.now() }));
+    }
+    mc.wsStreams.clear();
 }
 
 // ==========================================
@@ -619,8 +699,15 @@ async function loadModalChart(sym, tf) {
         }));
 
         modal.series.setData(data);
-        modal.chart.timeScale().fitContent();
-        setTimeout(() => { if (modal.chart) modal.chart.timeScale().fitContent(); }, 150);
+        // Show last 150 bars, rest is scrollable history
+        const visibleBars = 150;
+        const from = Math.max(0, data.length - visibleBars);
+        modal.chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
+        setTimeout(() => {
+            if (modal.chart) {
+                modal.chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
+            }
+        }, 150);
 
         // Auto-levels disabled for now
         // modal.lines.forEach(l => modal.series.removePriceLine(l));
