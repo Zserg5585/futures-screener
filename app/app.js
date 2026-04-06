@@ -808,10 +808,13 @@ function updateGridSymbols(symbols) {
     if (!grid) return;
     grid.innerHTML = '';
 
-    symbols.forEach((sym, idx) => {
-        createChartInSlot(idx, sym);
-        loadChartDataAndDrawLevels(sym, mc.globalTF);
-    });
+    // Create all chart containers first
+    symbols.forEach((sym, idx) => createChartInSlot(idx, sym));
+
+    // Then load data after a small delay so DOM has rendered and charts have size
+    setTimeout(() => {
+        symbols.forEach(sym => loadChartDataAndDrawLevels(sym, mc.globalTF));
+    }, 100);
 
     const list = el('mcCoinList');
     if (list) {
@@ -859,6 +862,7 @@ function createChartInSlot(idx, sym) {
     if (!chartEl) return;
 
     const chart = LightweightCharts.createChart(chartEl, {
+        autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.02)' }, horzLines: { color: 'rgba(255,255,255,0.02)' } },
         crosshair: { mode: 0 },
@@ -875,14 +879,6 @@ function createChartInSlot(idx, sym) {
     });
 
     mc.charts[sym] = { chart, series, lines: [] };
-
-    new ResizeObserver(entries => {
-        if (entries.length === 0) return;
-        const r = entries[0].contentRect;
-        if (r.width > 0 && r.height > 0) {
-            chart.applyOptions({ width: r.width, height: r.height });
-        }
-    }).observe(chartEl);
 }
 
 function destroyChart(sym) {
@@ -918,6 +914,10 @@ async function loadChartDataAndDrawLevels(sym, tf) {
         const series = mc.charts[sym].series;
         series.setData(data);
         mc.charts[sym].chart.timeScale().fitContent();
+        // Retry fitContent after resize settles
+        setTimeout(() => {
+            if (mc.charts[sym]) mc.charts[sym].chart.timeScale().fitContent();
+        }, 200);
 
         if (mc.charts[sym].lines.length > 0) {
             mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
