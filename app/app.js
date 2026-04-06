@@ -953,6 +953,9 @@ function createChartInstance(sym) {
     });
 
     mc.charts[sym] = { chart, series, lines: [] };
+
+    // Attach shift+drag ruler
+    attachRuler(chartEl, chart, series);
 }
 
 // Staggered load queue — prevents Binance rate limiting
@@ -1071,6 +1074,104 @@ function drawAutoLevels(sym, data, series) {
 }
 
 // ==========================================
+// Shift+Drag Ruler (like TradingView)
+// ==========================================
+function attachRuler(chartEl, chart, series) {
+    let rulerActive = false;
+    let startX = 0, startY = 0;
+    let startPrice = 0, startTime = 0;
+    let line = null, label = null;
+
+    function createOverlay() {
+        // SVG line
+        line = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        line.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100;';
+        line.innerHTML = '<line x1="0" y1="0" x2="0" y2="0" stroke="#5b9cf6" stroke-width="1.5" stroke-dasharray="4,3"/>';
+        chartEl.appendChild(line);
+
+        // Label
+        label = document.createElement('div');
+        label.style.cssText = 'position:absolute;z-index:101;pointer-events:none;background:rgba(59,130,246,0.9);color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:4px;white-space:nowrap;display:none;';
+        chartEl.appendChild(label);
+    }
+
+    function removeOverlay() {
+        if (line) { line.remove(); line = null; }
+        if (label) { label.remove(); label = null; }
+    }
+
+    chartEl.addEventListener('mousedown', (e) => {
+        if (!e.shiftKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const rect = chartEl.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+
+        // Convert pixel to price/time
+        startPrice = series.coordinateToPrice(startY);
+        startTime = chart.timeScale().coordinateToTime(startX);
+        if (startPrice === null) return;
+
+        rulerActive = true;
+        removeOverlay();
+        createOverlay();
+
+        // Temporarily disable chart interaction
+        chart.applyOptions({ handleScroll: false, handleScale: false });
+    });
+
+    chartEl.addEventListener('mousemove', (e) => {
+        if (!rulerActive || !line || !label) return;
+
+        const rect = chartEl.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        const curPrice = series.coordinateToPrice(curY);
+        if (curPrice === null) return;
+
+        // Update SVG line
+        const svgLine = line.querySelector('line');
+        svgLine.setAttribute('x1', startX);
+        svgLine.setAttribute('y1', startY);
+        svgLine.setAttribute('x2', curX);
+        svgLine.setAttribute('y2', curY);
+
+        // Calculate diff
+        const priceDiff = curPrice - startPrice;
+        const pctDiff = startPrice !== 0 ? (priceDiff / startPrice * 100) : 0;
+        const prec = getPricePrecision(Math.abs(startPrice));
+        const sign = priceDiff >= 0 ? '+' : '';
+        const color = priceDiff >= 0 ? '#22c55e' : '#ef4444';
+
+        // Position label
+        const midX = (startX + curX) / 2;
+        const midY = Math.min(startY, curY) - 8;
+        label.style.left = midX + 'px';
+        label.style.top = Math.max(2, midY) + 'px';
+        label.style.transform = 'translateX(-50%)';
+        label.style.display = 'block';
+        label.style.background = priceDiff >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
+        label.textContent = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)`;
+    });
+
+    const endRuler = () => {
+        if (!rulerActive) return;
+        rulerActive = false;
+        chart.applyOptions({
+            handleScroll: { mouseWheel: true, pressedMouseMove: true },
+            handleScale: { mouseWheel: true, pinch: true }
+        });
+        // Remove after 3 seconds
+        setTimeout(removeOverlay, 3000);
+    };
+
+    chartEl.addEventListener('mouseup', endRuler);
+    chartEl.addEventListener('mouseleave', endRuler);
+}
+
+// ==========================================
 // Coin Detail Modal
 // ==========================================
 const modal = {
@@ -1158,6 +1259,10 @@ function openCoinModal(sym) {
     });
 
     modal.lines = [];
+
+    // Attach ruler to modal chart
+    attachRuler(el('cmChartBody'), modal.chart, modal.series);
+
     loadModalChart(sym, modal.currentTF);
 }
 
