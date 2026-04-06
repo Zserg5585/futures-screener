@@ -771,7 +771,7 @@ async function refreshMiniCharts() {
     if (status) status.textContent = 'Loading...';
 
     try {
-        const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+        const res = await fetch('/api/ticker24hr');
         const data = await res.json();
 
         let pairs = data.filter(d => d.symbol.endsWith('USDT') && !d.symbol.includes('_'));
@@ -977,7 +977,7 @@ async function processLoadQueue() {
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=200`);
+        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=200`);
         const json = await res.json();
 
         if (!Array.isArray(json)) return;
@@ -1268,7 +1268,7 @@ function openCoinModal(sym) {
 
 async function loadModalChart(sym, tf) {
     try {
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=500`);
+        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
         const json = await res.json();
         if (!Array.isArray(json) || !modal.chart) return;
 

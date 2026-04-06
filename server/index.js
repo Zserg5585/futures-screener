@@ -10,6 +10,15 @@ const fastify = require('fastify')({
 // Binance Futures (USDT-M) REST base
 const BINANCE_FAPI = 'https://fapi.binance.com'
 
+// Custom Modules
+const wsManager = require('./ws');
+const stateManager = require('./state');
+const { binLevels } = require('./logic');
+const { analyzeBehavior } = require('./scorer');
+
+// Connect WebSockets on Start
+wsManager.connect();
+
 // ---- helpers ----
 async function bget(path) {
   const res = await fetch(BINANCE_FAPI + path, { method: 'GET' })
@@ -241,51 +250,57 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
 // Получить K-lines и рассчитать объёмы + ATR
 async function getKlinesWithStats(symbol) {
   try {
-    // Получаем K-lines: open, high, low, close, volume, time
-    const klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${KLINE_INTERVAL}&limit=${KLINE_LIMIT}`)
+    // Получаем K-lines параллельно: 1d (для NATR) и 5m (для объемов)
+    const [klines1d, klines5m] = await Promise.all([
+      bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${14}`),
+      bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=5m&limit=${5}`)
+    ])
 
-    if (!klines || klines.length < 5) {
-      return { vol1: 0, vol2: 0, vol3: 0, vol4: 0, vol5: 0, natr: 0 }
+    let natr = 0;
+    
+    // Расчет NATR по 1-дневным свечам
+    if (klines1d && klines1d.length > 0) {
+      const convert = (k) => ({
+        high: toNumber(k[2]),
+        low: toNumber(k[3]),
+        close: toNumber(k[4])
+      })
+      const bars = klines1d.map(convert)
+      
+      const trValues = []
+      // True Range
+      for (let i = 1; i < bars.length; i++) {
+        const highLow = bars[i].high - bars[i].low
+        const highPrevClose = Math.abs(bars[i].high - bars[i - 1].close)
+        const lowPrevClose = Math.abs(bars[i].low - bars[i - 1].close)
+        const tr = Math.max(highLow, highPrevClose, lowPrevClose)
+        trValues.push(tr)
+      }
+
+      if (trValues.length > 0) {
+        const atr = trValues.reduce((a, b) => a + b, 0) / trValues.length
+        const latestClose = bars[bars.length - 1].close
+        natr = latestClose > 0 ? (atr / latestClose) * 100 : 0
+      } else if (bars.length === 1) { // Если монета совсем новая
+        const latestClose = bars[0].close
+        const highLow = bars[0].high - bars[0].low
+        natr = latestClose > 0 ? (highLow / latestClose) * 100 : 0
+      }
     }
 
-    // Из K-line берём: [time, open, high, low, close, volume, ...]
-    const convert = (k) => ({
-      open: toNumber(k[1]),
-      high: toNumber(k[2]),
-      low: toNumber(k[3]),
-      close: toNumber(k[4]),
-      volume: toNumber(k[7]) // Quote asset volume (USDT)
-    })
+    let vol1 = 0, vol2 = 0, vol3 = 0, vol4 = 0, vol5 = 0;
 
-    const bars = klines.map(convert) // Binance returns oldest first
-
-    // Расчёт ATR (Average True Range)
-    // True Range = max(high - low, |high - prev_close|, |low - prev_close|)
-    const trValues = []
-    for (let i = 1; i < bars.length; i++) {
-      const highLow = bars[i].high - bars[i].low
-      const highPrevClose = Math.abs(bars[i].high - bars[i - 1].close)
-      const lowPrevClose = Math.abs(bars[i].low - bars[i - 1].close)
-      const tr = Math.max(highLow, highPrevClose, lowPrevClose)
-      trValues.push(tr)
+    // Объемы по 5-минутным свечам
+    if (klines5m && klines5m.length > 0) {
+      const convert5m = (k) => ({ volume: toNumber(k[7]) })
+      const bars5m = klines5m.map(convert5m).reverse() // [newest, prev, oldest...]
+      
+      vol1 = bars5m[0] ? bars5m[0].volume : 0
+      vol2 = bars5m[1] ? bars5m[1].volume : 0
+      vol3 = bars5m[2] ? bars5m[2].volume : 0
+      vol4 = bars5m[3] ? bars5m[3].volume : 0
+      vol5 = bars5m[4] ? bars5m[4].volume : 0
     }
-
-    // ATR = среднее по последним (period) TR
-    const period = 14 // стандартный период ATR
-    const natrPeriod = Math.min(period, trValues.length > 0 ? trValues.length : 1)
-    const atrValues = trValues.slice(-natrPeriod)
-    const atr = (atrValues.reduce((a, b) => a + b, 0) / natrPeriod)
-
-    const latestClose = bars[bars.length - 1] ? bars[bars.length - 1].close : 0
-    const natr = latestClose > 0 ? (atr / latestClose) * 100 : 0
-
-    const revBars = [...bars].reverse() // [newest, prev, oldest...]
-    // Объёмы: vol1=newest (t), vol2=prev (t-1), vol3=oldest (t-2)
-    const vol1 = revBars[0] ? revBars[0].volume : 0 // newest (t)
-    const vol2 = revBars[1] ? revBars[1].volume : 0 // prev (t-1)
-    const vol3 = revBars[2] ? revBars[2].volume : 0 // oldest (t-2)
-    const vol4 = revBars[3] ? revBars[3].volume : 0
-    const vol5 = revBars[4] ? revBars[4].volume : 0
 
     return { vol1, vol2, vol3, vol4, vol5, natr }
 
@@ -383,250 +398,103 @@ fastify.get('/densities/simple', async (req) => {
     const price = markMap.get(sym)
     if (!price) return []
 
+    // 1. Subscribe to WebSocket if not already tracked
+    if (!wsManager.callbacks.has(sym)) {
+      // Fetch initial snapshot to seed state
+      const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
+      stateManager.initBook(sym, ob.bids, ob.asks);
+      
+      wsManager.subscribe(sym, (payload) => {
+        stateManager.processDelta(sym, payload);
+      });
+    }
+
+    // 2. Get local state from memory (from WS deltas)
+    const bidLevelsRaw = stateManager.getTopLevels(sym, 'bid', price, minNotional, depthLimit, windowPct);
+    const askLevelsRaw = stateManager.getTopLevels(sym, 'ask', price, minNotional, depthLimit, windowPct);
+
     // Получить K-lines для объёмов и ATR
     const klinesStats = await getKlinesWithStats(sym)
 
-    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=${depthLimit}`)
-    const { filteredLevels, bidLevels, askLevels } = calcNearestDensities({
-      price,
-      bids: ob.bids,
-      asks: ob.asks,
-      minNotional,
-      windowPct
-    })
-
-    // MM cluster parameters
-    const MM_WINDOW_PCT = 2.0  // искать MM в ±2% от цены
-    const MAX_GAP_PCT = 0.2    // макс расстояние в кластере
-    const MIN_CLUSTER_NOTIONAL = 20000
-    const MIN_LEVELS_IN_CLUSTER = 2
-
-    // Раздельная логика для bid и ask
+    // 3. Binning & Density Analysis (New Logic)
     const processSide = (levels, sideKey) => {
-      const notionals = levels.map(l => l.notional)
+      // Grouping orders in 0.1% dynamic bins
+      const BIN_SIZE_PCT = 0.1;
+      const rawBins = binLevels(levels, BIN_SIZE_PCT);
 
-      // Двухшаговый percentile 70 для base (без кластеров)
-      const baseAll = percentile(notionals, 70)
-      const filteredNotionals = notionals.filter(n => n <= baseAll * 2)
-      const finalBaseAll = percentile(filteredNotionals, 70) || (baseAll || 50000)
+      // Filtering out empty bins and noise
+      const validBins = rawBins.filter(b => b.notional >= minNotional);
 
-      // MM0 и кандидаты
-      const mm0 = finalBaseAll * mmSeedMultiplier
-      const mmCandidates = levels.filter(l => l.notional >= mm0)
+      // --- ROBOT TRACKING ---
+      // Pass valid bins to stateManager to figure out which ones moved recently
+      const trackedBins = stateManager.trackAndEnrichBins(sym, sideKey, validBins, price);
 
-      // === MM CLUSTERIZATION ===
-      // Группируем уровни в кластеры
-      const clusters = groupCloseLevels(levels, MAX_GAP_PCT)
+      const scoredBins = trackedBins.map(bin => {
+        const behavior = analyzeBehavior(bin, price, klinesStats.natr);
 
-      // Фильтруем кластеры по минимальному notional и кол-ву уровней
-      const validClusters = clusters.filter(c => {
-        const totalNotional = c.reduce((sum, l) => sum + l.notional, 0)
-        return totalNotional >= MIN_CLUSTER_NOTIONAL && c.length >= MIN_LEVELS_IN_CLUSTER
-      })
-
-      // Расчёт mmBase из valid clusters
-      const clusterNotionals = validClusters.map(c =>
-        c.reduce((sum, l) => sum + l.notional, 0)
-      )
-
-      const mmBase = clusterNotionals.length >= 3
-        ? percentile(clusterNotionals, 50)
-        : (clusterNotionals.length > 0 ? percentile(clusterNotionals, 50) : (finalBaseAll || 50000))
-
-      // === ГРУППИРОВКА УРОВНЕЙ В UI-КЛАСТЕРЫ (OPTION 1) ===
-      const CLUSTER_UI_GAP_PCT = 0.5
-      const uiGroupedLevels = []
-      let currentGroup = []
-
-      for (let i = 0; i < levels.length; i++) {
-        const lvl = levels[i]
-        if (currentGroup.length === 0) {
-          currentGroup.push(lvl)
-        } else {
-          const frontPrice = currentGroup[0].price
-          const dist = Math.abs(lvl.price - frontPrice) / frontPrice * 100
-          if (dist <= CLUSTER_UI_GAP_PCT) {
-            currentGroup.push(lvl)
-          } else {
-            uiGroupedLevels.push(currentGroup)
-            currentGroup = [lvl]
-          }
-        }
-      }
-      if (currentGroup.length > 0) {
-        uiGroupedLevels.push(currentGroup)
-      }
-
-      // Превращаем группы в единичные "плотности"
-      const levelsWithX = uiGroupedLevels.map(group => {
-        const frontLevel = group[0]
-        const sumNotional = group.reduce((sum, l) => sum + l.notional, 0)
-
-        // Считаем x для суммарного объема
-        const x = mmBase > 0 ? sumNotional / mmBase : 0
-        const mmCount = group.length
-
-        return {
-          ...frontLevel,
-          notional: sumNotional,
-          x,
-          mmCount,
-          isUiCluster: mmCount > 1
-        }
-      })
-
-      // ============================================
-      // Вычисляем Time To Eat, историю (Touches), Score и сортируем
-      // ============================================
-      const now = Date.now()
-      const isBid = sideKey === 'bid'
-
-      const totalVol = klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5
-      const avgVolPerMin = totalVol / 25
-
-      const scoredLevels = levelsWithX.map(level => {
-        const cacheKey = `${sym}:${isBid ? 'BID' : 'ASK'}:${level.price}`
-        let history = levelHistory.get(cacheKey)
-        let isMoved = false
-
-        if (!history) {
-          // Проверяем: ищем этот же кластер по старой цене (если цена сдвинулась)
-          for (const [k, v] of levelHistory.entries()) {
-            if (k.startsWith(`${sym}:${isBid ? 'BID' : 'ASK'}`)) {
-              const oldPrice = parseFloat(k.split(':')[2])
-              const dist = Math.abs(level.price - oldPrice) / oldPrice * 100
-              // Кластеры у нас шириной 0.5%, поэтому если старая цена в пределах 0.5% - это тот же кластер
-              if (dist < 0.5 && (now - v.lastUpdate) > 1000) {
-                isMoved = true
-                history = { ...v, lastUpdate: now, state: 'MOVED' }
-                levelHistory.delete(k)
-                break
-              }
-            }
-          }
-
-          if (!history) {
-            history = {
-              firstSeen: now,
-              lastUpdate: now,
-              maxNotional: level.notional,
-              touches: 0,
-              isCurrentlyTouching: false,
-              state: 'APPEARED'
-            }
-          }
-        } else {
-          history.lastUpdate = now
-          if (level.notional > history.maxNotional) {
-            history.maxNotional = level.notional
-          }
-
-          // Логика Касаний (Touches)
-          if (level.distancePct <= 0.15) {
-            history.isCurrentlyTouching = true
-          } else {
-            if (history.isCurrentlyTouching) {
-              history.touches = (history.touches || 0) + 1
-              history.isCurrentlyTouching = false
-            }
-          }
-
-          if (level.notional < history.maxNotional * 0.95 && history.state !== 'MOVED') {
-            history.state = 'UPDATED' // объем съедают
-          } else {
-            if (history.state !== 'MOVED') history.state = 'APPEARED'
-          }
-        }
-        levelHistory.set(cacheKey, history)
-
-        const lifetimeSec = Math.floor((now - history.firstSeen) / 1000)
-        let eatSpeed = 0
-        if (lifetimeSec > 3) {
-          eatSpeed = (history.maxNotional - level.notional) / lifetimeSec
+        const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5;
+        // Фильтр: плотность должна быть >= 3 * средний 5m объем
+        if (avg5mVol > 0 && bin.notional < (avg5mVol * 3)) {
+            return null; // Игнорируем слишком мелкие плотности
         }
 
-        const timeToEatMinutes = avgVolPerMin > 0 ? (level.notional / avgVolPerMin) : Infinity
-
-        const score = calcScore({
-          notional: level.notional,
-          distancePct: level.distancePct,
-          isMM: level.mmCount > 1,
-          timeToEatMinutes,
-          natr: klinesStats.natr,
-          lifetimeSec
-        })
-
-        // Telegram Alerts
-        if (score >= 5.0 && level.distancePct <= 0.3 && history.state !== 'MOVED') {
-          if (!history.alerted || (now - history.alerted) > 300000) { // раз в 5 минут на уровень
-            const sideIcon = isBid ? '🟢' : '🔴'
-            sendTelegramAlert(`🚨 <b>${sym}</b> ${sideIcon} ${isBid ? 'LONG (BID)' : 'SHORT (ASK)'}
-Цена: <b>${level.price}</b>
-Дистанция: <b>${level.distancePct.toFixed(2)}%</b>
-Объем: <b>$${(level.notional / 1000000).toFixed(2)}M</b>
-Score: <b>${score.toFixed(1)}</b>`)
-            history.alerted = now
-          }
+        let tte = Infinity;
+        if (avg5mVol > 0) {
+            tte = bin.notional / (avg5mVol / 5); // рассчитываем время в минутах
         }
 
         return {
-          ...level,
-          score,
-          lifetimeSec,
-          timeToEatMinutes,
-          touches: history.touches || 0,
-          state: history.state,
-          maxNotional: history.maxNotional,
-          eatSpeed: Math.max(0, Math.floor(eatSpeed))
-        }
-      }).sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score
-        if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct
-        return b.notional - a.notional
-      })
-
-      // Оставляем только 1 лучший кластер на каждую сторону для монеты, чтобы не спамить таблицу
-      const topN = scoredLevels.slice(0, 1)
-
-      return {
-        sym,
-        finalBaseAll,
-        mm0,
-        mmCandidatesCount: mmCandidates.length,
-        mmBase,
-        levels: topN.map(l => ({
-          ...l,
-          score: Math.round(l.score * 10000) / 10000,
-          mmBase: mmBase,
-          sideKey,
           symbol: sym,
+          sideKey,
+          price: Math.round(bin.anchorPrice * 10000) / 10000,
+          notional: bin.notional,
+          distancePct: behavior.distancePct,
+          lifetimeMins: Math.round(behavior.lifetimeMins * 10) / 10,
+          score: behavior.trustScore, 
+          tags: behavior.tags,
+          levelsCount: bin.levelsCount,
           natr: klinesStats.natr,
           vol1: klinesStats.vol1,
           vol2: klinesStats.vol2,
           vol3: klinesStats.vol3,
           vol4: klinesStats.vol4,
           vol5: klinesStats.vol5,
-          mmBaseBid: sideKey === 'bid' ? mmBase : undefined,
-          mmBaseAsk: sideKey === 'ask' ? mmBase : undefined,
-        }))
-      };
+          timeToEatMinutes: tte
+        };
+      }).filter(Boolean);
+
+      // Сортировка по Score (убывание) и дистанции
+      scoredBins.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.distancePct - b.distancePct;
+      });
+
+      // Return Top 2 Zones per coin per side
+      return scoredBins.slice(0, 2);
     };
 
-    const bidResult = processSide(bidLevels, 'bid');
-    const askResult = processSide(askLevels, 'ask');
+    const bidResult = processSide(bidLevelsRaw, 'bid');
+    const askResult = processSide(askLevelsRaw, 'ask');
 
-    // Теперь нам не нужен второй мап, мы всё сделали внутри processSide!
-    return [...bidResult.levels, ...askResult.levels];
+    return [...bidResult, ...askResult];
   });
 
-  // Получаем все уровни (без фильтрации по x)
+  // Получаем все уровни
   const allLevels = rowsArr.flat()
 
-  // Фильтрация уровней — показываем только те плотности, у которых x >= xFilter
-  let finalData = allLevels
-  if (xFilter > 0) {
-    finalData = allLevels.filter(d => d.x >= xFilter)
+  // Дедупликация: Оставляем только ОДНУ самую сильную плотность на монету
+  const maxPerSymbol = {};
+  for (const entry of allLevels) {
+      if (!maxPerSymbol[entry.symbol] || entry.score > maxPerSymbol[entry.symbol].score) {
+          maxPerSymbol[entry.symbol] = entry;
+      } else if (entry.score === maxPerSymbol[entry.symbol].score) {
+          if (entry.notional > maxPerSymbol[entry.symbol].notional) {
+              maxPerSymbol[entry.symbol] = entry;
+          }
+      }
   }
+
+  let finalData = Object.values(maxPerSymbol);
 
   // Фильтрация по NATR (если natrFilter > 0, показываем только уровни с natr >= natrFilter%)
   if (natrFilter > 0) {
@@ -661,6 +529,44 @@ fastify.get('/_cache/stats', async () => ({
   size: cache.size,
   keys: [...cache.keys()]
 }))
+
+// ---- Binance Proxy for Mini-Charts (cached) ----
+const proxyCache = new Map()
+
+function getProxyCached(key, ttlMs) {
+  const entry = proxyCache.get(key)
+  if (entry && Date.now() - entry.ts < ttlMs) return entry.data
+  return null
+}
+
+function setProxyCached(key, data) {
+  proxyCache.set(key, { data, ts: Date.now() })
+}
+
+// 24hr ticker — cached 30s (all pairs, heavy endpoint)
+fastify.get('/api/ticker24hr', async () => {
+  const cached = getProxyCached('ticker24hr', 30000)
+  if (cached) return cached
+  const data = await bgetWithRetry('/fapi/v1/ticker/24hr')
+  setProxyCached('ticker24hr', data)
+  return data
+})
+
+// Klines — cached 10s per symbol+interval combo
+fastify.get('/api/klines', async (req) => {
+  const symbol = String(req.query.symbol || '').toUpperCase()
+  const interval = String(req.query.interval || '15m')
+  const limit = Math.min(Number(req.query.limit || 200), 1000)
+  if (!symbol) return { error: 'symbol required' }
+
+  const key = `klines:${symbol}:${interval}:${limit}`
+  const cached = getProxyCached(key, 10000)
+  if (cached) return cached
+
+  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+  setProxyCached(key, data)
+  return data
+})
 
 // ---- start ----
 const port = Number(process.env.PORT || 3200)
