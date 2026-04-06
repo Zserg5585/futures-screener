@@ -763,8 +763,18 @@ async function refreshMiniCharts() {
             p.lastPrice = parseFloat(p.lastPrice);
         });
 
-        // Filter out frozen/halted pairs where high == low
-        pairs = pairs.filter(p => parseFloat(p.highPrice) !== parseFloat(p.lowPrice));
+        // Filter out frozen/halted/delisted pairs
+        // Frozen pairs have closeTime far in the past (trading stopped)
+        const now = Date.now();
+        pairs = pairs.filter(p => {
+            const closeTime = parseInt(p.closeTime);
+            const age = now - closeTime;
+            // If last trade was >1 hour ago, pair is frozen
+            if (age > 3600000) return false;
+            // Also filter flat pairs where high == low
+            if (parseFloat(p.highPrice) === parseFloat(p.lowPrice)) return false;
+            return true;
+        });
 
         mc.allPairs = pairs;
         rebuildGrid();
