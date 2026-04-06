@@ -800,14 +800,14 @@ body {
     flex: 1;
     min-width: 0;
     padding: 8px;
+    overflow-y: auto;
 }
 
 .mc-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(2, 1fr);
+    grid-auto-rows: 280px;
     gap: 6px;
-    height: 100%;
 }
 
 /* Individual chart card */
@@ -954,23 +954,17 @@ body {
     .mc-layout {
         flex-direction: column;
         height: auto;
+        max-height: calc(100vh - 110px);
     }
     .mc-sidebar {
-        width: 100%;
-        max-height: 200px;
-        border-left: none;
-        border-top: 1px solid var(--glass-border);
+        display: none; /* hide sidebar on mobile, all coins are in grid */
     }
     .mc-grid {
         grid-template-columns: 1fr;
-        grid-template-rows: auto;
-        height: auto;
-    }
-    .mc-chart-card {
-        min-height: 250px;
+        grid-auto-rows: 260px;
     }
     .mc-charts-area {
-        height: 70vh;
+        flex: 1;
         overflow-y: auto;
     }
 }

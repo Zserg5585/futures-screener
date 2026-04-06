@@ -658,16 +658,19 @@ function renderWatchlist(entries) {
 }
 
 // ==========================================
-// Mini-Charts v2
+// Mini-Charts v3 — Full Market Screener
+// Uses IntersectionObserver to only render visible charts
 // ==========================================
 const mc = {
     sortBy: 'volume',
     globalTF: '15m',
     loaded: false,
     allPairs: [],
-    activeSymbols: [],
-    charts: {},
-    GRID_SIZE: 6
+    charts: {},          // { sym: { chart, series, lines[] } } — only visible ones
+    loadedData: {},      // { sym: true } — tracks which symbols have been loaded
+    observer: null,      // IntersectionObserver
+    loadQueue: [],       // queue for staggered loading
+    loadingActive: false
 };
 
 async function initMiniCharts() {
@@ -683,13 +686,12 @@ async function initMiniCharts() {
                 tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 mc.globalTF = btn.dataset.tf;
-                // Load sequentially to avoid rate limits
-                (async () => {
-                    for (const sym of mc.activeSymbols) {
-                        await loadChartDataAndDrawLevels(sym, mc.globalTF);
-                        await new Promise(r => setTimeout(r, 50));
-                    }
-                })();
+                // Reload all currently visible charts with new TF
+                mc.loadedData = {};
+                Object.keys(mc.charts).forEach(sym => {
+                    mc.loadQueue.push(sym);
+                });
+                processLoadQueue();
             });
         }
 
@@ -698,10 +700,7 @@ async function initMiniCharts() {
         if (sortSel) {
             sortSel.addEventListener('change', (e) => {
                 mc.sortBy = e.target.value;
-                sortPairs();
-                renderSidebar();
-                const top6 = mc.allPairs.slice(0, mc.GRID_SIZE).map(p => p.symbol);
-                updateGridSymbols(top6);
+                rebuildGrid();
             });
         }
 
@@ -710,6 +709,33 @@ async function initMiniCharts() {
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => refreshMiniCharts());
         }
+
+        // Setup IntersectionObserver
+        mc.observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                const sym = entry.target.dataset.symbol;
+                if (!sym) return;
+                if (entry.isIntersecting) {
+                    // Card scrolled into view — create chart & load data
+                    if (!mc.charts[sym]) {
+                        createChartInstance(sym);
+                        mc.loadQueue.push(sym);
+                        processLoadQueue();
+                    }
+                } else {
+                    // Card scrolled out — destroy chart to free memory
+                    if (mc.charts[sym]) {
+                        mc.charts[sym].chart.remove();
+                        delete mc.charts[sym];
+                        delete mc.loadedData[sym];
+                    }
+                }
+            });
+        }, {
+            root: null,
+            rootMargin: '200px', // preload 200px before visible
+            threshold: 0
+        });
     }
 
     if (mc.allPairs.length === 0) {
@@ -737,21 +763,67 @@ async function refreshMiniCharts() {
             p.lastPrice = parseFloat(p.lastPrice);
         });
 
-        // Filter out frozen/halted pairs where high == low (no candles to draw)
+        // Filter out frozen/halted pairs where high == low
         pairs = pairs.filter(p => parseFloat(p.highPrice) !== parseFloat(p.lowPrice));
 
         mc.allPairs = pairs;
-        sortPairs();
-        renderSidebar();
+        rebuildGrid();
 
-        const top6 = mc.allPairs.slice(0, mc.GRID_SIZE).map(p => p.symbol);
-        updateGridSymbols(top6);
-
-        if (status) status.textContent = '';
+        if (status) {
+            status.textContent = `${pairs.length} pairs`;
+            setTimeout(() => { if (status) status.textContent = `${pairs.length} pairs`; }, 3000);
+        }
     } catch (e) {
         console.error('Mini-Charts fetch error:', e);
         if (status) status.textContent = 'Error';
     }
+}
+
+function rebuildGrid() {
+    // Destroy all existing charts
+    Object.keys(mc.charts).forEach(sym => {
+        mc.charts[sym].chart.remove();
+        delete mc.charts[sym];
+    });
+    mc.loadedData = {};
+    mc.loadQueue = [];
+
+    sortPairs();
+    renderSidebar();
+
+    const grid = el('chartsGrid');
+    if (!grid) return;
+
+    // Disconnect old observations
+    mc.observer.disconnect();
+
+    // Render ALL cards (lightweight — just header + empty body)
+    grid.innerHTML = mc.allPairs.map(p => {
+        const sym = p.symbol;
+        const ticker = sym.replace('USDT', '');
+        const chg = p.priceChange;
+        const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
+        const chgSign = chg >= 0 ? '+' : '';
+        const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
+        const natr = p.proxyNatr.toFixed(1);
+
+        return `<div class="mc-chart-card" data-symbol="${sym}" id="mc-card-${sym}">
+            <div class="mc-chart-header">
+                <span class="mc-chart-symbol">${ticker}</span>
+                <div class="mc-chart-metrics">
+                    <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
+                    <span class="mc-metric-muted">$${vol}</span>
+                    <span class="mc-metric-muted">V${natr}%</span>
+                </div>
+            </div>
+            <div class="mc-chart-body" id="mc-body-${sym}"></div>
+        </div>`;
+    }).join('');
+
+    // Observe all cards
+    grid.querySelectorAll('.mc-chart-card').forEach(card => {
+        mc.observer.observe(card);
+    });
 }
 
 function sortPairs() {
@@ -777,9 +849,8 @@ function renderSidebar() {
         const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
         const chgSign = chg >= 0 ? '+' : '';
         const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
-        const isActive = mc.activeSymbols.includes(sym) ? ' active' : '';
 
-        return `<div class="mc-coin-item${isActive}" data-symbol="${sym}">
+        return `<div class="mc-coin-item" data-symbol="${sym}">
             <div>
                 <span class="mc-coin-name">${ticker}</span>
                 <span class="mc-coin-vol">$${vol}</span>
@@ -788,91 +859,23 @@ function renderSidebar() {
         </div>`;
     }).join('');
 
-    // Click handler — replace last chart slot
+    // Click handler — scroll to that card in the grid
     list.querySelectorAll('.mc-coin-item').forEach(item => {
         item.addEventListener('click', () => {
             const sym = item.dataset.symbol;
-            if (mc.activeSymbols.includes(sym)) return;
-
-            const replaceIdx = mc.GRID_SIZE - 1;
-            const oldSym = mc.activeSymbols[replaceIdx];
-            mc.activeSymbols[replaceIdx] = sym;
-
-            destroyChart(oldSym);
-            createChartInSlot(replaceIdx, sym);
-            loadChartDataAndDrawLevels(sym, mc.globalTF);
-
-            list.querySelectorAll('.mc-coin-item').forEach(ci => {
-                ci.classList.toggle('active', mc.activeSymbols.includes(ci.dataset.symbol));
-            });
+            const card = el(`mc-card-${sym}`);
+            if (card) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                card.style.borderColor = 'rgba(59,130,246,0.5)';
+                setTimeout(() => { card.style.borderColor = ''; }, 2000);
+            }
         });
     });
 }
 
-function updateGridSymbols(symbols) {
-    Object.keys(mc.charts).forEach(sym => destroyChart(sym));
-    mc.activeSymbols = symbols;
-
-    const grid = el('chartsGrid');
-    if (!grid) return;
-    grid.innerHTML = '';
-
-    // Create all chart containers first
-    symbols.forEach((sym, idx) => createChartInSlot(idx, sym));
-
-    // Load data sequentially with delay to avoid Binance rate limits
-    (async () => {
-        await new Promise(r => setTimeout(r, 150)); // wait for DOM render
-        for (const sym of symbols) {
-            await loadChartDataAndDrawLevels(sym, mc.globalTF);
-            await new Promise(r => setTimeout(r, 50)); // stagger requests
-        }
-    })();
-
-    const list = el('mcCoinList');
-    if (list) {
-        list.querySelectorAll('.mc-coin-item').forEach(ci => {
-            ci.classList.toggle('active', mc.activeSymbols.includes(ci.dataset.symbol));
-        });
-    }
-}
-
-function createChartInSlot(idx, sym) {
-    const grid = el('chartsGrid');
-    if (!grid) return;
-
-    const pair = mc.allPairs.find(p => p.symbol === sym);
-    const ticker = sym.replace('USDT', '');
-    const chg = pair ? pair.priceChange : 0;
-    const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
-    const chgSign = chg >= 0 ? '+' : '';
-    const vol = pair ? (pair.quoteVol >= 1e9 ? (pair.quoteVol / 1e9).toFixed(1) + 'B' : (pair.quoteVol / 1e6).toFixed(0) + 'M') : '—';
-    const natr = pair ? pair.proxyNatr.toFixed(1) : '—';
-
-    const card = document.createElement('div');
-    card.className = 'mc-chart-card';
-    card.id = `mc-card-${sym}`;
-    card.innerHTML = `
-        <div class="mc-chart-header">
-            <span class="mc-chart-symbol">${ticker}</span>
-            <div class="mc-chart-metrics">
-                <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
-                <span class="mc-metric-muted">$${vol}</span>
-                <span class="mc-metric-muted">V${natr}%</span>
-            </div>
-        </div>
-        <div class="mc-chart-body" id="mc-body-${sym}"></div>
-    `;
-
-    const existing = grid.children[idx];
-    if (existing) {
-        grid.replaceChild(card, existing);
-    } else {
-        grid.appendChild(card);
-    }
-
+function createChartInstance(sym) {
     const chartEl = el(`mc-body-${sym}`);
-    if (!chartEl) return;
+    if (!chartEl || mc.charts[sym]) return;
 
     const chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
@@ -894,25 +897,29 @@ function createChartInSlot(idx, sym) {
     mc.charts[sym] = { chart, series, lines: [] };
 }
 
-function destroyChart(sym) {
-    if (mc.charts[sym]) {
-        mc.charts[sym].chart.remove();
-        delete mc.charts[sym];
+// Staggered load queue — prevents Binance rate limiting
+async function processLoadQueue() {
+    if (mc.loadingActive) return;
+    mc.loadingActive = true;
+
+    while (mc.loadQueue.length > 0) {
+        const sym = mc.loadQueue.shift();
+        if (!mc.charts[sym]) continue; // already scrolled away
+        if (mc.loadedData[sym]) continue; // already loaded this TF
+        await loadChartData(sym, mc.globalTF);
+        await new Promise(r => setTimeout(r, 80));
     }
-    const card = el(`mc-card-${sym}`);
-    if (card) card.remove();
+
+    mc.loadingActive = false;
 }
 
-async function loadChartDataAndDrawLevels(sym, tf) {
+async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
         const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=200`);
         const json = await res.json();
 
-        if (!Array.isArray(json)) {
-            console.error(`Invalid kline data for ${sym}:`, json);
-            return;
-        }
+        if (!Array.isArray(json)) return;
 
         const data = json.map(k => ({
             time: k[0] / 1000,
@@ -924,19 +931,22 @@ async function loadChartDataAndDrawLevels(sym, tf) {
             lowRaw: parseFloat(k[3])
         }));
 
+        if (!mc.charts[sym]) return; // check again after await
+
         const series = mc.charts[sym].series;
         series.setData(data);
         mc.charts[sym].chart.timeScale().fitContent();
-        // Retry fitContent after resize settles
+        mc.loadedData[sym] = true;
+
         setTimeout(() => {
             if (mc.charts[sym]) mc.charts[sym].chart.timeScale().fitContent();
-        }, 200);
+        }, 150);
 
+        // Clear old lines
         if (mc.charts[sym].lines.length > 0) {
             mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
         }
         mc.charts[sym].lines = [];
-
         drawAutoLevels(sym, data, series);
 
     } catch (e) {
