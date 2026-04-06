@@ -41,7 +41,7 @@ let state = {
     lastError: null,
     currentPreset: null,
     watchlist: [], // Список символов в watchlist (из localStorage)
-    currentTab: 'densities', // текущая вкладка
+    currentTab: 'mini-charts', // текущая вкладка
     watchlistData: null // кэш данных watchlist
 }
 
@@ -52,7 +52,12 @@ function init() {
     updateControlsFromState()
     // Load directly (no initial empty render)
     loadWatchlist() // Загрузить watchlist из localStorage
-    loadDensities(true) // force refresh
+    // Default tab is mini-charts, init it on load
+    if (state.currentTab === 'mini-charts') {
+        initMiniCharts()
+    } else {
+        loadDensities(true)
+    }
 }
 
 function setupEventListeners() {
