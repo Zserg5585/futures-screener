@@ -731,6 +731,9 @@ async function refreshMiniCharts() {
             p.lastPrice = parseFloat(p.lastPrice);
         });
 
+        // Filter out frozen/halted pairs where high == low (no candles to draw)
+        pairs = pairs.filter(p => parseFloat(p.highPrice) !== parseFloat(p.lowPrice));
+
         mc.allPairs = pairs;
         sortPairs();
         renderSidebar();
