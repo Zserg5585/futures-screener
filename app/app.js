@@ -26,7 +26,7 @@ const CONFIG = {
 let state = {
     blacklist: '', // Список монет для исключения
     hideSqueezes: false, // скрывать маркет-мейкеров (Squeeze)
-    xFilter: 4,
+    xFilter: 0,
     natrFilter: 0,
     interval: CONFIG.DEFAULT_INTERVAL,
     sortField: 'score', // сортировка по умолчанию
@@ -128,11 +128,22 @@ function setupEventListeners() {
             const tabName = tab.dataset.tab
             state.currentTab = tabName
 
+            // Скрыть все вкладки
+            document.querySelectorAll('.tab-content').forEach(tc => tc.style.display = 'none')
+            
+            // Показать нужную
+            const targetContent = document.getElementById(`tab-${tabName}`)
+            if (targetContent) {
+                targetContent.style.display = 'block'
+            }
+
             // Обновить UI в зависимости от вкладки
-            if (tabName === 'watchlist') {
-                renderWatchlist(state.watchlistData || [])
-            } else if (tabName === 'densities') {
-                renderDensities(state.cache.data || [])
+            if (tabName === 'densities') {
+                if (state.cache.data) renderDensities(state.cache.data)
+            } else if (tabName === 'mini-charts') {
+                if (typeof initMiniCharts === 'function') {
+                    initMiniCharts()
+                }
             }
         })
     })
@@ -241,7 +252,9 @@ async function loadDensities(forceRefresh = false) {
         updateCache(data)
 
         // Render
-        renderDensities(data)
+        if (state.currentTab === 'densities') {
+            renderDensities(data)
+        }
 
         // Update status
         const uniqueSymbols = new Set(data.map(e => e.symbol))
@@ -310,57 +323,43 @@ function renderTable(entries) {
         const symbol = entry.symbol
         const inWatchlist = isSymbolInWatchlist(symbol)
 
-        if (entry.isSqueeze) {
-            const sideBlock = '<span style="color:#a855f7; font-weight:600; background:rgba(168,85,247,0.1); padding:4px 8px; border-radius:6px; border: 1px solid rgba(168,85,247,0.3);">MARKET MAKER</span>'
-            const distBlock = `<span style="color:var(--neon-green)">${formatPercent(entry.bid.distancePct)}</span> / <span style="color:var(--neon-red)">${formatPercent(entry.ask.distancePct)}</span>`
-            const volBlock = `<span style="color:var(--neon-green)">${formatNotional(entry.bid.notional)}</span> / <span style="color:var(--neon-red)">${formatNotional(entry.ask.notional)}</span>`
+        const isMM = entry.levelsCount > 1
+        let stateDot = '<span style="color:var(--text-muted);">🛡️</span> <span style="color:var(--text-muted);">Waiting</span>'
 
-            const maxEntry = entry.bid.notional > entry.ask.notional ? entry.bid : entry.ask
-            const vol5x5m = renderVolIndicator(maxEntry.vol1, maxEntry.vol2, maxEntry.vol3, maxEntry.vol4, maxEntry.vol5, entry.notional)
-
-            return `
-            <tr class="isMM" style="background: rgba(168,85,247, 0.05);">
-                <td class="sym">${symbol}</td>
-                <td>${sideBlock}</td>
-                <td style="font-size: 13px;">${distBlock}</td>
-                <td style="font-family: monospace; font-size: 13px;">${volBlock}</td>
-                <td>${vol5x5m}</td>
-                <td class="natr">${(maxEntry.natr || 0) > 0 ? maxEntry.natr.toFixed(2) + '%' : '—'}</td>
-                <td class="score" style="color:#a855f7; font-weight:600;">${(entry.score || 0).toFixed(4)}</td>
-                <td style="font-family: monospace; color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</td>
-                <td class="state-cell"><span style="color:#a855f7;">↕️</span> Squeeze</td>
-                <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
-                <td class="watchlist-btn">
-                    <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
-                        ${inWatchlist ? '⭐' : '☆'}
-                    </button>
-                </td>
-            </tr>
-            `
+        if (entry.tags && entry.tags.length > 0) {
+            if (entry.tags.includes('SPOOF-FAR') || entry.tags.includes('NEW-FAR')) {
+                stateDot = '<span style="color:#ef4444;">❌</span> Спуфер'
+            } else if (entry.tags.includes('ROBOT-AGGRESSOR')) {
+                stateDot = '<span style="color:#f59e0b;">⚔️</span> Робот-толкач'
+            } else if (entry.tags.includes('CONCRETE-15M') || entry.tags.includes('CONCRETE-5M')) {
+                stateDot = '<span style="color:var(--neon-green);">🧱</span> Бетон'
+            } else if (entry.tags.includes('TECH-NATR')) {
+                 stateDot = '<span style="color:#a855f7;">🎯</span> Тех.Уровень'
+            }
         }
 
-        const isMM = (entry.mmCount || 0) > 1
-        let touchesText = entry.touches > 0 ? ` (${entry.touches})` : ''
-        let stateDot = '<span style="color:#10b981;">🛡️</span> Untouched'
-        if (entry.touches > 0) stateDot = `<span style="color:#f59e0b;">⚠️</span> Touch${touchesText}`
-        if (entry.state === 'UPDATED') stateDot = `<span style="color:#ef4444;">⚔️</span> Eating${touchesText}`
-        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">❌</span> MOVED'
-
-        const sideBlock = entry.side === 'bid'
-            ? '<span style="color:var(--neon-green); font-weight:600;">LONG (BID)</span>'
-            : '<span style="color:var(--neon-red); font-weight:600;">SHORT (ASK)</span>'
-        const clusterBadge = isMM ? `<br><span style="font-size:10px; color:#fcd34d; background:rgba(251,191,36,0.1); padding:2px 4px; border-radius:4px; display:inline-block; margin-top:4px;">⛓️ Cluster (${entry.mmCount})</span>` : ''
+        const sideBlock = entry.sideKey === 'bid'
+            ? '<span style="color:#60a5fa; font-weight:600;">LONG (BID)</span>'
+            : '<span style="color:#fb923c; font-weight:600;">SHORT (ASK)</span>'
 
         return `
         <tr class="${isMM ? 'isMM' : ''}">
-            <td class="sym">${symbol}</td>
-            <td>${sideBlock}${clusterBadge}</td>
-            <td>${formatPercent(entry.distancePct)}</td>
+            <td class="sym">
+                <a href="https://www.bybit.com/trade/usdt/${symbol}" target="_blank" style="margin-right: 6px;">${symbol.replace('USDT', '')}</a>
+                <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures" style="text-decoration:none;">
+                    <span style="display:inline-block; width:14px; height:14px; line-height:14px; text-align:center; background:#f3ba2f; color:#000; border-radius:50%; font-size:10px; font-weight:bold; vertical-align:middle; opacity:0.8; transition:opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">B</span>
+                </a>
+            </td>
+            <td>${sideBlock}</td>
+            <td>
+                <span style="color:#e2e8f0; font-weight:500;">${formatNumber(entry.price, 4)}</span><br>
+                <span style="color:#94a3b8; font-size:11px;">${formatPercent(entry.distancePct)}</span>
+            </td>
             <td style="font-family: monospace; font-size: 14px;">${formatNotional(entry.notional)}</td>
             <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</td>
-            <td class="natr">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</td>
-            <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(4)}</td>
-            <td style="font-family: monospace; color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</td>
+            <td class="natr">${(entry.natr || 0) > 0 ? entry.natr.toFixed(1) + '%' : '—'}</td>
+            <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(1)}</td>
+            <td style="font-family: monospace; color: #a1a1aa;">${entry.lifetimeMins}m</td>
             <td class="state-cell">${stateDot}</td>
             <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
             <td class="watchlist-btn">
@@ -379,39 +378,8 @@ function renderTable(entries) {
 function renderDensities(entries) {
     if (!entries) return
 
-    // === ОБЪЕДИНЕНИЕ В SQUEEZE (МАРКЕТ-МЕЙКЕР) ===
-    const grouped = {}
-    entries.forEach(e => {
-        if (!grouped[e.symbol]) grouped[e.symbol] = { bid: null, ask: null }
-        grouped[e.symbol][e.side] = e
-    })
-
-    const mergedEntries = []
-    for (const sym in grouped) {
-        const { bid, ask } = grouped[sym]
-        if (bid && ask) {
-            mergedEntries.push({
-                isSqueeze: true,
-                symbol: sym,
-                bid,
-                ask,
-                score: Math.max(bid.score || 0, ask.score || 0),
-                notional: bid.notional + ask.notional,
-                distancePct: Math.min(bid.distancePct, ask.distancePct),
-                lifetimeSec: Math.min(bid.lifetimeSec, ask.lifetimeSec),
-                timeToEatMinutes: Math.min(bid.timeToEatMinutes, ask.timeToEatMinutes)
-            })
-        } else {
-            mergedEntries.push({ isSqueeze: false, ...(bid || ask) })
-        }
-    }
-
     // Применяем локальные фильтры (Blacklist и HideSqueezes)
-    let finalEntries = mergedEntries
-
-    if (state.hideSqueezes) {
-        finalEntries = finalEntries.filter(e => !e.isSqueeze)
-    }
+    let finalEntries = entries
 
     if (state.blacklist && state.blacklist.trim() !== '') {
         const blacklistArray = state.blacklist.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
@@ -530,58 +498,33 @@ function renderCards(entries) {
         const symbol = entry.symbol
         const inWatchlist = isSymbolInWatchlist(symbol)
 
-        if (entry.isSqueeze) {
-            const sideIcon = '↕️ MARKET MAKER'
-            const maxEntry = entry.bid.notional > entry.ask.notional ? entry.bid : entry.ask
+        const isMM = entry.levelsCount > 1
+        let stateDot = '<span style="color:var(--text-muted);">🛡️</span> <span style="color:var(--text-muted);">Waiting</span>'
 
-            return `
-            <div class="card isMM" data-symbol="${symbol}" style="border: 1px solid rgba(168,85,247,0.3); background: rgba(168,85,247, 0.05)">
-                <div class="card-header">
-                    <div>
-                        <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol}</a>
-                        <span class="mm-badge active" style="background:rgba(168,85,247,0.2); color:#cb88ff; border-color:#a855f7">Squeeze</span>
-                        <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="card-row isMM">
-                        <span class="label" style="color:#cb88ff; font-weight:600">${sideIcon}</span>
-                        <span class="value">
-                            <span style="color:var(--neon-green)">${formatPercent(entry.bid.distancePct)}</span> / <span style="color:var(--neon-red)">${formatPercent(entry.ask.distancePct)}</span>
-                        </span>
-                        <span class="notional" style="font-size:12px; margin-left: 10px;">B: ${formatNotional(entry.bid.notional)} / A: ${formatNotional(entry.ask.notional)}</span>
-                    </div>
-                    <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
-                        <span class="label">Vol Indicator:</span>
-                        <span class="value">${renderVolIndicator(maxEntry.vol1, maxEntry.vol2, maxEntry.vol3, maxEntry.vol4, maxEntry.vol5, entry.notional)}</span>
-                    </div>
-                    <div class="card-row" style="margin-top:4px;">
-                        <span class="label">NATR:</span>
-                        <span class="value">${(maxEntry.natr || 0) > 0 ? maxEntry.natr.toFixed(2) + '%' : '—'}</span>
-                        <span class="label" style="margin-left:10px">Score:</span>
-                        <span class="value" style="color:#cb88ff; font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
-                    </div>
-                </div>
-            </div>
-            `
+        if (entry.tags && entry.tags.length > 0) {
+            if (entry.tags.includes('SPOOF-FAR') || entry.tags.includes('NEW-FAR')) {
+                stateDot = '<span style="color:#ef4444;">❌</span> Спуфер'
+            } else if (entry.tags.includes('ROBOT-AGGRESSOR')) {
+                stateDot = '<span style="color:#f59e0b;">⚔️</span> Робот-толкач'
+            } else if (entry.tags.includes('CONCRETE-15M') || entry.tags.includes('CONCRETE-5M')) {
+                stateDot = '<span style="color:var(--neon-green);">🧱</span> Бетон'
+            } else if (entry.tags.includes('TECH-NATR')) {
+                 stateDot = '<span style="color:#a855f7;">🎯</span> Тех.Уровень'
+            }
         }
 
-        const isMM = (entry.mmCount || 0) > 1
-        let touchesText = entry.touches > 0 ? ` (${entry.touches})` : ''
-        let stateDot = '<span style="color:#10b981;">🛡️</span> Untouched'
-        if (entry.touches > 0) stateDot = `<span style="color:#f59e0b;">⚠️</span> Touch${touchesText}`
-        if (entry.state === 'UPDATED') stateDot = `<span style="color:#ef4444;">⚔️</span> Eating${touchesText}`
-        if (entry.state === 'MOVED') stateDot = '<span style="color:#ef4444;">❌</span> MOVED'
-
-        const sideClass = entry.side === 'bid' ? 'bid' : 'ask'
-        const sideIcon = entry.side === 'bid' ? '🔴 LONG (BID)' : '🟢 SHORT (ASK)'
+        const sideClass = entry.sideKey === 'bid' ? 'bid' : 'ask'
+        const sideIcon = entry.sideKey === 'bid' ? '<span style="color:#60a5fa;">🔵 LONG (BID)</span>' : '<span style="color:#fb923c;">🟠 SHORT (ASK)</span>'
 
         return `
         <div class="card ${isMM ? 'isMM' : ''}" data-symbol="${symbol}">
             <div class="card-header">
                 <div>
-                    <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol}</a>
-                    <span class="mm-badge ${isMM ? 'active' : ''}">${isMM ? `⛓️ Cluster (${entry.mmCount})` : ''}</span>
+                    <a href="https://www.bybit.com/trade/usdt/${symbol}" target="_blank" style="margin-right: 6px;">${symbol.replace('USDT', '')}</a>
+                    <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures" style="text-decoration:none;">
+                        <span style="display:inline-block; width:16px; height:16px; line-height:16px; text-align:center; background:#f3ba2f; color:#000; border-radius:50%; font-size:11px; font-weight:bold; vertical-align:text-bottom; opacity:0.8;">B</span>
+                    </a>
+                    
                     <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
                 </div>
                 <div style="font-size:12px; opacity:0.8">${stateDot}</div>
@@ -589,9 +532,9 @@ function renderCards(entries) {
             <div class="card-body">
                 <div class="card-row ${sideClass} ${isMM ? 'isMM' : ''}">
                     <span class="label">${sideIcon}</span>
-                    <span class="value">
-                        ${formatNumber(entry.price, 2)}
-                        <span class="dist">${formatPercent(entry.distancePct)}</span>
+                    <span class="value" style="display:flex; flex-direction:column; align-items:flex-end;">
+                        <span style="font-weight:500; font-size:14px;">${formatNumber(entry.price, 4)}</span>
+                        <span class="dist" style="font-size:11px; margin-top:2px;">${formatPercent(entry.distancePct)}</span>
                     </span>
                     <span class="notional">${formatNotional(entry.notional)}</span>
                 </div>
@@ -601,13 +544,13 @@ function renderCards(entries) {
                 </div>
                 <div class="card-row" style="margin-top:4px;">
                     <span class="label">NATR:</span>
-                    <span class="value">${(entry.natr || 0) > 0 ? entry.natr.toFixed(2) + '%' : '—'}</span>
+                    <span class="value">${(entry.natr || 0) > 0 ? entry.natr.toFixed(1) + '%' : '—'}</span>
                     <span class="label" style="margin-left:10px">Score:</span>
-                    <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(4)}</span>
+                    <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(1)}</span>
                 </div>
                 <div class="card-row" style="margin-top:4px;">
-                    <span class="label">Age:</span>
-                    <span class="value" style="color: #a1a1aa;">${formatAge(entry.lifetimeSec)}</span>
+                    <span class="label">Age (Mins):</span>
+                    <span class="value" style="color: #a1a1aa;">${entry.lifetimeMins}m</span>
                     <span class="label" style="margin-left:10px">Time To Eat:</span>
                     <span class="value" style="color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</span>
                 </div>
@@ -712,4 +655,336 @@ function renderWatchlist(entries) {
     }
 
     renderDensities(watchlistEntries)
+}
+
+// ==========================================
+// Mini-Charts v2
+// ==========================================
+const mc = {
+    sortBy: 'volume',
+    globalTF: '15m',
+    loaded: false,
+    allPairs: [],
+    activeSymbols: [],
+    charts: {},
+    GRID_SIZE: 6
+};
+
+async function initMiniCharts() {
+    if (!mc.loaded) {
+        mc.loaded = true;
+
+        // Global TF buttons
+        const tfGroup = el('mcGlobalTF');
+        if (tfGroup) {
+            tfGroup.addEventListener('click', (e) => {
+                const btn = e.target.closest('.mc-tf-btn');
+                if (!btn) return;
+                tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                mc.globalTF = btn.dataset.tf;
+                mc.activeSymbols.forEach(sym => loadChartDataAndDrawLevels(sym, mc.globalTF));
+            });
+        }
+
+        // Sort select
+        const sortSel = el('mcSortBy');
+        if (sortSel) {
+            sortSel.addEventListener('change', (e) => {
+                mc.sortBy = e.target.value;
+                sortPairs();
+                renderSidebar();
+                const top6 = mc.allPairs.slice(0, mc.GRID_SIZE).map(p => p.symbol);
+                updateGridSymbols(top6);
+            });
+        }
+
+        // Refresh button
+        const refreshBtn = el('mcRefreshBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => refreshMiniCharts());
+        }
+    }
+
+    if (mc.allPairs.length === 0) {
+        await refreshMiniCharts();
+    }
+}
+
+async function refreshMiniCharts() {
+    const status = el('mcStatus');
+    if (status) status.textContent = 'Loading...';
+
+    try {
+        const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+        const data = await res.json();
+
+        let pairs = data.filter(d => d.symbol.endsWith('USDT') && !d.symbol.includes('_'));
+
+        pairs.forEach(p => {
+            const h = parseFloat(p.highPrice);
+            const l = parseFloat(p.lowPrice);
+            p.proxyNatr = l > 0 ? ((h - l) / l * 100) : 0;
+            p.quoteVol = parseFloat(p.quoteVolume);
+            p.tradesCount = parseInt(p.count);
+            p.priceChange = parseFloat(p.priceChangePercent);
+            p.lastPrice = parseFloat(p.lastPrice);
+        });
+
+        mc.allPairs = pairs;
+        sortPairs();
+        renderSidebar();
+
+        const top6 = mc.allPairs.slice(0, mc.GRID_SIZE).map(p => p.symbol);
+        updateGridSymbols(top6);
+
+        if (status) status.textContent = '';
+    } catch (e) {
+        console.error('Mini-Charts fetch error:', e);
+        if (status) status.textContent = 'Error';
+    }
+}
+
+function sortPairs() {
+    mc.allPairs.sort((a, b) => {
+        if (mc.sortBy === 'natr') return b.proxyNatr - a.proxyNatr;
+        if (mc.sortBy === 'trades') return b.tradesCount - a.tradesCount;
+        if (mc.sortBy === 'change') return Math.abs(b.priceChange) - Math.abs(a.priceChange);
+        return b.quoteVol - a.quoteVol;
+    });
+}
+
+function renderSidebar() {
+    const list = el('mcCoinList');
+    const countEl = el('mcCoinCount');
+    if (!list) return;
+
+    if (countEl) countEl.textContent = mc.allPairs.length;
+
+    list.innerHTML = mc.allPairs.map(p => {
+        const sym = p.symbol;
+        const ticker = sym.replace('USDT', '');
+        const chg = p.priceChange;
+        const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
+        const chgSign = chg >= 0 ? '+' : '';
+        const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
+        const isActive = mc.activeSymbols.includes(sym) ? ' active' : '';
+
+        return `<div class="mc-coin-item${isActive}" data-symbol="${sym}">
+            <div>
+                <span class="mc-coin-name">${ticker}</span>
+                <span class="mc-coin-vol">$${vol}</span>
+            </div>
+            <span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
+        </div>`;
+    }).join('');
+
+    // Click handler — replace last chart slot
+    list.querySelectorAll('.mc-coin-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const sym = item.dataset.symbol;
+            if (mc.activeSymbols.includes(sym)) return;
+
+            const replaceIdx = mc.GRID_SIZE - 1;
+            const oldSym = mc.activeSymbols[replaceIdx];
+            mc.activeSymbols[replaceIdx] = sym;
+
+            destroyChart(oldSym);
+            createChartInSlot(replaceIdx, sym);
+            loadChartDataAndDrawLevels(sym, mc.globalTF);
+
+            list.querySelectorAll('.mc-coin-item').forEach(ci => {
+                ci.classList.toggle('active', mc.activeSymbols.includes(ci.dataset.symbol));
+            });
+        });
+    });
+}
+
+function updateGridSymbols(symbols) {
+    Object.keys(mc.charts).forEach(sym => destroyChart(sym));
+    mc.activeSymbols = symbols;
+
+    const grid = el('chartsGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    symbols.forEach((sym, idx) => {
+        createChartInSlot(idx, sym);
+        loadChartDataAndDrawLevels(sym, mc.globalTF);
+    });
+
+    const list = el('mcCoinList');
+    if (list) {
+        list.querySelectorAll('.mc-coin-item').forEach(ci => {
+            ci.classList.toggle('active', mc.activeSymbols.includes(ci.dataset.symbol));
+        });
+    }
+}
+
+function createChartInSlot(idx, sym) {
+    const grid = el('chartsGrid');
+    if (!grid) return;
+
+    const pair = mc.allPairs.find(p => p.symbol === sym);
+    const ticker = sym.replace('USDT', '');
+    const chg = pair ? pair.priceChange : 0;
+    const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
+    const chgSign = chg >= 0 ? '+' : '';
+    const vol = pair ? (pair.quoteVol >= 1e9 ? (pair.quoteVol / 1e9).toFixed(1) + 'B' : (pair.quoteVol / 1e6).toFixed(0) + 'M') : '—';
+    const natr = pair ? pair.proxyNatr.toFixed(1) : '—';
+
+    const card = document.createElement('div');
+    card.className = 'mc-chart-card';
+    card.id = `mc-card-${sym}`;
+    card.innerHTML = `
+        <div class="mc-chart-header">
+            <span class="mc-chart-symbol">${ticker}</span>
+            <div class="mc-chart-metrics">
+                <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
+                <span class="mc-metric-muted">$${vol}</span>
+                <span class="mc-metric-muted">V${natr}%</span>
+            </div>
+        </div>
+        <div class="mc-chart-body" id="mc-body-${sym}"></div>
+    `;
+
+    const existing = grid.children[idx];
+    if (existing) {
+        grid.replaceChild(card, existing);
+    } else {
+        grid.appendChild(card);
+    }
+
+    const chartEl = el(`mc-body-${sym}`);
+    if (!chartEl) return;
+
+    const chart = LightweightCharts.createChart(chartEl, {
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.02)' }, horzLines: { color: 'rgba(255,255,255,0.02)' } },
+        crosshair: { mode: 0 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
+    });
+
+    const series = chart.addCandlestickSeries({
+        upColor: '#22c55e', downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#22c55e', wickDownColor: '#ef4444'
+    });
+
+    mc.charts[sym] = { chart, series, lines: [] };
+
+    new ResizeObserver(entries => {
+        if (entries.length === 0) return;
+        const r = entries[0].contentRect;
+        if (r.width > 0 && r.height > 0) {
+            chart.applyOptions({ width: r.width, height: r.height });
+        }
+    }).observe(chartEl);
+}
+
+function destroyChart(sym) {
+    if (mc.charts[sym]) {
+        mc.charts[sym].chart.remove();
+        delete mc.charts[sym];
+    }
+    const card = el(`mc-card-${sym}`);
+    if (card) card.remove();
+}
+
+async function loadChartDataAndDrawLevels(sym, tf) {
+    if (!mc.charts[sym]) return;
+    try {
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=200`);
+        const json = await res.json();
+
+        if (!Array.isArray(json)) {
+            console.error(`Invalid kline data for ${sym}:`, json);
+            return;
+        }
+
+        const data = json.map(k => ({
+            time: k[0] / 1000,
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            highRaw: parseFloat(k[2]),
+            lowRaw: parseFloat(k[3])
+        }));
+
+        const series = mc.charts[sym].series;
+        series.setData(data);
+        mc.charts[sym].chart.timeScale().fitContent();
+
+        if (mc.charts[sym].lines.length > 0) {
+            mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
+        }
+        mc.charts[sym].lines = [];
+
+        drawAutoLevels(sym, data, series);
+
+    } catch (e) {
+        console.error(`Chart load error ${sym}:`, e);
+    }
+}
+
+function drawAutoLevels(sym, data, series) {
+    const WINDOW = 5;
+    const highs = [];
+    const lows = [];
+
+    for (let i = WINDOW; i < data.length - WINDOW; i++) {
+        let isHigh = true;
+        let isLow = true;
+        for (let j = i - WINDOW; j <= i + WINDOW; j++) {
+            if (i === j) continue;
+            if (data[j].highRaw >= data[i].highRaw) isHigh = false;
+            if (data[j].lowRaw <= data[i].lowRaw) isLow = false;
+        }
+        if (isHigh) highs.push({ time: data[i].time, price: data[i].highRaw });
+        if (isLow) lows.push({ time: data[i].time, price: data[i].lowRaw });
+    }
+
+    const THRESHOLD_PCT = 0.003;
+    const levels = [];
+
+    const findClusters = (pivots, type) => {
+        const used = new Set();
+        for (let i = 0; i < Math.min(pivots.length, 50); i++) {
+            if (used.has(i)) continue;
+            const cluster = [pivots[i]];
+            for (let j = i + 1; j < pivots.length; j++) {
+                if (used.has(j)) continue;
+                if (Math.abs(pivots[i].price - pivots[j].price) / pivots[i].price < THRESHOLD_PCT) {
+                    cluster.push(pivots[j]);
+                    used.add(j);
+                }
+            }
+            if (cluster.length >= 2) {
+                const avgPrice = cluster.reduce((sum, p) => sum + p.price, 0) / cluster.length;
+                levels.push({ price: avgPrice, type, weight: cluster.length });
+            }
+        }
+    };
+
+    findClusters(highs, 'resistance');
+    findClusters(lows, 'support');
+
+    const supports = levels.filter(l => l.type === 'support').sort((a, b) => b.weight - a.weight).slice(0, 2);
+    const resists = levels.filter(l => l.type === 'resistance').sort((a, b) => b.weight - a.weight).slice(0, 2);
+
+    [...supports, ...resists].forEach(l => {
+        const line = series.createPriceLine({
+            price: l.price,
+            color: l.type === 'support' ? '#22c55e' : '#ef4444',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: '',
+        });
+        mc.charts[sym].lines.push(line);
+    });
 }

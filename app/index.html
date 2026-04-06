@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 
 <body>
@@ -92,13 +93,15 @@
 
         <main class="main">
             <div id="error" class="error hidden"></div>
-            <div class="table-container" id="table-container">
+            
+            <div id="tab-densities" class="tab-content active">
+                <div class="table-container" id="table-container">
                 <table class="table">
                     <thead>
                         <tr>
                             <th class="sortable" data-sort="symbol">Symbol</th>
                             <th class="sortable" data-sort="side">Type</th>
-                            <th class="sortable" data-sort="distance">Dist %</th>
+                            <th class="sortable" data-sort="distance">Price / Dist %</th>
                             <th class="sortable" data-sort="notional">Density $</th>
                             <th>Vol 5x5m</th>
                             <th class="sortable" data-sort="natr">NATR</th>
@@ -115,6 +118,56 @@
 
             <!-- Mobile Cards View -->
             <div class="cards-container" id="cardsContent" style="display:none;"></div>
+            </div> <!-- End Tab Densities -->
+
+            <div id="tab-mini-charts" class="tab-content" style="display:none;">
+                <!-- Global Toolbar -->
+                <div class="mc-toolbar">
+                    <div class="mc-toolbar-group">
+                        <span class="mc-toolbar-label">TF:</span>
+                        <div class="mc-tf-buttons" id="mcGlobalTF">
+                            <button class="mc-tf-btn" data-tf="1m">1m</button>
+                            <button class="mc-tf-btn" data-tf="5m">5m</button>
+                            <button class="mc-tf-btn active" data-tf="15m">15m</button>
+                            <button class="mc-tf-btn" data-tf="1h">1h</button>
+                            <button class="mc-tf-btn" data-tf="4h">4h</button>
+                            <button class="mc-tf-btn" data-tf="1d">1d</button>
+                        </div>
+                    </div>
+                    <div class="mc-toolbar-group">
+                        <span class="mc-toolbar-label">Sort:</span>
+                        <select id="mcSortBy" class="mc-select">
+                            <option value="volume">Volume</option>
+                            <option value="natr">Volatility</option>
+                            <option value="change">% Change</option>
+                            <option value="trades">Trades</option>
+                        </select>
+                    </div>
+                    <div class="mc-toolbar-group" style="margin-left:auto;">
+                        <span id="mcStatus" class="mc-status"></span>
+                        <button id="mcRefreshBtn" class="mc-refresh-btn">↻ Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Charts + Sidebar Layout -->
+                <div class="mc-layout">
+                    <!-- Charts Grid 3x2 -->
+                    <div class="mc-charts-area">
+                        <div id="chartsGrid" class="mc-grid"></div>
+                    </div>
+
+                    <!-- Coins Sidebar -->
+                    <aside class="mc-sidebar" id="mcSidebar">
+                        <div class="mc-sidebar-header">
+                            <span class="mc-sidebar-title">Coins</span>
+                            <span class="mc-sidebar-count" id="mcCoinCount">0</span>
+                        </div>
+                        <div class="mc-coin-list" id="mcCoinList">
+                            <!-- populated by JS -->
+                        </div>
+                    </aside>
+                </div>
+            </div>
 
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
@@ -173,7 +226,7 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260220-4"></script>
+    <script src="/app.js?v=20260406-mc2"></script>
 </body>
 
 </html>
