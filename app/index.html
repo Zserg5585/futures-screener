@@ -257,7 +257,33 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260406-mc10"></script>
+    <!-- Coin Detail Modal -->
+    <div id="coinModal" class="mc-modal hidden">
+        <div class="mc-modal-overlay"></div>
+        <div class="mc-modal-content">
+            <div class="mc-modal-header">
+                <div class="mc-modal-title">
+                    <span id="cmSymbol" class="mc-modal-sym"></span>
+                    <span id="cmPrice" class="mc-modal-price"></span>
+                    <span id="cmChange" class="mc-modal-change"></span>
+                </div>
+                <button id="cmClose" class="mc-modal-close">&times;</button>
+            </div>
+            <div class="mc-modal-tf" id="cmTFButtons">
+                <button class="mc-tf-btn" data-tf="1m">1m</button>
+                <button class="mc-tf-btn" data-tf="5m">5m</button>
+                <button class="mc-tf-btn active" data-tf="15m">15m</button>
+                <button class="mc-tf-btn" data-tf="1h">1h</button>
+                <button class="mc-tf-btn" data-tf="4h">4h</button>
+                <button class="mc-tf-btn" data-tf="1d">1d</button>
+            </div>
+            <div id="cmChartBody" class="mc-modal-chart"></div>
+            <div class="mc-modal-stats" id="cmStats"></div>
+            <div class="mc-modal-links" id="cmLinks"></div>
+        </div>
+    </div>
+
+    <script src="/app.js?v=20260406-mc11"></script>
 </body>
 
 </html>

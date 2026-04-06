@@ -948,6 +948,168 @@ body {
     font-size: 10px;
 }
 
+/* Coin Detail Modal */
+.mc-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.mc-modal.hidden {
+    display: none;
+}
+
+.mc-modal-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+}
+
+.mc-modal-content {
+    position: relative;
+    width: 100%;
+    max-width: 900px;
+    height: 80vh;
+    max-height: 700px;
+    background: #0a0f18;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.mc-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--glass-border);
+    flex-shrink: 0;
+}
+
+.mc-modal-title {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+}
+
+.mc-modal-sym {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.mc-modal-price {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.mc-modal-change {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.mc-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.mc-modal-close:hover {
+    color: var(--text-primary);
+}
+
+.mc-modal-tf {
+    display: flex;
+    gap: 2px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--glass-border);
+    background: rgba(0, 0, 0, 0.2);
+    flex-shrink: 0;
+}
+
+.mc-modal-chart {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+.mc-modal-stats {
+    display: flex;
+    gap: 16px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--glass-border);
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.mc-modal-stats .mc-stat {
+    display: flex;
+    gap: 4px;
+}
+
+.mc-modal-stats .mc-stat-label {
+    color: var(--text-muted);
+}
+
+.mc-modal-stats .mc-stat-value {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.mc-modal-links {
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--glass-border);
+    flex-shrink: 0;
+}
+
+.mc-modal-links a {
+    font-size: 11px;
+    color: var(--neon-blue);
+    text-decoration: none;
+    padding: 4px 10px;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: 4px;
+    transition: all 0.15s;
+}
+
+.mc-modal-links a:hover {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.4);
+}
+
+@media screen and (max-width: 768px) {
+    .mc-modal-content {
+        height: 90vh;
+        max-height: none;
+    }
+}
+
+/* Clickable chart cards */
+.mc-chart-header {
+    cursor: pointer;
+}
+
+.mc-chart-header:hover .mc-chart-symbol {
+    color: var(--neon-blue);
+}
+
 /* Responsive: stack on smaller screens */
 @media screen and (max-width: 1100px) {
     .mc-grid {

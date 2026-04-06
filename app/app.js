@@ -730,6 +730,9 @@ async function initMiniCharts() {
             refreshBtn.addEventListener('click', () => refreshMiniCharts());
         }
 
+        // Init modal events
+        initModalEvents();
+
         // Setup IntersectionObserver
         mc.observer = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
@@ -861,9 +864,12 @@ function rebuildGrid() {
         </div>`;
     }).join('');
 
-    // Observe all cards
+    // Observe all cards + click to open modal
     grid.querySelectorAll('.mc-chart-card').forEach(card => {
         mc.observer.observe(card);
+        card.querySelector('.mc-chart-header').addEventListener('click', () => {
+            openCoinModal(card.dataset.symbol);
+        });
     });
 }
 
@@ -902,16 +908,10 @@ function renderSidebar() {
         </div>`;
     }).join('');
 
-    // Click handler — scroll to that card in the grid
+    // Click handler — open coin modal
     list.querySelectorAll('.mc-coin-item').forEach(item => {
         item.addEventListener('click', () => {
-            const sym = item.dataset.symbol;
-            const card = el(`mc-card-${sym}`);
-            if (card) {
-                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                card.style.borderColor = 'rgba(59,130,246,0.5)';
-                setTimeout(() => { card.style.borderColor = ''; }, 2000);
-            }
+            openCoinModal(item.dataset.symbol);
         });
     });
 }
@@ -1067,5 +1067,209 @@ function drawAutoLevels(sym, data, series) {
             title: '',
         });
         mc.charts[sym].lines.push(line);
+    });
+}
+
+// ==========================================
+// Coin Detail Modal
+// ==========================================
+const modal = {
+    chart: null,
+    series: null,
+    lines: [],
+    currentSym: null,
+    currentTF: '15m'
+};
+
+function openCoinModal(sym) {
+    const pair = mc.allPairs.find(p => p.symbol === sym);
+    if (!pair) return;
+
+    modal.currentSym = sym;
+    modal.currentTF = mc.globalTF;
+
+    const ticker = sym.replace('USDT', '');
+    const prec = getPricePrecision(pair.lastPrice);
+    const chg = pair.priceChange;
+    const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
+    const chgSign = chg >= 0 ? '+' : '';
+
+    // Header
+    el('cmSymbol').textContent = ticker + '/USDT';
+    el('cmPrice').textContent = '$' + pair.lastPrice.toFixed(prec);
+    const cmChange = el('cmChange');
+    cmChange.textContent = chgSign + chg.toFixed(2) + '%';
+    cmChange.className = 'mc-modal-change ' + chgClass;
+
+    // Stats
+    const vol = pair.quoteVol >= 1e9 ? (pair.quoteVol / 1e9).toFixed(2) + 'B' : (pair.quoteVol / 1e6).toFixed(1) + 'M';
+    el('cmStats').innerHTML = `
+        <div class="mc-stat"><span class="mc-stat-label">24h Vol:</span><span class="mc-stat-value">$${vol}</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">NATR:</span><span class="mc-stat-value">${pair.proxyNatr.toFixed(2)}%</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">Trades:</span><span class="mc-stat-value">${formatNumber(pair.tradesCount, 0)}</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">High:</span><span class="mc-stat-value">${parseFloat(pair.highPrice).toFixed(prec)}</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">Low:</span><span class="mc-stat-value">${parseFloat(pair.lowPrice).toFixed(prec)}</span></div>
+    `;
+
+    // Links
+    el('cmLinks').innerHTML = `
+        <a href="https://www.binance.com/en/futures/${sym}" target="_blank">Binance</a>
+        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P" target="_blank">TradingView</a>
+        <a href="https://www.coinglass.com/tv/${ticker}USDT" target="_blank">CoinGlass</a>
+    `;
+
+    // TF buttons — set active
+    const tfBtns = el('cmTFButtons');
+    tfBtns.querySelectorAll('.mc-tf-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tf === modal.currentTF);
+    });
+
+    // Show modal
+    el('coinModal').classList.remove('hidden');
+
+    // Create or recreate chart
+    if (modal.chart) {
+        modal.chart.remove();
+        modal.chart = null;
+    }
+
+    const chartEl = el('cmChartBody');
+    const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
+
+    modal.chart = LightweightCharts.createChart(chartEl, {
+        autoSize: true,
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        crosshair: { mode: 0 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
+    });
+
+    modal.series = modal.chart.addCandlestickSeries({
+        upColor: '#22c55e', downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+        priceFormat: { type: 'price', precision: prec, minMove: minMove }
+    });
+
+    modal.lines = [];
+    loadModalChart(sym, modal.currentTF);
+}
+
+async function loadModalChart(sym, tf) {
+    try {
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=500`);
+        const json = await res.json();
+        if (!Array.isArray(json) || !modal.chart) return;
+
+        const data = json.map(k => ({
+            time: k[0] / 1000,
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            highRaw: parseFloat(k[2]),
+            lowRaw: parseFloat(k[3])
+        }));
+
+        modal.series.setData(data);
+        modal.chart.timeScale().fitContent();
+        setTimeout(() => { if (modal.chart) modal.chart.timeScale().fitContent(); }, 150);
+
+        // Draw levels
+        modal.lines.forEach(l => modal.series.removePriceLine(l));
+        modal.lines = [];
+        drawModalLevels(data);
+    } catch (e) {
+        console.error('Modal chart error:', e);
+    }
+}
+
+function drawModalLevels(data) {
+    const WINDOW = 5;
+    const highs = [], lows = [];
+    for (let i = WINDOW; i < data.length - WINDOW; i++) {
+        let isHigh = true, isLow = true;
+        for (let j = i - WINDOW; j <= i + WINDOW; j++) {
+            if (i === j) continue;
+            if (data[j].highRaw >= data[i].highRaw) isHigh = false;
+            if (data[j].lowRaw <= data[i].lowRaw) isLow = false;
+        }
+        if (isHigh) highs.push(data[i].highRaw);
+        if (isLow) lows.push(data[i].lowRaw);
+    }
+
+    const THRESHOLD = 0.003;
+    const findClusters = (pivots, type) => {
+        const used = new Set(), result = [];
+        for (let i = 0; i < Math.min(pivots.length, 60); i++) {
+            if (used.has(i)) continue;
+            const cluster = [pivots[i]];
+            for (let j = i + 1; j < pivots.length; j++) {
+                if (used.has(j)) continue;
+                if (Math.abs(pivots[i] - pivots[j]) / pivots[i] < THRESHOLD) {
+                    cluster.push(pivots[j]);
+                    used.add(j);
+                }
+            }
+            if (cluster.length >= 2) {
+                result.push({ price: cluster.reduce((s, p) => s + p, 0) / cluster.length, type, weight: cluster.length });
+            }
+        }
+        return result;
+    };
+
+    const levels = [
+        ...findClusters(highs, 'resistance').sort((a, b) => b.weight - a.weight).slice(0, 3),
+        ...findClusters(lows, 'support').sort((a, b) => b.weight - a.weight).slice(0, 3)
+    ];
+
+    levels.forEach(l => {
+        const line = modal.series.createPriceLine({
+            price: l.price,
+            color: l.type === 'support' ? '#22c55e' : '#ef4444',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: l.type === 'support' ? `S×${l.weight}` : `R×${l.weight}`,
+        });
+        modal.lines.push(line);
+    });
+}
+
+function closeCoinModal() {
+    el('coinModal').classList.add('hidden');
+    if (modal.chart) {
+        modal.chart.remove();
+        modal.chart = null;
+        modal.series = null;
+        modal.lines = [];
+    }
+    modal.currentSym = null;
+}
+
+// Init modal event listeners (called once in initMiniCharts)
+function initModalEvents() {
+    // Close button
+    el('cmClose').addEventListener('click', closeCoinModal);
+
+    // Overlay click
+    document.querySelector('.mc-modal-overlay').addEventListener('click', closeCoinModal);
+
+    // Escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.currentSym) closeCoinModal();
+    });
+
+    // TF buttons in modal
+    el('cmTFButtons').addEventListener('click', (e) => {
+        const btn = e.target.closest('.mc-tf-btn');
+        if (!btn || !modal.currentSym) return;
+        el('cmTFButtons').querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        modal.currentTF = btn.dataset.tf;
+        loadModalChart(modal.currentSym, modal.currentTF);
     });
 }
