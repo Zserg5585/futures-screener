@@ -857,7 +857,7 @@ function rebuildGrid() {
                 <div class="mc-chart-metrics">
                     <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
                     <span class="mc-metric-muted">$${vol}</span>
-                    <span class="mc-metric-muted">V${natr}%</span>
+                    <span class="mc-metric-muted">R${natr}%</span>
                 </div>
             </div>
             <div class="mc-chart-body" id="mc-body-${sym}"></div>
@@ -1000,12 +1000,12 @@ async function loadChartData(sym, tf) {
             if (mc.charts[sym]) mc.charts[sym].chart.timeScale().fitContent();
         }, 150);
 
-        // Clear old lines
-        if (mc.charts[sym].lines.length > 0) {
-            mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
-        }
-        mc.charts[sym].lines = [];
-        drawAutoLevels(sym, data, series);
+        // Auto-levels disabled for now
+        // if (mc.charts[sym].lines.length > 0) {
+        //     mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
+        // }
+        // mc.charts[sym].lines = [];
+        // drawAutoLevels(sym, data, series);
 
     } catch (e) {
         console.error(`Chart load error ${sym}:`, e);
@@ -1103,10 +1103,13 @@ function openCoinModal(sym) {
 
     // Stats
     const vol = pair.quoteVol >= 1e9 ? (pair.quoteVol / 1e9).toFixed(2) + 'B' : (pair.quoteVol / 1e6).toFixed(1) + 'M';
+    const tradesStr = pair.tradesCount >= 1e6 ? (pair.tradesCount / 1e6).toFixed(1) + 'M'
+        : pair.tradesCount >= 1e3 ? (pair.tradesCount / 1e3).toFixed(1) + 'K'
+        : pair.tradesCount.toString();
     el('cmStats').innerHTML = `
         <div class="mc-stat"><span class="mc-stat-label">24h Vol:</span><span class="mc-stat-value">$${vol}</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">NATR:</span><span class="mc-stat-value">${pair.proxyNatr.toFixed(2)}%</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">Trades:</span><span class="mc-stat-value">${formatNumber(pair.tradesCount, 0)}</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">Range:</span><span class="mc-stat-value">${pair.proxyNatr.toFixed(1)}%</span></div>
+        <div class="mc-stat"><span class="mc-stat-label">Trades:</span><span class="mc-stat-value">${tradesStr}</span></div>
         <div class="mc-stat"><span class="mc-stat-label">High:</span><span class="mc-stat-value">${parseFloat(pair.highPrice).toFixed(prec)}</span></div>
         <div class="mc-stat"><span class="mc-stat-label">Low:</span><span class="mc-stat-value">${parseFloat(pair.lowPrice).toFixed(prec)}</span></div>
     `;
@@ -1178,10 +1181,10 @@ async function loadModalChart(sym, tf) {
         modal.chart.timeScale().fitContent();
         setTimeout(() => { if (modal.chart) modal.chart.timeScale().fitContent(); }, 150);
 
-        // Draw levels
-        modal.lines.forEach(l => modal.series.removePriceLine(l));
-        modal.lines = [];
-        drawModalLevels(data);
+        // Auto-levels disabled for now
+        // modal.lines.forEach(l => modal.series.removePriceLine(l));
+        // modal.lines = [];
+        // drawModalLevels(data);
     } catch (e) {
         console.error('Modal chart error:', e);
     }
