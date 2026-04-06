@@ -670,12 +670,14 @@ const mc = {
     sortBy: 'volume',
     globalTF: '15m',
     loaded: false,
-    allPairs: [],
+    allPairs: [],        // all fetched pairs (unfiltered)
+    filteredPairs: [],   // after filters applied
     charts: {},          // { sym: { chart, series, lines[] } } — only visible ones
     loadedData: {},      // { sym: true } — tracks which symbols have been loaded
     observer: null,      // IntersectionObserver
     loadQueue: [],       // queue for staggered loading
-    loadingActive: false
+    loadingActive: false,
+    filters: { minVol: 50, minNatr: 0, minTrades: 0 }
 };
 
 async function initMiniCharts() {
@@ -705,9 +707,22 @@ async function initMiniCharts() {
         if (sortSel) {
             sortSel.addEventListener('change', (e) => {
                 mc.sortBy = e.target.value;
-                rebuildGrid();
+                applyFiltersAndRebuild();
             });
         }
+
+        // Filters
+        ['mcFilterVol', 'mcFilterNatr', 'mcFilterTrades'].forEach(id => {
+            const sel = el(id);
+            if (sel) {
+                sel.addEventListener('change', () => {
+                    mc.filters.minVol = parseFloat(el('mcFilterVol').value);
+                    mc.filters.minNatr = parseFloat(el('mcFilterNatr').value);
+                    mc.filters.minTrades = parseFloat(el('mcFilterTrades').value);
+                    applyFiltersAndRebuild();
+                });
+            }
+        });
 
         // Refresh button
         const refreshBtn = el('mcRefreshBtn');
@@ -782,16 +797,27 @@ async function refreshMiniCharts() {
         });
 
         mc.allPairs = pairs;
-        rebuildGrid();
+        applyFiltersAndRebuild();
 
         if (status) {
-            status.textContent = `${pairs.length} pairs`;
-            setTimeout(() => { if (status) status.textContent = `${pairs.length} pairs`; }, 3000);
+            status.textContent = `${mc.filteredPairs.length}/${pairs.length}`;
         }
     } catch (e) {
         console.error('Mini-Charts fetch error:', e);
         if (status) status.textContent = 'Error';
     }
+}
+
+function applyFiltersAndRebuild() {
+    mc.filteredPairs = mc.allPairs.filter(p => {
+        if (mc.filters.minVol > 0 && p.quoteVol < mc.filters.minVol * 1e6) return false;
+        if (mc.filters.minNatr > 0 && p.proxyNatr < mc.filters.minNatr) return false;
+        if (mc.filters.minTrades > 0 && p.tradesCount < mc.filters.minTrades) return false;
+        return true;
+    });
+    rebuildGrid();
+    const status = el('mcStatus');
+    if (status) status.textContent = `${mc.filteredPairs.length}/${mc.allPairs.length}`;
 }
 
 function rebuildGrid() {
@@ -813,7 +839,7 @@ function rebuildGrid() {
     mc.observer.disconnect();
 
     // Render ALL cards (lightweight — just header + empty body)
-    grid.innerHTML = mc.allPairs.map(p => {
+    grid.innerHTML = mc.filteredPairs.map(p => {
         const sym = p.symbol;
         const ticker = sym.replace('USDT', '');
         const chg = p.priceChange;
@@ -842,12 +868,14 @@ function rebuildGrid() {
 }
 
 function sortPairs() {
-    mc.allPairs.sort((a, b) => {
+    const sorter = (a, b) => {
         if (mc.sortBy === 'natr') return b.proxyNatr - a.proxyNatr;
         if (mc.sortBy === 'trades') return b.tradesCount - a.tradesCount;
         if (mc.sortBy === 'change') return Math.abs(b.priceChange) - Math.abs(a.priceChange);
         return b.quoteVol - a.quoteVol;
-    });
+    };
+    mc.allPairs.sort(sorter);
+    mc.filteredPairs.sort(sorter);
 }
 
 function renderSidebar() {
@@ -855,9 +883,9 @@ function renderSidebar() {
     const countEl = el('mcCoinCount');
     if (!list) return;
 
-    if (countEl) countEl.textContent = mc.allPairs.length;
+    if (countEl) countEl.textContent = mc.filteredPairs.length;
 
-    list.innerHTML = mc.allPairs.map(p => {
+    list.innerHTML = mc.filteredPairs.map(p => {
         const sym = p.symbol;
         const ticker = sym.replace('USDT', '');
         const chg = p.priceChange;

@@ -143,6 +143,37 @@
                             <option value="trades">Trades</option>
                         </select>
                     </div>
+                    <div class="mc-toolbar-divider"></div>
+                    <div class="mc-toolbar-group">
+                        <span class="mc-toolbar-label">Vol:</span>
+                        <select id="mcFilterVol" class="mc-select">
+                            <option value="0">All</option>
+                            <option value="10">≥$10M</option>
+                            <option value="50" selected>≥$50M</option>
+                            <option value="100">≥$100M</option>
+                            <option value="500">≥$500M</option>
+                        </select>
+                    </div>
+                    <div class="mc-toolbar-group">
+                        <span class="mc-toolbar-label">NATR:</span>
+                        <select id="mcFilterNatr" class="mc-select">
+                            <option value="0" selected>All</option>
+                            <option value="1">≥1%</option>
+                            <option value="2">≥2%</option>
+                            <option value="3">≥3%</option>
+                            <option value="5">≥5%</option>
+                        </select>
+                    </div>
+                    <div class="mc-toolbar-group">
+                        <span class="mc-toolbar-label">Trades:</span>
+                        <select id="mcFilterTrades" class="mc-select">
+                            <option value="0" selected>All</option>
+                            <option value="10000">≥10K</option>
+                            <option value="50000">≥50K</option>
+                            <option value="100000">≥100K</option>
+                            <option value="500000">≥500K</option>
+                        </select>
+                    </div>
                     <div class="mc-toolbar-group" style="margin-left:auto;">
                         <span id="mcStatus" class="mc-status"></span>
                         <button id="mcRefreshBtn" class="mc-refresh-btn">↻ Refresh</button>
@@ -226,7 +257,7 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260406-mc8"></script>
+    <script src="/app.js?v=20260406-mc9"></script>
 </body>
 
 </html>
