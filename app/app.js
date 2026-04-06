@@ -683,7 +683,13 @@ async function initMiniCharts() {
                 tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 mc.globalTF = btn.dataset.tf;
-                mc.activeSymbols.forEach(sym => loadChartDataAndDrawLevels(sym, mc.globalTF));
+                // Load sequentially to avoid rate limits
+                (async () => {
+                    for (const sym of mc.activeSymbols) {
+                        await loadChartDataAndDrawLevels(sym, mc.globalTF);
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+                })();
             });
         }
 
@@ -814,10 +820,14 @@ function updateGridSymbols(symbols) {
     // Create all chart containers first
     symbols.forEach((sym, idx) => createChartInSlot(idx, sym));
 
-    // Then load data after a small delay so DOM has rendered and charts have size
-    setTimeout(() => {
-        symbols.forEach(sym => loadChartDataAndDrawLevels(sym, mc.globalTF));
-    }, 100);
+    // Load data sequentially with delay to avoid Binance rate limits
+    (async () => {
+        await new Promise(r => setTimeout(r, 150)); // wait for DOM render
+        for (const sym of symbols) {
+            await loadChartDataAndDrawLevels(sym, mc.globalTF);
+            await new Promise(r => setTimeout(r, 50)); // stagger requests
+        }
+    })();
 
     const list = el('mcCoinList');
     if (list) {
