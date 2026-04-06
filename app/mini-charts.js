@@ -322,41 +322,57 @@ async function processLoadQueue() {
     mc.loadingActive = false;
 }
 
+function parseKlines(json) {
+    return json.map(k => ({
+        time: k[0] / 1000,
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+    }));
+}
+
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
-        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=300`);
-        const json = await res.json();
+        // Phase 1: fast load — last 100 candles for instant render
+        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=100`);
+        const json1 = await res1.json();
+        if (!Array.isArray(json1) || !mc.charts[sym]) return;
 
-        if (!Array.isArray(json)) return;
-
-        const data = json.map(k => ({
-            time: k[0] / 1000,
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-        }));
-
-        if (!mc.charts[sym]) return; // check again after await
-
-        const series = mc.charts[sym].series;
-        series.setData(data);
+        const data1 = parseKlines(json1);
+        mc.charts[sym].series.setData(data1);
         mc.loadedData[sym] = true;
 
-        // Show last ~80 candles (rest is scrollable history)
-        const visibleBars = 80;
-        const from = Math.max(0, data.length - visibleBars);
-        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
+        // Show all 100 candles
+        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
 
-        // Subscribe to live kline updates
+        // Subscribe to live WS updates immediately
         wsSubscribe(sym);
 
-        setTimeout(() => {
-            if (mc.charts[sym]) {
-                mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
-            }
-        }, 150);
+        // Phase 2: background load — full 500 candles for history
+        setTimeout(async () => {
+            if (!mc.charts[sym]) return;
+            try {
+                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
+                const json2 = await res2.json();
+                if (!Array.isArray(json2) || !mc.charts[sym]) return;
+
+                const data2 = parseKlines(json2);
+                // Save current visible range before replacing data
+                const visRange = mc.charts[sym].chart.timeScale().getVisibleLogicalRange();
+                mc.charts[sym].series.setData(data2);
+
+                // Keep the same view (user sees no jump) — offset by added history
+                const added = data2.length - data1.length;
+                if (visRange) {
+                    mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
+                        from: visRange.from + added,
+                        to: visRange.to + added
+                    });
+                }
+            } catch (e) { /* background load failed, no big deal */ }
+        }, 300);
 
         // Auto-levels disabled for now
         // if (mc.charts[sym].lines.length > 0) {
@@ -450,17 +466,28 @@ function wsConnect() {
             const msg = JSON.parse(evt.data);
             if (!msg.data || msg.data.e !== 'kline') return;
             const k = msg.data.k;
-            const sym = k.s; // e.g. BTCUSDT
-            if (!mc.charts[sym]) return;
-
-            // Update the last candle in realtime
-            mc.charts[sym].series.update({
+            const sym = k.s;
+            const candle = {
                 time: Math.floor(k.t / 1000),
                 open: parseFloat(k.o),
                 high: parseFloat(k.h),
                 low: parseFloat(k.l),
                 close: parseFloat(k.c),
-            });
+            };
+
+            // Update mini-chart
+            if (mc.charts[sym]) {
+                mc.charts[sym].series.update(candle);
+            }
+
+            // Update modal chart if same symbol & TF
+            if (modal.chart && modal.currentSym === sym) {
+                const modalStream = `${sym.toLowerCase()}@kline_${modal.currentTF}`;
+                const incomingStream = msg.stream || '';
+                if (incomingStream === modalStream || modal.wsStream === `${sym.toLowerCase()}@kline_${k.i}`) {
+                    modal.series.update(candle);
+                }
+            }
         } catch (e) { /* ignore parse errors */ }
     };
     mc.ws.onclose = () => {
@@ -595,7 +622,8 @@ const modal = {
     series: null,
     lines: [],
     currentSym: null,
-    currentTF: '15m'
+    currentTF: '15m',
+    wsStream: null
 };
 
 function openCoinModal(sym) {
@@ -683,36 +711,55 @@ function openCoinModal(sym) {
 }
 
 async function loadModalChart(sym, tf) {
+    // Unsubscribe previous modal WS stream
+    if (modal.wsStream) {
+        if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+            mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [modal.wsStream], id: Date.now() }));
+        }
+        mc.wsStreams.delete(modal.wsStream);
+        modal.wsStream = null;
+    }
+
     try {
-        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
-        const json = await res.json();
-        if (!Array.isArray(json) || !modal.chart) return;
+        // Phase 1: fast — 150 candles
+        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=150`);
+        const json1 = await res1.json();
+        if (!Array.isArray(json1) || !modal.chart) return;
 
-        const data = json.map(k => ({
-            time: k[0] / 1000,
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-            highRaw: parseFloat(k[2]),
-            lowRaw: parseFloat(k[3])
-        }));
+        const data1 = parseKlines(json1);
+        modal.series.setData(data1);
+        modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
 
-        modal.series.setData(data);
-        // Show last 150 bars, rest is scrollable history
-        const visibleBars = 150;
-        const from = Math.max(0, data.length - visibleBars);
-        modal.chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
-        setTimeout(() => {
-            if (modal.chart) {
-                modal.chart.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 });
-            }
-        }, 150);
+        // Subscribe modal to live WS
+        const stream = `${sym.toLowerCase()}@kline_${tf}`;
+        modal.wsStream = stream;
+        mc.wsStreams.add(stream);
+        if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+            mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [stream], id: Date.now() }));
+        } else {
+            wsConnect();
+        }
 
-        // Auto-levels disabled for now
-        // modal.lines.forEach(l => modal.series.removePriceLine(l));
-        // modal.lines = [];
-        // drawModalLevels(data);
+        // Phase 2: background — full 500
+        setTimeout(async () => {
+            if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
+            try {
+                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
+                const json2 = await res2.json();
+                if (!Array.isArray(json2) || !modal.chart) return;
+
+                const data2 = parseKlines(json2);
+                const visRange = modal.chart.timeScale().getVisibleLogicalRange();
+                modal.series.setData(data2);
+                const added = data2.length - data1.length;
+                if (visRange) {
+                    modal.chart.timeScale().setVisibleLogicalRange({
+                        from: visRange.from + added,
+                        to: visRange.to + added
+                    });
+                }
+            } catch (e) { /* background load failed */ }
+        }, 400);
     } catch (e) {
         console.error('Modal chart error:', e);
     }
@@ -772,6 +819,14 @@ function drawModalLevels(data) {
 
 function closeCoinModal() {
     el('coinModal').classList.add('hidden');
+    // Unsubscribe modal WS stream
+    if (modal.wsStream) {
+        if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+            mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [modal.wsStream], id: Date.now() }));
+        }
+        mc.wsStreams.delete(modal.wsStream);
+        modal.wsStream = null;
+    }
     if (modal.chart) {
         modal.chart.remove();
         modal.chart = null;
