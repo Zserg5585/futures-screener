@@ -2,6 +2,7 @@
 // Mini-Charts v3 — Full Market Screener
 // Uses IntersectionObserver to only render visible charts
 // ==========================================
+const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
 const mc = {
     sortBy: 'volume',
     globalTF: '15m',
@@ -14,10 +15,19 @@ const mc = {
     loadQueue: [],       // queue for staggered loading
     loadingActive: false,
     filters: { minVol: 50, minNatr: 0, minTrades: 0 },
+    searchQuery: '',     // coin search filter
+    flags: {},           // { sym: '#color' } — color flags, persisted in localStorage
     ws: null,            // Binance kline WebSocket
     wsStreams: new Set(), // currently subscribed streams
     wsPending: new Set() // streams waiting to subscribe
 };
+
+// Load flags from localStorage
+try { mc.flags = JSON.parse(localStorage.getItem('mc_flags') || '{}'); } catch(e) { mc.flags = {}; }
+
+function saveFlags() {
+    localStorage.setItem('mc_flags', JSON.stringify(mc.flags));
+}
 
 async function initMiniCharts() {
     if (!mc.loaded) {
@@ -68,6 +78,22 @@ async function initMiniCharts() {
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => refreshMiniCharts());
         }
+
+        // Search input
+        const searchInput = el('mcSearchInput');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                mc.searchQuery = e.target.value.trim().toUpperCase();
+                renderSidebar();
+            });
+        }
+
+        // Close flag popups on outside click
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.mc-flag-btn') && !e.target.closest('.mc-flag-popup')) {
+                document.querySelectorAll('.mc-flag-popup').forEach(p => p.remove());
+            }
+        });
 
         // Init modal events
         initModalEvents();
@@ -237,18 +263,35 @@ function renderSidebar() {
     const countEl = el('mcCoinCount');
     if (!list) return;
 
-    if (countEl) countEl.textContent = mc.filteredPairs.length;
+    // Filter by search query
+    let pairs = mc.filteredPairs;
+    if (mc.searchQuery) {
+        pairs = pairs.filter(p => p.symbol.replace('USDT', '').includes(mc.searchQuery));
+    }
 
-    list.innerHTML = mc.filteredPairs.map(p => {
+    // Sort: flagged coins first, then by current sort
+    pairs = [...pairs].sort((a, b) => {
+        const fa = mc.flags[a.symbol] ? 1 : 0;
+        const fb = mc.flags[b.symbol] ? 1 : 0;
+        return fb - fa;
+    });
+
+    if (countEl) countEl.textContent = pairs.length;
+
+    list.innerHTML = pairs.map(p => {
         const sym = p.symbol;
         const ticker = sym.replace('USDT', '');
         const chg = p.priceChange;
         const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
         const chgSign = chg >= 0 ? '+' : '';
         const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
+        const flagColor = mc.flags[sym] || '';
+        const flagStyle = flagColor ? `background:${flagColor}; border-color:transparent;` : '';
+        const flagClass = flagColor ? 'mc-flag-btn flagged' : 'mc-flag-btn';
 
         return `<div class="mc-coin-item" data-symbol="${sym}">
-            <div>
+            <button class="${flagClass}" style="${flagStyle}" data-flag="${sym}" title="Set color flag"></button>
+            <div style="flex:1; min-width:0; display:flex; align-items:center; gap:4px;">
                 <span class="mc-coin-name">${ticker}</span>
                 <span class="mc-coin-vol">$${vol}</span>
             </div>
@@ -256,9 +299,42 @@ function renderSidebar() {
         </div>`;
     }).join('');
 
-    // Click handler — open coin modal
+    // Flag button click — show color picker
+    list.querySelectorAll('.mc-flag-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const sym = btn.dataset.flag;
+            document.querySelectorAll('.mc-flag-popup').forEach(p => p.remove());
+            const popup = document.createElement('div');
+            popup.className = 'mc-flag-popup';
+            popup.innerHTML = FLAG_COLORS.map(c =>
+                `<div class="mc-flag-color" data-color="${c}" style="background:${c};"></div>`
+            ).join('') + `<button class="mc-flag-clear" title="Remove flag">&times;</button>`;
+            btn.style.position = 'relative';
+            btn.appendChild(popup);
+            popup.querySelectorAll('.mc-flag-color').forEach(dot => {
+                dot.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    mc.flags[sym] = dot.dataset.color;
+                    saveFlags();
+                    popup.remove();
+                    renderSidebar();
+                });
+            });
+            popup.querySelector('.mc-flag-clear').addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                delete mc.flags[sym];
+                saveFlags();
+                popup.remove();
+                renderSidebar();
+            });
+        });
+    });
+
+    // Click handler — open coin modal (skip flag clicks)
     list.querySelectorAll('.mc-coin-item').forEach(item => {
-        item.addEventListener('click', () => {
+        item.addEventListener('click', (e) => {
+            if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup')) return;
             openCoinModal(item.dataset.symbol);
         });
     });
@@ -586,17 +662,31 @@ function attachRuler(chartEl, chart, series) {
         const pctDiff = startPrice !== 0 ? (priceDiff / startPrice * 100) : 0;
         const prec = getPricePrecision(Math.abs(startPrice));
         const sign = priceDiff >= 0 ? '+' : '';
-        const color = priceDiff >= 0 ? '#22c55e' : '#ef4444';
 
-        // Position label
+        // Calculate time duration
+        const curTime = chart.timeScale().coordinateToTime(curX);
+        let timeStr = '';
+        if (startTime && curTime) {
+            const timeDiffSec = Math.abs(curTime - startTime);
+            if (timeDiffSec < 3600) {
+                timeStr = Math.round(timeDiffSec / 60) + 'm';
+            } else if (timeDiffSec < 86400) {
+                timeStr = (timeDiffSec / 3600).toFixed(1) + 'h';
+            } else {
+                timeStr = (timeDiffSec / 86400).toFixed(1) + 'd';
+            }
+        }
+
+        // Position label at midpoint
         const midX = (startX + curX) / 2;
         const midY = Math.min(startY, curY) - 8;
         label.style.left = midX + 'px';
         label.style.top = Math.max(2, midY) + 'px';
         label.style.transform = 'translateX(-50%)';
         label.style.display = 'block';
-        label.style.background = priceDiff >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
-        label.textContent = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)`;
+        label.style.background = priceDiff >= 0 ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)';
+        const timeInfo = timeStr ? ` | ${timeStr}` : '';
+        label.textContent = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)${timeInfo}`;
     });
 
     const endRuler = () => {
@@ -815,6 +905,331 @@ function drawModalLevels(data) {
         });
         modal.lines.push(line);
     });
+}
+
+
+// ==========================================
+// Drawing Tools — Modal only
+// ==========================================
+const DRAW_TOOLS = [
+    { id: 'cursor', icon: '\u25B3', title: 'Cursor (Esc)', key: 'Escape' },
+    { id: 'hline', icon: '\u2500', title: 'Horizontal Line (H)', key: 'h' },
+    { id: 'ray', icon: '\u2571', title: 'Ray (R)', key: 'r' },
+    { id: 'trendline', icon: '\u2572', title: 'Trend Line (T)', key: 't' },
+    { id: 'fib', icon: 'Fib', title: 'Fibonacci Retracement (F)', key: 'f' },
+    { id: 'ruler', icon: '\u{1F4CF}', title: 'Ruler (Shift+Drag)', key: null },
+    { id: 'trash', icon: '\u{1F5D1}', title: 'Clear All Drawings', key: 'Delete' },
+];
+
+const draw = {
+    activeTool: 'cursor',
+    clickCount: 0,
+    startPrice: 0,
+    startTime: 0,
+    tempLine: null,
+    drawings: [],    // { type, series/lines, data }
+    overlay: null,   // canvas overlay for live preview
+};
+
+function renderDrawToolbar() {
+    const container = el('cmDrawTools');
+    if (!container) return;
+    container.innerHTML = DRAW_TOOLS.map(t => {
+        const active = draw.activeTool === t.id ? ' dt-active' : '';
+        return `<button class="dt-btn${active}" data-tool="${t.id}" title="${t.title}">${t.icon}</button>`;
+    }).join('');
+
+    container.querySelectorAll('.dt-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tool = btn.dataset.tool;
+            if (tool === 'trash') {
+                clearAllDrawings();
+                return;
+            }
+            draw.activeTool = tool;
+            draw.clickCount = 0;
+            removePreviewOverlay();
+            renderDrawToolbar();
+            updateModalCursor();
+        });
+    });
+}
+
+function updateModalCursor() {
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return;
+    if (draw.activeTool === 'cursor') {
+        chartEl.style.cursor = '';
+    } else {
+        chartEl.style.cursor = 'crosshair';
+    }
+}
+
+// Keyboard shortcuts for tools
+document.addEventListener('keydown', (e) => {
+    if (!modal.chart) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const tool = DRAW_TOOLS.find(t => t.key && t.key.toLowerCase() === e.key.toLowerCase());
+    if (tool) {
+        if (tool.id === 'Escape') {
+            draw.activeTool = 'cursor';
+        } else {
+            draw.activeTool = tool.id;
+        }
+        draw.clickCount = 0;
+        removePreviewOverlay();
+        renderDrawToolbar();
+        updateModalCursor();
+    }
+    if (e.key === 'Delete' && modal.chart) {
+        clearAllDrawings();
+    }
+});
+
+function clearAllDrawings() {
+    draw.drawings.forEach(d => {
+        if (d.priceLine && modal.series) {
+            try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
+        }
+        if (d.lineSeries && modal.chart) {
+            try { modal.chart.removeSeries(d.lineSeries); } catch(e) {}
+        }
+        if (d.fibLines) {
+            d.fibLines.forEach(fl => {
+                try { modal.chart.removeSeries(fl); } catch(e) {}
+            });
+        }
+    });
+    draw.drawings = [];
+    draw.clickCount = 0;
+    removePreviewOverlay();
+}
+
+function removePreviewOverlay() {
+    if (draw.overlay) {
+        draw.overlay.remove();
+        draw.overlay = null;
+    }
+}
+
+function getPreviewCanvas() {
+    if (draw.overlay) return draw.overlay;
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return null;
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;';
+    canvas.width = chartEl.clientWidth;
+    canvas.height = chartEl.clientHeight;
+    chartEl.appendChild(canvas);
+    draw.overlay = canvas;
+    return canvas;
+}
+
+// ============================================
+// Drawing — click handlers on modal chart
+// ============================================
+function setupDrawingHandlers() {
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return;
+
+    // Remove old listeners by replacing element reference approach — use data attribute
+    if (chartEl.dataset.drawInit) return;
+    chartEl.dataset.drawInit = '1';
+
+    chartEl.addEventListener('click', (e) => {
+        if (!modal.chart || !modal.series) return;
+        if (draw.activeTool === 'cursor' || draw.activeTool === 'ruler') return;
+
+        const rect = chartEl.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = modal.series.coordinateToPrice(y);
+        const time = modal.chart.timeScale().coordinateToTime(x);
+        if (price === null || time === null) return;
+
+        if (draw.activeTool === 'hline') {
+            drawHorizontalLine(price);
+            draw.activeTool = 'cursor';
+            renderDrawToolbar();
+            updateModalCursor();
+        } else if (draw.activeTool === 'ray' || draw.activeTool === 'trendline') {
+            if (draw.clickCount === 0) {
+                draw.startPrice = price;
+                draw.startTime = time;
+                draw.clickCount = 1;
+            } else {
+                drawTwoPointLine(draw.activeTool, draw.startTime, draw.startPrice, time, price);
+                draw.clickCount = 0;
+                removePreviewOverlay();
+                draw.activeTool = 'cursor';
+                renderDrawToolbar();
+                updateModalCursor();
+            }
+        } else if (draw.activeTool === 'fib') {
+            if (draw.clickCount === 0) {
+                draw.startPrice = price;
+                draw.startTime = time;
+                draw.clickCount = 1;
+            } else {
+                drawFibonacci(draw.startPrice, price);
+                draw.clickCount = 0;
+                removePreviewOverlay();
+                draw.activeTool = 'cursor';
+                renderDrawToolbar();
+                updateModalCursor();
+            }
+        }
+    });
+
+    // Live preview for 2-click tools
+    chartEl.addEventListener('mousemove', (e) => {
+        if (!modal.chart || !modal.series) return;
+        if (draw.clickCount !== 1) return;
+        if (draw.activeTool !== 'ray' && draw.activeTool !== 'trendline' && draw.activeTool !== 'fib') return;
+
+        const rect = chartEl.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = modal.series.coordinateToPrice(y);
+        if (price === null) return;
+
+        const canvas = getPreviewCanvas();
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        canvas.width = chartEl.clientWidth;
+        canvas.height = chartEl.clientHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const startY2 = modal.series.priceToCoordinate(draw.startPrice);
+        const startX2 = modal.chart.timeScale().timeToCoordinate(draw.startTime);
+        if (startY2 === null || startX2 === null) return;
+
+        ctx.strokeStyle = '#5b9cf6';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 3]);
+
+        if (draw.activeTool === 'fib') {
+            // Preview fib levels
+            const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const fibColors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86'];
+            const diff = price - draw.startPrice;
+            levels.forEach((lvl, i) => {
+                const fibPrice = draw.startPrice + diff * lvl;
+                const fibY = modal.series.priceToCoordinate(fibPrice);
+                if (fibY === null) return;
+                ctx.strokeStyle = fibColors[i];
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath();
+                ctx.moveTo(0, fibY);
+                ctx.lineTo(canvas.width, fibY);
+                ctx.stroke();
+                ctx.fillStyle = fibColors[i];
+                ctx.font = '10px Inter, sans-serif';
+                ctx.fillText(`${(lvl * 100).toFixed(1)}%  ${fibPrice.toFixed(getPricePrecision(fibPrice))}`, 5, fibY - 3);
+            });
+        } else {
+            // Preview line/ray
+            ctx.beginPath();
+            ctx.moveTo(startX2, startY2);
+            if (draw.activeTool === 'ray') {
+                // Extend ray to edge
+                const dx = x - startX2;
+                const dy = y - startY2;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 0) {
+                    const scale = Math.max(canvas.width, canvas.height) * 2 / len;
+                    ctx.lineTo(startX2 + dx * scale, startY2 + dy * scale);
+                }
+            } else {
+                ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    });
+}
+
+// ============================================
+// Drawing implementations
+// ============================================
+function drawHorizontalLine(price) {
+    if (!modal.series) return;
+    const priceLine = modal.series.createPriceLine({
+        price: price,
+        color: '#5b9cf6',
+        lineWidth: 1,
+        lineStyle: 0, // solid
+        axisLabelVisible: true,
+        title: '',
+    });
+    draw.drawings.push({ type: 'hline', priceLine });
+}
+
+function drawTwoPointLine(type, t1, p1, t2, p2) {
+    if (!modal.chart) return;
+    const points = [];
+    const dt = t2 - t1;
+    const dp = p2 - p1;
+
+    if (type === 'ray') {
+        // Create many points extending forward
+        const steps = 1000;
+        const stepSize = Math.max(Math.abs(dt), 60) / 10;
+        for (let i = 0; i <= steps; i++) {
+            const ratio = i / 10;
+            points.push({
+                time: Math.round(t1 + dt * ratio),
+                value: p1 + dp * ratio
+            });
+        }
+    } else {
+        // Trendline: just 2 points
+        points.push({ time: t1, value: p1 });
+        points.push({ time: t2, value: p2 });
+    }
+
+    // Deduplicate by time (LightweightCharts requires unique times)
+    const seen = new Set();
+    const uniquePoints = points.filter(p => {
+        if (seen.has(p.time)) return false;
+        seen.add(p.time);
+        return true;
+    }).sort((a, b) => a.time - b.time);
+
+    const lineSeries = modal.chart.addLineSeries({
+        color: '#5b9cf6',
+        lineWidth: 1.5,
+        lineStyle: type === 'ray' ? 0 : 0,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        pointMarkersVisible: false,
+    });
+    lineSeries.setData(uniquePoints);
+    draw.drawings.push({ type, lineSeries });
+}
+
+function drawFibonacci(p1, p2) {
+    if (!modal.series) return;
+    const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+    const colors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86'];
+    const labels = ['0%', '23.6%', '38.2%', '50%', '61.8%', '78.6%', '100%'];
+    const diff = p2 - p1;
+    const fibLines = [];
+
+    levels.forEach((lvl, i) => {
+        const price = p1 + diff * lvl;
+        const priceLine = modal.series.createPriceLine({
+            price: price,
+            color: colors[i],
+            lineWidth: 1,
+            lineStyle: 2, // dashed
+            axisLabelVisible: true,
+            title: labels[i],
+        });
+        fibLines.push(priceLine);
+    });
+
+    draw.drawings.push({ type: 'fib', fibLines, priceLine: null });
 }
 
 function closeCoinModal() {

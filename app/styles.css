@@ -724,13 +724,11 @@ body {
     align-items: center;
     gap: 12px;
     padding: 6px 16px;
-    background: rgba(8, 12, 21, 0.85);
+    background: rgba(8, 12, 21, 0.95);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-wrap: wrap;
-    position: sticky;
-    top: 49px;
     z-index: 40;
 }
 
@@ -841,7 +839,7 @@ body {
 /* Charts + Sidebar Layout */
 .mc-layout {
     display: flex;
-    height: calc(100vh - 95px);
+    height: calc(100vh - 140px);
     overflow: hidden;
     background: var(--bg-base);
 }
@@ -967,6 +965,115 @@ body {
     color: var(--text-muted);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
+}
+
+/* Search input */
+.mc-search-wrap {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    flex-shrink: 0;
+}
+
+.mc-search-input {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 11px;
+    padding: 5px 8px;
+    outline: none;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+
+.mc-search-input:focus {
+    border-color: rgba(59, 130, 246, 0.4);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.mc-search-input::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
+/* Color flags */
+.mc-flag-btn {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-right: 6px;
+    padding: 0;
+    transition: all 0.12s ease;
+    position: relative;
+}
+
+.mc-flag-btn:hover {
+    border-color: rgba(255, 255, 255, 0.3);
+    transform: scale(1.15);
+}
+
+.mc-flag-btn.flagged {
+    border-color: transparent;
+}
+
+/* Flag color picker popup */
+.mc-flag-popup {
+    position: absolute;
+    left: 0;
+    top: 18px;
+    z-index: 500;
+    background: rgba(15, 20, 30, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 6px;
+    display: flex;
+    gap: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    animation: mc-flag-pop 0.12s ease-out;
+}
+
+@keyframes mc-flag-pop {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+.mc-flag-color {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    transition: all 0.1s ease;
+}
+
+.mc-flag-color:hover {
+    transform: scale(1.2);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.mc-flag-clear {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 0;
+}
+
+.mc-flag-clear:hover {
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #ef4444;
 }
 
 .mc-coin-list {
@@ -1121,13 +1228,64 @@ body {
     border-color: rgba(255, 255, 255, 0.12);
 }
 
-.mc-modal-tf {
+.mc-modal-toolbar {
     display: flex;
-    gap: 2px;
+    align-items: center;
     padding: 6px 20px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     background: rgba(0, 0, 0, 0.15);
     flex-shrink: 0;
+    gap: 6px;
+}
+
+.mc-modal-tf {
+    display: flex;
+    gap: 2px;
+}
+
+.dt-separator {
+    width: 1px;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 0 6px;
+}
+
+.dt-tools {
+    display: flex;
+    gap: 2px;
+}
+
+.dt-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    line-height: 1;
+}
+
+.dt-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
+.dt-btn.dt-active {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: #5b9cf6;
+}
+
+.dt-btn[data-tool="trash"] {
+    margin-left: 4px;
+    color: var(--text-muted);
+}
+
+.dt-btn[data-tool="trash"]:hover {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.3);
 }
 
 .mc-modal-chart {
@@ -1228,7 +1386,7 @@ body {
     .mc-layout {
         flex-direction: column;
         height: auto;
-        max-height: calc(100vh - 95px);
+        max-height: calc(100vh - 140px);
     }
     .mc-sidebar {
         display: none;
