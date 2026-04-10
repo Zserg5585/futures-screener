@@ -1305,6 +1305,13 @@ function showDrawingPanel(d) {
     panel.id = 'drawPanel';
     panel.className = 'draw-panel';
 
+    // Stop ALL events on the panel from reaching chart handlers
+    panel.addEventListener('click', (e) => e.stopPropagation());
+    panel.addEventListener('mousedown', (e) => e.stopPropagation());
+    panel.addEventListener('mouseup', (e) => e.stopPropagation());
+    panel.addEventListener('touchstart', (e) => e.stopPropagation());
+    panel.addEventListener('touchend', (e) => e.stopPropagation());
+
     // Color dots
     const colorsHtml = DRAW_COLORS.map(c => {
         const sel = c === d.color ? ' draw-color-active' : '';
@@ -1312,45 +1319,35 @@ function showDrawingPanel(d) {
     }).join('');
 
     const lockIcon = d.locked ? '🔒' : '🔓';
-    const fibBtn = d.type === 'fib' ? `<button class="draw-panel-btn" data-action="fib-settings" title="Fib Levels">⚙</button>` : '';
+    const fibBtn = d.type === 'fib' ? `<button class="draw-panel-btn" data-action="fib-settings" title="Fib Levels">&#9881;</button>` : '';
     panel.innerHTML = `
         <div class="draw-panel-colors">${colorsHtml}</div>
         ${fibBtn}
         <button class="draw-panel-btn" data-action="lock" title="${d.locked ? 'Unlock' : 'Lock'}">${lockIcon}</button>
-        <button class="draw-panel-btn draw-panel-delete" data-action="delete" title="Delete">✕</button>
+        <button class="draw-panel-btn draw-panel-delete" data-action="delete" title="Delete">&#10005;</button>
     `;
 
     chartEl.appendChild(panel);
 
     // Color click
     panel.querySelectorAll('.draw-color-dot').forEach(dot => {
-        dot.addEventListener('click', (e) => {
-            e.stopPropagation();
-            changeDrawingColor(d.id, dot.dataset.color);
-        });
+        dot.addEventListener('click', () => changeDrawingColor(d.id, dot.dataset.color));
     });
 
     // Lock
-    panel.querySelector('[data-action="lock"]').addEventListener('click', (e) => {
-        e.stopPropagation();
+    panel.querySelector('[data-action="lock"]').addEventListener('click', () => {
         d.locked = !d.locked;
         persistDrawings();
-        showDrawingPanel(d); // refresh
+        showDrawingPanel(d);
     });
 
     // Delete
-    panel.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
-        e.stopPropagation();
-        deleteDrawing(d.id);
-    });
+    panel.querySelector('[data-action="delete"]').addEventListener('click', () => deleteDrawing(d.id));
 
     // Fib settings
     const fibSettingsBtn = panel.querySelector('[data-action="fib-settings"]');
     if (fibSettingsBtn) {
-        fibSettingsBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            showFibLevelsPopup(d);
-        });
+        fibSettingsBtn.addEventListener('click', () => showFibLevelsPopup(d));
     }
 }
 
@@ -1384,6 +1381,13 @@ function showFibLevelsPopup(d) {
             <button class="fib-popup-btn fib-apply-btn" id="fibApplyLevels">Apply</button>
         </div>
     `;
+    // Block all events from reaching chart handlers
+    popup.addEventListener('click', (e) => e.stopPropagation());
+    popup.addEventListener('mousedown', (e) => e.stopPropagation());
+    popup.addEventListener('mouseup', (e) => e.stopPropagation());
+    popup.addEventListener('touchstart', (e) => e.stopPropagation());
+    popup.addEventListener('touchend', (e) => e.stopPropagation());
+
     chartEl.appendChild(popup);
 
     // Add level
@@ -1471,13 +1475,13 @@ function showFibLevelsPopup(d) {
         popup.remove();
     });
 
-    // Click outside to close
-    popup.addEventListener('click', (e) => e.stopPropagation());
 }
 
 function hideDrawingPanel() {
     const p = document.getElementById('drawPanel');
     if (p) p.remove();
+    const fp = document.getElementById('fibLevelsPopup');
+    if (fp) fp.remove();
 }
 
 function changeDrawingColor(id, color) {
@@ -1527,7 +1531,7 @@ function findDrawingNearPrice(price) {
         }
         if (d.type === 'fib' && d.data) {
             const diff = d.data.p2 - d.data.p1;
-            const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const levels = d.data.levels || fibConfig.load();
             for (const lvl of levels) {
                 const fibPrice = d.data.p1 + diff * lvl;
                 if (Math.abs(fibPrice - price) < threshold) return d;
