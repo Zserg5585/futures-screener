@@ -857,17 +857,17 @@ function openCoinModal(sym) {
     cmChange.textContent = chgSign + chg.toFixed(2) + '%';
     cmChange.className = 'mc-modal-change ' + chgClass;
 
-    // Stats
+    // Metrics in header (icons, no text labels)
     const vol = pair.quoteVol >= 1e9 ? (pair.quoteVol / 1e9).toFixed(2) + 'B' : (pair.quoteVol / 1e6).toFixed(1) + 'M';
     const tradesStr = pair.tradesCount >= 1e6 ? (pair.tradesCount / 1e6).toFixed(1) + 'M'
         : pair.tradesCount >= 1e3 ? (pair.tradesCount / 1e3).toFixed(1) + 'K'
         : pair.tradesCount.toString();
     el('cmStats').innerHTML = `
-        <div class="mc-stat"><span class="mc-stat-label">24h Vol:</span><span class="mc-stat-value">$${vol}</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">Range:</span><span class="mc-stat-value">${pair.proxyNatr.toFixed(1)}%</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">Trades:</span><span class="mc-stat-value">${tradesStr}</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">High:</span><span class="mc-stat-value">${parseFloat(pair.highPrice).toFixed(prec)}</span></div>
-        <div class="mc-stat"><span class="mc-stat-label">Low:</span><span class="mc-stat-value">${parseFloat(pair.lowPrice).toFixed(prec)}</span></div>
+        <span class="cm-metric" title="24h Volume"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="5" width="2" height="5" fill="currentColor" opacity="0.5"/><rect x="4" y="2" width="2" height="8" fill="currentColor" opacity="0.7"/><rect x="7" y="0" width="2" height="10" fill="currentColor"/></svg>$${vol}</span>
+        <span class="cm-metric" title="NATR Volatility"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>${pair.proxyNatr.toFixed(1)}%</span>
+        <span class="cm-metric" title="24h Trades"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M1 3h3M6 3h3M1 7h3M6 7h3" stroke="currentColor" stroke-width="1.2"/></svg>${tradesStr}</span>
+        <span class="cm-metric" title="24h High"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 1L8 5H2L5 1Z" fill="#22c55e" opacity="0.8"/></svg>${parseFloat(pair.highPrice).toFixed(prec)}</span>
+        <span class="cm-metric" title="24h Low"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 9L2 5H8L5 9Z" fill="#ef4444" opacity="0.8"/></svg>${parseFloat(pair.lowPrice).toFixed(prec)}</span>
     `;
 
     // Links

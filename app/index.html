@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20260410-v13" />
+    <link rel="stylesheet" href="/styles.css?v=20260410-v14" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
@@ -269,8 +269,12 @@
                     <span id="cmSymbol" class="mc-modal-sym"></span>
                     <span id="cmPrice" class="mc-modal-price"></span>
                     <span id="cmChange" class="mc-modal-change"></span>
+                    <div class="cm-metrics" id="cmStats"></div>
                 </div>
-                <button id="cmClose" class="mc-modal-close">&times;</button>
+                <div class="mc-modal-header-right">
+                    <div class="mc-modal-links-inline" id="cmLinks"></div>
+                    <button id="cmClose" class="mc-modal-close">&times;</button>
+                </div>
             </div>
             <div class="mc-modal-toolbar">
                 <div class="mc-modal-tf" id="cmTFButtons">
@@ -283,13 +287,11 @@
                 </div>
             </div>
             <div id="cmChartBody" class="mc-modal-chart"></div>
-            <div class="mc-modal-stats" id="cmStats"></div>
-            <div class="mc-modal-links" id="cmLinks"></div>
         </div>
     </div>
 
-    <script src="/densities.js?v=20260410-v13"></script>
-    <script src="/mini-charts.js?v=20260410-v13"></script>
+    <script src="/densities.js?v=20260410-v14"></script>
+    <script src="/mini-charts.js?v=20260410-v14"></script>
 </body>
 
 </html>
