@@ -870,12 +870,6 @@ function openCoinModal(sym) {
         <span class="cm-metric" title="24h Low"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 9L2 5H8L5 9Z" fill="#ef4444" opacity="0.8"/></svg>${parseFloat(pair.lowPrice).toFixed(prec)}</span>
     `;
 
-    // Links
-    el('cmLinks').innerHTML = `
-        <a href="https://www.binance.com/en/futures/${sym}" target="_blank">Binance</a>
-        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P" target="_blank">TradingView</a>
-        <a href="https://www.coinglass.com/tv/${ticker}USDT" target="_blank">CoinGlass</a>
-    `;
 
     // TF buttons — set active
     const tfBtns = el('cmTFButtons');
