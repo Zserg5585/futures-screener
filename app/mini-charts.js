@@ -376,7 +376,19 @@ function createChartInstance(sym) {
         priceFormat: { type: 'price', precision: prec, minMove: minMove }
     });
 
-    mc.charts[sym] = { chart, series, lines: [] };
+    // Volume histogram
+    const volSeries = chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+        color: 'rgba(100,116,139,0.3)',
+    });
+    chart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+        drawTicks: false,
+        borderVisible: false,
+    });
+
+    mc.charts[sym] = { chart, series, volSeries, lines: [] };
 
     // Attach shift+drag ruler
     attachRuler(chartEl, chart, series);
@@ -405,6 +417,15 @@ function parseKlines(json) {
         high: parseFloat(k[2]),
         low: parseFloat(k[3]),
         close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+    }));
+}
+
+function extractVolume(data) {
+    return data.map(d => ({
+        time: d.time,
+        value: d.volume,
+        color: d.close >= d.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
     }));
 }
 
@@ -418,6 +439,7 @@ async function loadChartData(sym, tf) {
 
         const data1 = parseKlines(json1);
         mc.charts[sym].series.setData(data1);
+        mc.charts[sym].volSeries.setData(extractVolume(data1));
         mc.loadedData[sym] = true;
 
         // Show all 100 candles
@@ -438,6 +460,7 @@ async function loadChartData(sym, tf) {
                 // Save current visible range before replacing data
                 const visRange = mc.charts[sym].chart.timeScale().getVisibleLogicalRange();
                 mc.charts[sym].series.setData(data2);
+                mc.charts[sym].volSeries.setData(extractVolume(data2));
 
                 // Keep the same view (user sees no jump) — offset by added history
                 const added = data2.length - data1.length;
@@ -551,9 +574,16 @@ function wsConnect() {
                 close: parseFloat(k.c),
             };
 
+            const vol = parseFloat(k.v);
+
             // Update mini-chart
             if (mc.charts[sym]) {
                 mc.charts[sym].series.update(candle);
+                mc.charts[sym].volSeries.update({
+                    time: candle.time,
+                    value: vol,
+                    color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
+                });
             }
 
             // Update modal chart if same symbol & TF
@@ -562,6 +592,11 @@ function wsConnect() {
                 const incomingStream = msg.stream || '';
                 if (incomingStream === modalStream || modal.wsStream === `${sym.toLowerCase()}@kline_${k.i}`) {
                     modal.series.update(candle);
+                    if (modal.volSeries) modal.volSeries.update({
+                        time: candle.time,
+                        value: vol,
+                        color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
+                    });
                 }
             }
         } catch (e) { /* ignore parse errors */ }
@@ -792,10 +827,27 @@ function openCoinModal(sym) {
         priceFormat: { type: 'price', precision: prec, minMove: minMove }
     });
 
+    modal.volSeries = modal.chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+        color: 'rgba(100,116,139,0.3)',
+    });
+    modal.chart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+        drawTicks: false,
+        borderVisible: false,
+    });
+
     modal.lines = [];
+    modal.drawings = [];
 
     // Attach ruler to modal chart
     attachRuler(el('cmChartBody'), modal.chart, modal.series);
+
+    // Drawing tools
+    renderDrawToolbar();
+    setupDrawingHandlers();
+    updateModalCursor();
 
     loadModalChart(sym, modal.currentTF);
 }
@@ -818,6 +870,7 @@ async function loadModalChart(sym, tf) {
 
         const data1 = parseKlines(json1);
         modal.series.setData(data1);
+        if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
         modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
 
         // Subscribe modal to live WS
@@ -841,6 +894,7 @@ async function loadModalChart(sym, tf) {
                 const data2 = parseKlines(json2);
                 const visRange = modal.chart.timeScale().getVisibleLogicalRange();
                 modal.series.setData(data2);
+                if (modal.volSeries) modal.volSeries.setData(extractVolume(data2));
                 const added = data2.length - data1.length;
                 if (visRange) {
                     modal.chart.timeScale().setVisibleLogicalRange({
@@ -1246,9 +1300,14 @@ function closeCoinModal() {
         modal.chart.remove();
         modal.chart = null;
         modal.series = null;
+        modal.volSeries = null;
         modal.lines = [];
     }
     modal.currentSym = null;
+    // Clear drawing state
+    clearAllDrawings();
+    draw.activeTool = 'cursor';
+    draw.clickCount = 0;
 }
 
 // Init modal event listeners (called once in initMiniCharts)
