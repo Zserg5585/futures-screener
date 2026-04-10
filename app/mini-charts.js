@@ -223,7 +223,7 @@ function rebuildGrid() {
         const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
         const chgSign = chg >= 0 ? '+' : '';
         const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
-        const natr = p.proxyNatr.toFixed(1);
+        const natr = p.proxyNatr ? p.proxyNatr.toFixed(1) : '—';
         const trades = p.tradesCount >= 1e6 ? (p.tradesCount / 1e6).toFixed(1) + 'M' : p.tradesCount >= 1e3 ? (p.tradesCount / 1e3).toFixed(0) + 'K' : p.tradesCount;
 
         return `<div class="mc-chart-card" data-symbol="${sym}" id="mc-card-${sym}">
@@ -232,7 +232,7 @@ function rebuildGrid() {
                 <div class="mc-chart-metrics">
                     <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
                     <span class="mc-metric-muted" title="24h Volume"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><rect x="1" y="5" width="2" height="5" fill="currentColor" opacity="0.5"/><rect x="4" y="2" width="2" height="8" fill="currentColor" opacity="0.7"/><rect x="7" y="0" width="2" height="10" fill="currentColor"/></svg>${vol}</span>
-                    <span class="mc-metric-muted" title="NATR Volatility"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>${natr}%</span>
+                    <span class="mc-metric-muted" title="NATR Volatility"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg><span class="mc-natr">—</span></span>
                     <span class="mc-metric-muted" title="24h Trades"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><path d="M1 3h3M6 3h3M1 7h3M6 7h3" stroke="currentColor" stroke-width="1.2"/></svg>${trades}</span>
                 </div>
             </div>
@@ -508,6 +508,34 @@ function applyDrawingsToMiniChart(sym) {
     });
 }
 
+// Calculate real ATR(14) / close * 100 = NATR from candle data
+function calcNATR(candles, period = 14) {
+    if (!candles || candles.length < period + 1) return 0;
+    const trs = [];
+    for (let i = 1; i < candles.length; i++) {
+        const h = candles[i].high;
+        const l = candles[i].low;
+        const pc = candles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    // SMA of last `period` TRs
+    const recent = trs.slice(-period);
+    const atr = recent.reduce((s, v) => s + v, 0) / recent.length;
+    const lastClose = candles[candles.length - 1].close;
+    return lastClose > 0 ? (atr / lastClose) * 100 : 0;
+}
+
+// Update NATR display on mini-chart card after real calc
+function updateCardNATR(sym, natr) {
+    const card = document.getElementById(`mc-card-${sym}`);
+    if (!card) return;
+    const natrSpan = card.querySelector('.mc-natr');
+    if (natrSpan) natrSpan.textContent = natr.toFixed(1) + '%';
+    // Update pair data for sorting
+    const pair = mc.allPairs.find(p => p.symbol === sym);
+    if (pair) pair.proxyNatr = natr;
+}
+
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
@@ -523,6 +551,10 @@ async function loadChartData(sym, tf) {
 
         // Show all 100 candles
         mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
+
+        // Calculate real NATR from candle data
+        const realNatr = calcNATR(data1);
+        if (realNatr > 0) updateCardNATR(sym, realNatr);
 
         // Apply saved drawings to mini-chart
         applyDrawingsToMiniChart(sym);
@@ -864,7 +896,7 @@ function openCoinModal(sym) {
         : pair.tradesCount.toString();
     el('cmStats').innerHTML = `
         <span class="cm-metric" title="24h Volume"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="5" width="2" height="5" fill="currentColor" opacity="0.5"/><rect x="4" y="2" width="2" height="8" fill="currentColor" opacity="0.7"/><rect x="7" y="0" width="2" height="10" fill="currentColor"/></svg>$${vol}</span>
-        <span class="cm-metric" title="NATR Volatility"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>${pair.proxyNatr.toFixed(1)}%</span>
+        <span class="cm-metric" title="NATR Volatility"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg><span id="cmNatr">${pair.proxyNatr.toFixed(1)}%</span></span>
         <span class="cm-metric" title="24h Trades"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M1 3h3M6 3h3M1 7h3M6 7h3" stroke="currentColor" stroke-width="1.2"/></svg>${tradesStr}</span>
         <span class="cm-metric" title="24h High"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 1L8 5H2L5 1Z" fill="#22c55e" opacity="0.8"/></svg>${parseFloat(pair.highPrice).toFixed(prec)}</span>
         <span class="cm-metric" title="24h Low"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 9L2 5H8L5 9Z" fill="#ef4444" opacity="0.8"/></svg>${parseFloat(pair.lowPrice).toFixed(prec)}</span>
@@ -978,6 +1010,11 @@ async function loadModalChart(sym, tf) {
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
         modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
+
+        // Update modal NATR with real value
+        const modalNatr = calcNATR(data1);
+        const cmNatrEl = document.getElementById('cmNatr');
+        if (cmNatrEl && modalNatr > 0) cmNatrEl.textContent = modalNatr.toFixed(1) + '%';
 
         // Restore saved drawings for this symbol
         restoreDrawings();
