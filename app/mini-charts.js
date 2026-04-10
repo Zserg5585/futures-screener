@@ -231,9 +231,9 @@ function rebuildGrid() {
                 <span class="mc-chart-symbol">${ticker}</span>
                 <div class="mc-chart-metrics">
                     <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
-                    <span class="mc-metric-muted">$${vol}</span>
-                    <span class="mc-metric-muted">${natr}%</span>
-                    <span class="mc-metric-muted">${trades}</span>
+                    <span class="mc-metric-muted" title="24h Volume"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><rect x="1" y="5" width="2" height="5" fill="currentColor" opacity="0.5"/><rect x="4" y="2" width="2" height="8" fill="currentColor" opacity="0.7"/><rect x="7" y="0" width="2" height="10" fill="currentColor"/></svg>${vol}</span>
+                    <span class="mc-metric-muted" title="NATR Volatility"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><path d="M0 7L3 3L5 6L7 1L10 5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>${natr}%</span>
+                    <span class="mc-metric-muted" title="24h Trades"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><path d="M1 3h3M6 3h3M1 7h3M6 7h3" stroke="currentColor" stroke-width="1.2"/></svg>${trades}</span>
                 </div>
             </div>
             <div class="mc-chart-body" id="mc-body-${sym}"></div>
