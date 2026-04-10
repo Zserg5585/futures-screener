@@ -224,6 +224,7 @@ function rebuildGrid() {
         const chgSign = chg >= 0 ? '+' : '';
         const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
         const natr = p.proxyNatr.toFixed(1);
+        const trades = p.tradesCount >= 1e6 ? (p.tradesCount / 1e6).toFixed(1) + 'M' : p.tradesCount >= 1e3 ? (p.tradesCount / 1e3).toFixed(0) + 'K' : p.tradesCount;
 
         return `<div class="mc-chart-card" data-symbol="${sym}" id="mc-card-${sym}">
             <div class="mc-chart-header">
@@ -231,7 +232,8 @@ function rebuildGrid() {
                 <div class="mc-chart-metrics">
                     <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
                     <span class="mc-metric-muted">$${vol}</span>
-                    <span class="mc-metric-muted">R${natr}%</span>
+                    <span class="mc-metric-muted">${natr}%</span>
+                    <span class="mc-metric-muted">${trades}</span>
                 </div>
             </div>
             <div class="mc-chart-body" id="mc-body-${sym}"></div>
