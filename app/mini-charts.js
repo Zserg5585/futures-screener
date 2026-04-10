@@ -843,6 +843,32 @@ function openCoinModal(sym) {
     attachRuler(el('cmChartBody'), modal.chart, modal.series);
 
     // Drawing tools
+    // OHLCV legend on crosshair move
+    const legend = document.createElement('div');
+    legend.className = 'mc-ohlcv-legend';
+    el('cmChartBody').appendChild(legend);
+    modal.legend = legend;
+
+    modal.chart.subscribeCrosshairMove(param => {
+        if (!param || !param.time || !modal.legend) {
+            if (modal.legend) modal.legend.style.display = 'none';
+            return;
+        }
+        const data = param.seriesData.get(modal.series);
+        if (!data) { modal.legend.style.display = 'none'; return; }
+        const prec = getPricePrecision(data.close || data.open || 1);
+        const o = (data.open || 0).toFixed(prec);
+        const h = (data.high || 0).toFixed(prec);
+        const l = (data.low || 0).toFixed(prec);
+        const c = (data.close || 0).toFixed(prec);
+        const volData = param.seriesData.get(modal.volSeries);
+        const v = volData ? (volData.value >= 1e6 ? (volData.value/1e6).toFixed(1)+'M' : (volData.value >= 1e3 ? (volData.value/1e3).toFixed(0)+'K' : volData.value.toFixed(0))) : '—';
+        const chg = data.close >= data.open;
+        const color = chg ? '#22c55e' : '#ef4444';
+        modal.legend.style.display = 'flex';
+        modal.legend.innerHTML = `<span style="color:${color}">O <b>${o}</b></span><span style="color:${color}">H <b>${h}</b></span><span style="color:${color}">L <b>${l}</b></span><span style="color:${color}">C <b>${c}</b></span><span style="color:var(--text-muted)">V <b>${v}</b></span>`;
+    });
+
     renderDrawToolbar();
     setupDrawingHandlers();
     updateModalCursor();
@@ -1221,7 +1247,7 @@ function changeDrawingColor(id, color) {
         const price = d.data.price;
         try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
         d.priceLine = modal.series.createPriceLine({
-            price, color, lineWidth: 1, lineStyle: 0,
+            price, color, lineWidth: 2, lineStyle: 0,
             axisLabelVisible: true, title: '',
         });
     } else if ((d.type === 'ray' || d.type === 'trendline') && d.lineSeries) {
@@ -1588,7 +1614,7 @@ function drawHorizontalLine(price, color) {
     const priceLine = modal.series.createPriceLine({
         price: price,
         color: c,
-        lineWidth: 1,
+        lineWidth: 2,
         lineStyle: 0,
         axisLabelVisible: true,
         title: '',
@@ -1631,7 +1657,7 @@ function drawTwoPointLine(type, t1, p1, t2, p2, color) {
 
     const lineSeries = modal.chart.addLineSeries({
         color: c,
-        lineWidth: 1.5,
+        lineWidth: 2,
         lineStyle: type === 'ray' ? 0 : 0,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -1656,7 +1682,7 @@ function drawFibonacci(p1, p2, color) {
         const priceLine = modal.series.createPriceLine({
             price: price,
             color: color || defaultColors[i],
-            lineWidth: 1,
+            lineWidth: 1.5,
             lineStyle: 2, // dashed
             axisLabelVisible: true,
             title: labels[i],
@@ -1685,6 +1711,7 @@ function closeCoinModal() {
         modal.series = null;
         modal.volSeries = null;
         modal.lines = [];
+        modal.legend = null;
     }
     modal.currentSym = null;
     // Clear drawing chart objects (data already persisted in localStorage)

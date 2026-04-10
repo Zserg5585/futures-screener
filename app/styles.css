@@ -871,8 +871,8 @@ body {
 }
 
 .mc-chart-card:hover {
-    border-color: rgba(255, 255, 255, 0.10);
-    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.08);
+    border-color: rgba(59, 130, 246, 0.2);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.06), 0 0 0 1px rgba(59, 130, 246, 0.1);
 }
 
 .mc-chart-header {
@@ -972,53 +972,70 @@ body {
     padding: 6px 8px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     flex-shrink: 0;
+    position: relative;
 }
 
 .mc-search-input {
     width: 100%;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
+    border-radius: 5px;
     color: var(--text-primary);
     font-size: 11px;
-    padding: 5px 8px;
+    padding: 6px 8px 6px 26px;
     outline: none;
     font-family: inherit;
     box-sizing: border-box;
+    transition: all 0.15s ease;
+}
+
+.mc-search-wrap::before {
+    content: '⌕';
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 12px;
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 .mc-search-input:focus {
     border-color: rgba(59, 130, 246, 0.4);
     background: rgba(255, 255, 255, 0.06);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
 }
 
 .mc-search-input::placeholder {
     color: var(--text-muted);
-    opacity: 0.6;
+    opacity: 0.5;
 }
 
-/* Color flags */
+/* Color flags — bar style like TradingView */
 .mc-flag-btn {
-    width: 14px;
-    height: 14px;
-    border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    width: 4px;
+    height: 100%;
+    min-height: 24px;
+    border-radius: 2px 0 0 2px;
+    border: none;
     background: transparent;
     cursor: pointer;
     flex-shrink: 0;
-    margin-right: 6px;
+    margin-right: 8px;
     padding: 0;
     transition: all 0.12s ease;
     position: relative;
 }
 
 .mc-flag-btn:hover {
-    border-color: rgba(255, 255, 255, 0.3);
-    transform: scale(1.15);
+    background: rgba(255, 255, 255, 0.15);
+    width: 4px;
 }
 
 .mc-flag-btn.flagged {
-    border-color: transparent;
+    width: 4px;
+    border-radius: 2px;
 }
 
 /* Flag color picker popup */
@@ -1083,22 +1100,22 @@ body {
 
 .mc-coin-item {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 6px 12px;
+    padding: 7px 10px;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: all 0.15s ease;
     border-bottom: 1px solid rgba(255, 255, 255, 0.02);
     font-size: 11px;
+    gap: 0;
 }
 
 .mc-coin-item:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .mc-coin-item.active {
-    background: rgba(59, 130, 246, 0.08);
-    border-left: 2px solid var(--neon-blue);
+    background: rgba(59, 130, 246, 0.1);
+    border-left: 3px solid var(--neon-blue);
 }
 
 .mc-coin-name {
@@ -1152,9 +1169,9 @@ body {
 .mc-modal-content {
     position: relative;
     width: 100%;
-    max-width: 960px;
-    height: 82vh;
-    max-height: 740px;
+    max-width: 1200px;
+    height: 90vh;
+    max-height: 900px;
     background: #080c15;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 12px;
@@ -1259,12 +1276,14 @@ body {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
     color: var(--text-muted);
-    font-size: 12px;
-    padding: 3px 8px;
-    border-radius: 4px;
+    font-size: 13px;
+    padding: 5px 10px;
+    border-radius: 5px;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: all 0.15s ease;
     line-height: 1;
+    min-width: 32px;
+    text-align: center;
 }
 
 .dt-btn:hover {
@@ -1358,6 +1377,28 @@ body {
     background: #060a12;
 }
 
+/* OHLCV Legend (crosshair data) */
+.mc-ohlcv-legend {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    z-index: 30;
+    display: none;
+    gap: 10px;
+    font-size: 11px;
+    font-family: 'Inter', monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    pointer-events: none;
+    background: rgba(6, 10, 18, 0.75);
+    padding: 3px 8px;
+    border-radius: 4px;
+}
+
+.mc-ohlcv-legend b {
+    font-weight: 600;
+}
+
 .mc-modal-stats {
     display: flex;
     gap: 20px;
@@ -1418,10 +1459,55 @@ body {
 }
 
 @media screen and (max-width: 768px) {
+    .mc-modal {
+        padding: 0;
+    }
     .mc-modal-content {
-        height: 92vh;
+        width: 100%;
+        height: 100vh;
         max-height: none;
-        border-radius: 8px;
+        max-width: none;
+        border-radius: 0;
+        border: none;
+    }
+    .mc-modal-header {
+        padding: 10px 14px;
+    }
+    .mc-modal-sym {
+        font-size: 15px;
+    }
+    .mc-modal-price {
+        font-size: 13px;
+    }
+    .mc-modal-toolbar {
+        padding: 5px 10px;
+        gap: 4px;
+        flex-wrap: wrap;
+    }
+    .dt-btn {
+        padding: 6px 10px;
+        font-size: 14px;
+        min-width: 36px;
+    }
+    .mc-tf-btn {
+        padding: 5px 10px;
+        font-size: 12px;
+    }
+    .mc-modal-stats {
+        gap: 12px;
+        padding: 8px 14px;
+    }
+    .mc-modal-links {
+        padding: 6px 14px;
+    }
+    .draw-panel {
+        top: 4px;
+        right: 4px;
+        padding: 5px 8px;
+    }
+    .draw-color-dot {
+        width: 20px;
+        height: 20px;
     }
 }
 
