@@ -1451,9 +1451,9 @@ function showDrawingPanel(d) {
     panel.querySelector('[data-action="delete"]').addEventListener('click', () => deleteDrawing(d.id));
 
     // Alert toggle
-    const alertBtn = panel.querySelector('[data-action="alert"]');
-    if (alertBtn) {
-        alertBtn.addEventListener('click', () => {
+    const alertToggle = panel.querySelector('[data-action="alert"]');
+    if (alertToggle) {
+        alertToggle.addEventListener('click', () => {
             d.alert = !d.alert;
             persistDrawings();
             showDrawingPanel(d); // refresh
