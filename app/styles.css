@@ -1380,6 +1380,115 @@ body {
     border-color: rgba(239, 68, 68, 0.3);
 }
 
+/* Fib levels popup */
+.fib-levels-popup {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 250;
+    background: rgba(15, 20, 30, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+    min-width: 180px;
+    animation: mc-flag-pop 0.12s ease-out;
+}
+
+.fib-popup-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.fib-popup-list {
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.fib-level-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.fib-level-input {
+    width: 70px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 4px 6px;
+    text-align: right;
+    font-family: var(--font-mono);
+}
+
+.fib-level-input:focus {
+    outline: none;
+    border-color: rgba(59, 130, 246, 0.5);
+}
+
+.fib-level-pct {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.fib-level-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 2px;
+    line-height: 1;
+}
+
+.fib-level-remove:hover {
+    color: #ef4444;
+}
+
+.fib-popup-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.fib-popup-btn {
+    flex: 1;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.fib-popup-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
+.fib-apply-btn {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #5b9cf6;
+}
+
+.fib-apply-btn:hover {
+    background: rgba(59, 130, 246, 0.25);
+}
+
 .mc-modal-chart {
     flex: 1;
     min-height: 0;
