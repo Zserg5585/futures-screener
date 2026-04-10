@@ -1014,8 +1014,22 @@ function updateModalCursor() {
     if (!chartEl) return;
     if (draw.activeTool === 'cursor') {
         chartEl.style.cursor = '';
+        // Re-enable chart interaction
+        if (modal.chart) {
+            modal.chart.applyOptions({
+                handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
+            });
+        }
     } else {
         chartEl.style.cursor = 'crosshair';
+        // Disable chart interaction so touches go to our handler
+        if (modal.chart) {
+            modal.chart.applyOptions({
+                handleScroll: false,
+                handleScale: false,
+            });
+        }
     }
 }
 
@@ -1090,13 +1104,14 @@ function setupDrawingHandlers() {
     if (chartEl.dataset.drawInit) return;
     chartEl.dataset.drawInit = '1';
 
-    chartEl.addEventListener('click', (e) => {
+    // Unified handler for both click and touch
+    function handleDrawClick(clientX, clientY) {
         if (!modal.chart || !modal.series) return;
         if (draw.activeTool === 'cursor' || draw.activeTool === 'ruler') return;
 
         const rect = chartEl.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
         const price = modal.series.coordinateToPrice(y);
         const time = modal.chart.timeScale().coordinateToTime(x);
         if (price === null || time === null) return;
@@ -1133,7 +1148,21 @@ function setupDrawingHandlers() {
                 updateModalCursor();
             }
         }
+    }
+
+    // Desktop click
+    chartEl.addEventListener('click', (e) => {
+        handleDrawClick(e.clientX, e.clientY);
     });
+
+    // Mobile touch — use touchend so we get final position
+    chartEl.addEventListener('touchend', (e) => {
+        if (draw.activeTool === 'cursor' || draw.activeTool === 'ruler') return;
+        e.preventDefault();
+        const touch = e.changedTouches[0];
+        if (!touch) return;
+        handleDrawClick(touch.clientX, touch.clientY);
+    }, { passive: false });
 
     // Live preview for 2-click tools
     chartEl.addEventListener('mousemove', (e) => {
