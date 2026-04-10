@@ -873,6 +873,9 @@ async function loadModalChart(sym, tf) {
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
         modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
 
+        // Restore saved drawings for this symbol
+        restoreDrawings();
+
         // Subscribe modal to live WS
         const stream = `${sym.toLowerCase()}@kline_${tf}`;
         modal.wsStream = stream;
@@ -977,6 +980,36 @@ const DRAW_TOOLS = [
 
 const DRAW_COLORS = ['#5b9cf6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ec4899', '#ffffff'];
 let drawIdCounter = 0;
+
+// Persistent drawing storage (localStorage)
+const drawStore = (() => {
+    const KEY = 'mc_drawings';
+    function loadAll() {
+        try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { return {}; }
+    }
+    function saveAll(store) {
+        localStorage.setItem(KEY, JSON.stringify(store));
+    }
+    return {
+        save(sym, drawings) {
+            const store = loadAll();
+            // Serialize only data we can recreate from
+            store[sym] = drawings.map(d => ({
+                type: d.type, color: d.color, locked: d.locked, data: d.data
+            }));
+            saveAll(store);
+        },
+        load(sym) {
+            const store = loadAll();
+            return store[sym] || [];
+        },
+        remove(sym) {
+            const store = loadAll();
+            delete store[sym];
+            saveAll(store);
+        }
+    };
+})();
 
 const draw = {
     activeTool: 'cursor',
@@ -1084,6 +1117,7 @@ function deleteDrawing(id) {
         draw.selected = null;
         hideDrawingPanel();
     }
+    persistDrawings();
 }
 
 function removeDrawingFromChart(d) {
@@ -1148,6 +1182,7 @@ function showDrawingPanel(d) {
     panel.querySelector('[data-action="lock"]').addEventListener('click', (e) => {
         e.stopPropagation();
         d.locked = !d.locked;
+        persistDrawings();
         showDrawingPanel(d); // refresh
     });
 
@@ -1195,6 +1230,7 @@ function changeDrawingColor(id, color) {
             });
         });
     }
+    persistDrawings();
     showDrawingPanel(d); // refresh panel
 }
 
@@ -1217,6 +1253,34 @@ function findDrawingNearPrice(price) {
         }
     }
     return null;
+}
+
+// Save current drawings to localStorage
+function persistDrawings() {
+    if (modal.currentSym) {
+        drawStore.save(modal.currentSym, draw.drawings);
+    }
+}
+
+// Restore drawings from localStorage for current symbol
+function restoreDrawings() {
+    if (!modal.currentSym || !modal.series || !modal.chart) return;
+    const saved = drawStore.load(modal.currentSym);
+    saved.forEach(s => {
+        if (s.type === 'hline') {
+            drawHorizontalLine(s.data.price, s.color);
+            const d = draw.drawings[draw.drawings.length - 1];
+            d.locked = s.locked;
+        } else if (s.type === 'ray' || s.type === 'trendline') {
+            drawTwoPointLine(s.type, s.data.t1, s.data.p1, s.data.t2, s.data.p2, s.color);
+            const d = draw.drawings[draw.drawings.length - 1];
+            d.locked = s.locked;
+        } else if (s.type === 'fib') {
+            drawFibonacci(s.data.p1, s.data.p2, s.color);
+            const d = draw.drawings[draw.drawings.length - 1];
+            d.locked = s.locked;
+        }
+    });
 }
 
 function removePreviewOverlay() {
@@ -1320,6 +1384,7 @@ function setupDrawingHandlers() {
     chartEl.addEventListener('touchend', (e) => {
         if (draw.dragging) {
             draw.dragging = false;
+            persistDrawings();
             updateModalCursor();
             return;
         }
@@ -1390,6 +1455,7 @@ function setupDrawingHandlers() {
     chartEl.addEventListener('mouseup', () => {
         if (draw.dragging) {
             draw.dragging = false;
+            persistDrawings();
             updateModalCursor();
         }
     });
@@ -1515,10 +1581,12 @@ function drawHorizontalLine(price, color) {
         title: '',
     });
     draw.drawings.push({ id: ++drawIdCounter, type: 'hline', color: c, locked: false, priceLine, data: { price } });
+    persistDrawings();
 }
 
-function drawTwoPointLine(type, t1, p1, t2, p2) {
+function drawTwoPointLine(type, t1, p1, t2, p2, color) {
     if (!modal.chart) return;
+    const c = color || '#5b9cf6';
     const points = [];
     const dt = t2 - t1;
     const dp = p2 - p1;
@@ -1549,7 +1617,7 @@ function drawTwoPointLine(type, t1, p1, t2, p2) {
     }).sort((a, b) => a.time - b.time);
 
     const lineSeries = modal.chart.addLineSeries({
-        color: '#5b9cf6',
+        color: c,
         lineWidth: 1.5,
         lineStyle: type === 'ray' ? 0 : 0,
         crosshairMarkerVisible: false,
@@ -1558,13 +1626,14 @@ function drawTwoPointLine(type, t1, p1, t2, p2) {
         pointMarkersVisible: false,
     });
     lineSeries.setData(uniquePoints);
-    draw.drawings.push({ id: ++drawIdCounter, type, color: '#5b9cf6', locked: false, lineSeries, data: { t1, p1, t2, p2 } });
+    draw.drawings.push({ id: ++drawIdCounter, type, color: c, locked: false, lineSeries, data: { t1, p1, t2, p2 } });
+    persistDrawings();
 }
 
-function drawFibonacci(p1, p2) {
+function drawFibonacci(p1, p2, color) {
     if (!modal.series) return;
     const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-    const colors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86'];
+    const defaultColors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86'];
     const labels = ['0%', '23.6%', '38.2%', '50%', '61.8%', '78.6%', '100%'];
     const diff = p2 - p1;
     const fibLines = [];
@@ -1573,7 +1642,7 @@ function drawFibonacci(p1, p2) {
         const price = p1 + diff * lvl;
         const priceLine = modal.series.createPriceLine({
             price: price,
-            color: colors[i],
+            color: color || defaultColors[i],
             lineWidth: 1,
             lineStyle: 2, // dashed
             axisLabelVisible: true,
@@ -1582,7 +1651,9 @@ function drawFibonacci(p1, p2) {
         fibLines.push(priceLine);
     });
 
-    draw.drawings.push({ id: ++drawIdCounter, type: 'fib', color: colors[3], locked: false, fibLines, priceLine: null, data: { p1, p2 } });
+    const savedColor = color || defaultColors[3];
+    draw.drawings.push({ id: ++drawIdCounter, type: 'fib', color: savedColor, locked: false, fibLines, priceLine: null, data: { p1, p2 } });
+    persistDrawings();
 }
 
 function closeCoinModal() {
@@ -1603,10 +1674,13 @@ function closeCoinModal() {
         modal.lines = [];
     }
     modal.currentSym = null;
-    // Clear drawing state
-    clearAllDrawings();
+    // Clear drawing chart objects (data already persisted in localStorage)
+    draw.drawings = [];
+    draw.selected = null;
     draw.activeTool = 'cursor';
     draw.clickCount = 0;
+    hideDrawingPanel();
+    removePreviewOverlay();
 }
 
 // Init modal event listeners (called once in initMiniCharts)
@@ -1629,6 +1703,9 @@ function initModalEvents() {
         el('cmTFButtons').querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         modal.currentTF = btn.dataset.tf;
+        // Clear chart objects before reload (data stays in localStorage)
+        draw.drawings.forEach(d => removeDrawingFromChart(d));
+        draw.drawings = [];
         loadModalChart(modal.currentSym, modal.currentTF);
     });
 }
