@@ -996,28 +996,33 @@ async function loadModalChart(sym, tf) {
             wsConnect();
         }
 
-        // Phase 2: background — 1500 candles
+        // Phase 2: background — paginate up to 20,000 candles
         setTimeout(async () => {
             if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
             try {
+                // First batch: 1500 most recent
                 const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`);
                 const json2 = await res2.json();
                 if (!Array.isArray(json2) || !modal.chart) return;
 
                 let fullData = parseKlines(json2);
                 const visRange = modal.chart.timeScale().getVisibleLogicalRange();
+                const TARGET = 20000;
 
-                // Phase 3: fetch another 1000 older candles for ~2500 total
-                if (fullData.length >= 1400) {
+                // Paginate backwards until we hit target or run out of data
+                let oldestTime = json2.length > 0 ? json2[0][0] : null;
+                while (fullData.length < TARGET && oldestTime) {
+                    if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
                     try {
-                        const oldest = json2[0][0]; // oldest candle open time
-                        const res3 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000&endTime=${oldest - 1}`);
-                        const json3 = await res3.json();
-                        if (Array.isArray(json3) && json3.length > 0 && modal.chart && modal.currentSym === sym) {
-                            const olderData = parseKlines(json3);
-                            fullData = [...olderData, ...fullData];
-                        }
-                    } catch(e) { /* older history failed, use 1500 */ }
+                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldestTime - 1}`);
+                        const json = await res.json();
+                        if (!Array.isArray(json) || json.length === 0) break;
+                        const olderData = parseKlines(json);
+                        fullData = [...olderData, ...fullData];
+                        oldestTime = json[0][0];
+                        // Small delay to avoid rate limits
+                        await new Promise(r => setTimeout(r, 100));
+                    } catch(e) { break; }
                 }
 
                 if (!modal.chart || modal.currentSym !== sym) return;
@@ -1030,6 +1035,7 @@ async function loadModalChart(sym, tf) {
                         to: visRange.to + added
                     });
                 }
+                console.log(`[Modal] ${sym} loaded ${fullData.length} candles`);
             } catch (e) { /* background load failed */ }
         }, 400);
     } catch (e) {
