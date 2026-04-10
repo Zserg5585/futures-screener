@@ -429,6 +429,83 @@ function extractVolume(data) {
     }));
 }
 
+// Apply saved drawings (hlines, fibs) to mini-chart
+function applyDrawingsToMiniChart(sym) {
+    const c = mc.charts[sym];
+    if (!c || !c.series) return;
+
+    // Clear old drawing objects
+    if (c.drawObjs) {
+        c.drawObjs.forEach(obj => {
+            if (obj.priceLine) try { c.series.removePriceLine(obj.priceLine); } catch(e) {}
+            if (obj.lineSeries) try { c.chart.removeSeries(obj.lineSeries); } catch(e) {}
+        });
+    }
+    c.drawObjs = [];
+
+    const saved = drawStore.load(sym);
+    if (!saved || saved.length === 0) return;
+
+    saved.forEach(s => {
+        if (s.type === 'hline' && s.data) {
+            const pl = c.series.createPriceLine({
+                price: s.data.price,
+                color: s.color || '#5b9cf6',
+                lineWidth: 1,
+                lineStyle: 2, // dashed on mini
+                axisLabelVisible: false,
+                title: '',
+            });
+            c.drawObjs.push({ priceLine: pl });
+        } else if (s.type === 'fib' && s.data) {
+            const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const diff = s.data.p2 - s.data.p1;
+            levels.forEach(lvl => {
+                const price = s.data.p1 + diff * lvl;
+                const pl = c.series.createPriceLine({
+                    price,
+                    color: s.color || '#5b9cf6',
+                    lineWidth: 1,
+                    lineStyle: 2,
+                    axisLabelVisible: false,
+                    title: '',
+                });
+                c.drawObjs.push({ priceLine: pl });
+            });
+        } else if ((s.type === 'ray' || s.type === 'trendline') && s.data) {
+            const { t1, p1, t2, p2 } = s.data;
+            const points = [];
+            if (s.type === 'ray') {
+                const dt = t2 - t1;
+                const dp = p2 - p1;
+                const steps = 200;
+                const seen = new Set();
+                for (let i = 0; i <= steps; i++) {
+                    const ratio = i / 5;
+                    const t = Math.round(t1 + dt * ratio);
+                    if (seen.has(t)) continue;
+                    seen.add(t);
+                    points.push({ time: t, value: p1 + dp * ratio });
+                }
+                points.sort((a, b) => a.time - b.time);
+            } else {
+                points.push({ time: t1, value: p1 });
+                points.push({ time: t2, value: p2 });
+            }
+            const ls = c.chart.addLineSeries({
+                color: s.color || '#5b9cf6',
+                lineWidth: 1,
+                crosshairMarkerVisible: false,
+                lastValueVisible: false,
+                priceLineVisible: false,
+                pointMarkersVisible: false,
+            });
+            ls.setData(points);
+            c.drawObjs.push({ lineSeries: ls });
+        }
+    });
+}
+
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
     try {
@@ -444,6 +521,9 @@ async function loadChartData(sym, tf) {
 
         // Show all 100 candles
         mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
+
+        // Apply saved drawings to mini-chart
+        applyDrawingsToMiniChart(sym);
 
         // Subscribe to live WS updates immediately
         wsSubscribe(sym);
@@ -468,6 +548,9 @@ async function loadChartData(sym, tf) {
                         to: visRange.to + added
                     });
                 }
+
+                // Re-apply drawings after full data load
+                applyDrawingsToMiniChart(sym);
             } catch (e) { /* background load failed */ }
         }, 300);
 
@@ -1008,13 +1091,12 @@ function drawModalLevels(data) {
 // Drawing Tools — Modal only
 // ==========================================
 const DRAW_TOOLS = [
-    { id: 'cursor', icon: '\u25B3', title: 'Cursor (Esc)', key: 'Escape' },
-    { id: 'hline', icon: '\u2500', title: 'Horizontal Line (H)', key: 'h' },
-    { id: 'ray', icon: '\u2571', title: 'Ray (R)', key: 'r' },
-    { id: 'trendline', icon: '\u2572', title: 'Trend Line (T)', key: 't' },
-    { id: 'fib', icon: 'Fib', title: 'Fibonacci Retracement (F)', key: 'f' },
-    { id: 'ruler', icon: '\u{1F4CF}', title: 'Ruler (Shift+Drag)', key: null },
-    { id: 'trash', icon: '\u{1F5D1}', title: 'Clear All Drawings', key: 'Delete' },
+    { id: 'cursor', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 1l10 6.5L8 9l-2 5.5L3 1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
+    { id: 'hline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
+    { id: 'ray', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="12" r="1.5" fill="currentColor"/><line x1="3" y1="12" x2="15" y2="3" stroke="currentColor" stroke-width="1.5"/></svg>', title: 'Ray (R)', key: 'r' },
+    { id: 'trendline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="13" cy="4" r="1.5" fill="currentColor"/><line x1="3" y1="12" x2="13" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>', title: 'Trend Line (T)', key: 't' },
+    { id: 'fib', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="2" x2="15" y2="2" stroke="currentColor" stroke-width="1" opacity="0.5"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="10" x2="15" y2="10" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="14" x2="15" y2="14" stroke="currentColor" stroke-width="1" opacity="0.5"/></svg>', title: 'Fibonacci (F)', key: 'f' },
+    { id: 'trash', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-8 0h10m-9 0v10a1 1 0 001 1h6a1 1 0 001-1V3" stroke="currentColor" stroke-width="1.3"/></svg>', title: 'Clear All', key: 'Delete' },
 ];
 
 const DRAW_COLORS = ['#5b9cf6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ec4899', '#ffffff'];
@@ -1065,15 +1147,25 @@ const draw = {
 };
 
 function renderDrawToolbar() {
-    const container = el('cmDrawTools');
-    if (!container) return;
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return;
+
+    // Remove old toolbar if exists
+    const old = chartEl.querySelector('.dt-tools');
+    if (old) old.remove();
+
+    const container = document.createElement('div');
+    container.className = 'dt-tools';
     container.innerHTML = DRAW_TOOLS.map(t => {
         const active = draw.activeTool === t.id ? ' dt-active' : '';
         return `<button class="dt-btn${active}" data-tool="${t.id}" title="${t.title}">${t.icon}</button>`;
     }).join('');
 
+    chartEl.appendChild(container);
+
     container.querySelectorAll('.dt-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
             const tool = btn.dataset.tool;
             if (tool === 'trash') {
                 clearAllDrawings();
@@ -1144,6 +1236,7 @@ function clearAllDrawings() {
     draw.selected = null;
     hideDrawingPanel();
     removePreviewOverlay();
+    persistDrawings();
 }
 
 function deleteDrawing(id) {
@@ -1696,6 +1789,7 @@ function drawFibonacci(p1, p2, color) {
 }
 
 function closeCoinModal() {
+    const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
@@ -1721,6 +1815,11 @@ function closeCoinModal() {
     draw.clickCount = 0;
     hideDrawingPanel();
     removePreviewOverlay();
+
+    // Refresh drawings on mini-chart (user may have added/removed drawings)
+    if (closingSym && mc.charts[closingSym]) {
+        applyDrawingsToMiniChart(closingSym);
+    }
 }
 
 // Init modal event listeners (called once in initMiniCharts)
