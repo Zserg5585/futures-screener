@@ -48,6 +48,8 @@ async function initMiniCharts() {
                     mc.loadQueue.push(sym);
                 });
                 processLoadQueue();
+                // Refresh NATR for new TF
+                fetchServerNATR(mc.globalTF);
             });
         }
 
@@ -176,9 +178,52 @@ async function refreshMiniCharts() {
         if (status) {
             status.textContent = `${mc.filteredPairs.length}/${pairs.length}`;
         }
+
+        // Fetch real NATR from server (background)
+        fetchServerNATR(mc.globalTF);
     } catch (e) {
         console.error('Mini-Charts fetch error:', e);
         if (status) status.textContent = 'Error';
+    }
+}
+
+async function fetchServerNATR(tf) {
+    try {
+        const res = await fetch(`/api/natr?interval=${tf}`);
+        const natrMap = await res.json();
+        if (!natrMap || typeof natrMap !== 'object') return;
+
+        // Update all pairs with real NATR
+        mc.allPairs.forEach(p => {
+            if (natrMap[p.symbol] !== undefined) {
+                p.proxyNatr = natrMap[p.symbol];
+            }
+        });
+
+        // Update displayed values on visible cards
+        Object.keys(natrMap).forEach(sym => {
+            const card = document.getElementById(`mc-card-${sym}`);
+            if (card) {
+                const span = card.querySelector('.mc-natr');
+                if (span) span.textContent = natrMap[sym].toFixed(1) + '%';
+            }
+        });
+
+        // Re-sort if sorting by NATR
+        if (mc.sortBy === 'natr') {
+            sortPairs();
+            renderSidebar();
+            // Reorder cards in DOM without destroying charts
+            const grid = el('chartsGrid');
+            if (grid) {
+                mc.filteredPairs.forEach(p => {
+                    const card = document.getElementById(`mc-card-${p.symbol}`);
+                    if (card) grid.appendChild(card);
+                });
+            }
+        }
+    } catch(e) {
+        console.error('NATR fetch error:', e);
     }
 }
 

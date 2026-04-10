@@ -578,6 +578,64 @@ fastify.get('/api/klines', async (req) => {
   return data
 })
 
+// NATR(14) for all USDT pairs — cached 5min
+fastify.get('/api/natr', async (req) => {
+  const interval = String(req.query.interval || '15m')
+  const cached = getProxyCached(`natr:${interval}`, 300000) // 5 min cache
+  if (cached) return cached
+
+  // Get all USDT pairs from ticker
+  const tickerCached = getProxyCached('ticker24hr', 30000)
+  const ticker = tickerCached || await bgetWithRetry('/fapi/v1/ticker/24hr')
+  if (!tickerCached) setProxyCached('ticker24hr', ticker)
+
+  const usdtPairs = ticker
+    .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
+    .filter(t => parseFloat(t.quoteVolume) > 10000000) // >$10M vol only
+    .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+    .slice(0, 200) // top 200 by volume
+
+  // Fetch klines in parallel batches of 20
+  const result = {}
+  const batchSize = 20
+  for (let i = 0; i < usdtPairs.length; i += batchSize) {
+    const batch = usdtPairs.slice(i, i + batchSize)
+    const promises = batch.map(async (t) => {
+      try {
+        const key = `klines:${t.symbol}:${interval}:50`
+        let klines = getProxyCached(key, 10000)
+        if (!klines) {
+          klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${t.symbol}&interval=${interval}&limit=50`)
+          setProxyCached(key, klines)
+        }
+        if (!Array.isArray(klines) || klines.length < 15) return
+        // Calculate ATR(14)
+        const candles = klines.map(k => ({
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+        }))
+        let trSum = 0
+        for (let j = candles.length - 14; j < candles.length; j++) {
+          const h = candles[j].high
+          const l = candles[j].low
+          const pc = candles[j - 1].close
+          trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))
+        }
+        const atr = trSum / 14
+        const lastClose = candles[candles.length - 1].close
+        if (lastClose > 0) result[t.symbol] = parseFloat(((atr / lastClose) * 100).toFixed(2))
+      } catch(e) { /* skip pair */ }
+    })
+    await Promise.all(promises)
+    // Small delay between batches to avoid rate limits
+    if (i + batchSize < usdtPairs.length) await new Promise(r => setTimeout(r, 200))
+  }
+
+  setProxyCached(`natr:${interval}`, result)
+  return result
+})
+
 // ---- start ----
 const port = Number(process.env.PORT || 3200)
 
