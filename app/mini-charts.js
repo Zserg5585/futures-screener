@@ -975,14 +975,21 @@ const DRAW_TOOLS = [
     { id: 'trash', icon: '\u{1F5D1}', title: 'Clear All Drawings', key: 'Delete' },
 ];
 
+const DRAW_COLORS = ['#5b9cf6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ec4899', '#ffffff'];
+let drawIdCounter = 0;
+
 const draw = {
     activeTool: 'cursor',
     clickCount: 0,
     startPrice: 0,
     startTime: 0,
     tempLine: null,
-    drawings: [],    // { type, series/lines, data }
+    drawings: [],    // { id, type, color, locked, priceLine/lineSeries/fibLines, data }
     overlay: null,   // canvas overlay for live preview
+    selected: null,  // selected drawing id
+    dragging: false, // drag in progress
+    dragStartY: 0,
+    dragStartPrice: 0,
 };
 
 function renderDrawToolbar() {
@@ -1050,27 +1057,166 @@ document.addEventListener('keydown', (e) => {
         updateModalCursor();
     }
     if (e.key === 'Delete' && modal.chart) {
-        clearAllDrawings();
+        if (draw.selected !== null) {
+            deleteDrawing(draw.selected);
+        } else {
+            clearAllDrawings();
+        }
     }
 });
 
 function clearAllDrawings() {
-    draw.drawings.forEach(d => {
-        if (d.priceLine && modal.series) {
-            try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
-        }
-        if (d.lineSeries && modal.chart) {
-            try { modal.chart.removeSeries(d.lineSeries); } catch(e) {}
-        }
-        if (d.fibLines) {
-            d.fibLines.forEach(fl => {
-                try { modal.chart.removeSeries(fl); } catch(e) {}
-            });
-        }
-    });
+    draw.drawings.forEach(d => removeDrawingFromChart(d));
     draw.drawings = [];
     draw.clickCount = 0;
+    draw.selected = null;
+    hideDrawingPanel();
     removePreviewOverlay();
+}
+
+function deleteDrawing(id) {
+    const idx = draw.drawings.findIndex(d => d.id === id);
+    if (idx === -1) return;
+    const d = draw.drawings[idx];
+    removeDrawingFromChart(d);
+    draw.drawings.splice(idx, 1);
+    if (draw.selected === id) {
+        draw.selected = null;
+        hideDrawingPanel();
+    }
+}
+
+function removeDrawingFromChart(d) {
+    if (d.priceLine && modal.series) {
+        try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
+    }
+    if (d.lineSeries && modal.chart) {
+        try { modal.chart.removeSeries(d.lineSeries); } catch(e) {}
+    }
+    if (d.fibLines && modal.series) {
+        d.fibLines.forEach(fl => {
+            try { modal.series.removePriceLine(fl); } catch(e) {}
+        });
+    }
+}
+
+function selectDrawing(id) {
+    draw.selected = id;
+    const d = draw.drawings.find(dd => dd.id === id);
+    if (!d) return;
+    showDrawingPanel(d);
+}
+
+function deselectDrawing() {
+    draw.selected = null;
+    hideDrawingPanel();
+}
+
+function showDrawingPanel(d) {
+    hideDrawingPanel();
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'drawPanel';
+    panel.className = 'draw-panel';
+
+    // Color dots
+    const colorsHtml = DRAW_COLORS.map(c => {
+        const sel = c === d.color ? ' draw-color-active' : '';
+        return `<div class="draw-color-dot${sel}" data-color="${c}" style="background:${c};"></div>`;
+    }).join('');
+
+    const lockIcon = d.locked ? '🔒' : '🔓';
+    panel.innerHTML = `
+        <div class="draw-panel-colors">${colorsHtml}</div>
+        <button class="draw-panel-btn" data-action="lock" title="${d.locked ? 'Unlock' : 'Lock'}">${lockIcon}</button>
+        <button class="draw-panel-btn draw-panel-delete" data-action="delete" title="Delete">✕</button>
+    `;
+
+    chartEl.appendChild(panel);
+
+    // Color click
+    panel.querySelectorAll('.draw-color-dot').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            changeDrawingColor(d.id, dot.dataset.color);
+        });
+    });
+
+    // Lock
+    panel.querySelector('[data-action="lock"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        d.locked = !d.locked;
+        showDrawingPanel(d); // refresh
+    });
+
+    // Delete
+    panel.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteDrawing(d.id);
+    });
+}
+
+function hideDrawingPanel() {
+    const p = document.getElementById('drawPanel');
+    if (p) p.remove();
+}
+
+function changeDrawingColor(id, color) {
+    const d = draw.drawings.find(dd => dd.id === id);
+    if (!d) return;
+    d.color = color;
+
+    // Recreate with new color
+    if (d.type === 'hline' && d.priceLine && modal.series) {
+        const price = d.data.price;
+        try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
+        d.priceLine = modal.series.createPriceLine({
+            price, color, lineWidth: 1, lineStyle: 0,
+            axisLabelVisible: true, title: '',
+        });
+    } else if ((d.type === 'ray' || d.type === 'trendline') && d.lineSeries) {
+        d.lineSeries.applyOptions({ color });
+    } else if (d.type === 'fib' && d.fibLines && modal.series) {
+        // Fib: recreate all lines with proportional colors based on selected
+        // Keep original fib colors but tint — simpler: just update each line
+        d.fibLines.forEach(fl => {
+            try { modal.series.removePriceLine(fl); } catch(e) {}
+        });
+        const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        const labels = ['0%', '23.6%', '38.2%', '50%', '61.8%', '78.6%', '100%'];
+        const diff = d.data.p2 - d.data.p1;
+        d.fibLines = levels.map((lvl, i) => {
+            const price = d.data.p1 + diff * lvl;
+            return modal.series.createPriceLine({
+                price, color, lineWidth: 1, lineStyle: 2,
+                axisLabelVisible: true, title: labels[i],
+            });
+        });
+    }
+    showDrawingPanel(d); // refresh panel
+}
+
+// Find drawing near a price (for click-to-select)
+function findDrawingNearPrice(price) {
+    if (!modal.series) return null;
+    const threshold = Math.abs(price) * 0.005; // 0.5% tolerance
+
+    for (const d of draw.drawings) {
+        if (d.type === 'hline' && d.data) {
+            if (Math.abs(d.data.price - price) < threshold) return d;
+        }
+        if (d.type === 'fib' && d.data) {
+            const diff = d.data.p2 - d.data.p1;
+            const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            for (const lvl of levels) {
+                const fibPrice = d.data.p1 + diff * lvl;
+                if (Math.abs(fibPrice - price) < threshold) return d;
+            }
+        }
+    }
+    return null;
 }
 
 function removePreviewOverlay() {
@@ -1152,16 +1298,139 @@ function setupDrawingHandlers() {
 
     // Desktop click
     chartEl.addEventListener('click', (e) => {
+        if (draw.activeTool === 'cursor') {
+            // Select/deselect drawing
+            const rect = chartEl.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+            if (price !== null) {
+                const found = findDrawingNearPrice(price);
+                if (found) {
+                    selectDrawing(found.id);
+                } else {
+                    deselectDrawing();
+                }
+            }
+            return;
+        }
         handleDrawClick(e.clientX, e.clientY);
     });
 
     // Mobile touch — use touchend so we get final position
     chartEl.addEventListener('touchend', (e) => {
-        if (draw.activeTool === 'cursor' || draw.activeTool === 'ruler') return;
+        if (draw.dragging) {
+            draw.dragging = false;
+            updateModalCursor();
+            return;
+        }
+        if (draw.activeTool === 'cursor') {
+            // Select drawing on tap
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            const rect = chartEl.getBoundingClientRect();
+            const y = touch.clientY - rect.top;
+            const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+            if (price !== null) {
+                const found = findDrawingNearPrice(price);
+                if (found) {
+                    selectDrawing(found.id);
+                } else {
+                    deselectDrawing();
+                }
+            }
+            return;
+        }
         e.preventDefault();
         const touch = e.changedTouches[0];
         if (!touch) return;
         handleDrawClick(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    // Drag support for hline — mousedown
+    chartEl.addEventListener('mousedown', (e) => {
+        if (draw.activeTool !== 'cursor' || draw.selected === null) return;
+        const d = draw.drawings.find(dd => dd.id === draw.selected);
+        if (!d || d.locked || d.type !== 'hline') return;
+
+        const rect = chartEl.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+        if (price === null) return;
+        const threshold = Math.abs(d.data.price) * 0.005;
+        if (Math.abs(price - d.data.price) > threshold) return;
+
+        e.preventDefault();
+        draw.dragging = true;
+        draw.dragStartY = e.clientY;
+        draw.dragStartPrice = d.data.price;
+        if (modal.chart) modal.chart.applyOptions({ handleScroll: false, handleScale: false });
+    });
+
+    // Drag — mousemove
+    chartEl.addEventListener('mousemove', (e) => {
+        if (draw.dragging && draw.selected !== null) {
+            const d = draw.drawings.find(dd => dd.id === draw.selected);
+            if (!d || d.type !== 'hline') return;
+            const rect = chartEl.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            const newPrice = modal.series ? modal.series.coordinateToPrice(y) : null;
+            if (newPrice === null) return;
+
+            // Update price line
+            try { modal.series.removePriceLine(d.priceLine); } catch(ex) {}
+            d.priceLine = modal.series.createPriceLine({
+                price: newPrice, color: d.color, lineWidth: 1, lineStyle: 0,
+                axisLabelVisible: true, title: '',
+            });
+            d.data.price = newPrice;
+        }
+    });
+
+    // Drag — mouseup
+    chartEl.addEventListener('mouseup', () => {
+        if (draw.dragging) {
+            draw.dragging = false;
+            updateModalCursor();
+        }
+    });
+
+    // Touch drag for hline
+    chartEl.addEventListener('touchstart', (e) => {
+        if (draw.activeTool !== 'cursor' || draw.selected === null) return;
+        const d = draw.drawings.find(dd => dd.id === draw.selected);
+        if (!d || d.locked || d.type !== 'hline') return;
+
+        const touch = e.touches[0];
+        const rect = chartEl.getBoundingClientRect();
+        const y = touch.clientY - rect.top;
+        const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+        if (price === null) return;
+        const threshold = Math.abs(d.data.price) * 0.008;
+        if (Math.abs(price - d.data.price) > threshold) return;
+
+        e.preventDefault();
+        draw.dragging = true;
+        if (modal.chart) modal.chart.applyOptions({ handleScroll: false, handleScale: false });
+    }, { passive: false });
+
+    chartEl.addEventListener('touchmove', (e) => {
+        if (draw.dragging && draw.selected !== null) {
+            e.preventDefault();
+            const d = draw.drawings.find(dd => dd.id === draw.selected);
+            if (!d || d.type !== 'hline') return;
+            const touch = e.touches[0];
+            const rect = chartEl.getBoundingClientRect();
+            const y = touch.clientY - rect.top;
+            const newPrice = modal.series ? modal.series.coordinateToPrice(y) : null;
+            if (newPrice === null) return;
+
+            try { modal.series.removePriceLine(d.priceLine); } catch(ex) {}
+            d.priceLine = modal.series.createPriceLine({
+                price: newPrice, color: d.color, lineWidth: 1, lineStyle: 0,
+                axisLabelVisible: true, title: '',
+            });
+            d.data.price = newPrice;
+        }
     }, { passive: false });
 
     // Live preview for 2-click tools
@@ -1234,17 +1503,18 @@ function setupDrawingHandlers() {
 // ============================================
 // Drawing implementations
 // ============================================
-function drawHorizontalLine(price) {
+function drawHorizontalLine(price, color) {
     if (!modal.series) return;
+    const c = color || '#5b9cf6';
     const priceLine = modal.series.createPriceLine({
         price: price,
-        color: '#5b9cf6',
+        color: c,
         lineWidth: 1,
-        lineStyle: 0, // solid
+        lineStyle: 0,
         axisLabelVisible: true,
         title: '',
     });
-    draw.drawings.push({ type: 'hline', priceLine });
+    draw.drawings.push({ id: ++drawIdCounter, type: 'hline', color: c, locked: false, priceLine, data: { price } });
 }
 
 function drawTwoPointLine(type, t1, p1, t2, p2) {
@@ -1288,7 +1558,7 @@ function drawTwoPointLine(type, t1, p1, t2, p2) {
         pointMarkersVisible: false,
     });
     lineSeries.setData(uniquePoints);
-    draw.drawings.push({ type, lineSeries });
+    draw.drawings.push({ id: ++drawIdCounter, type, color: '#5b9cf6', locked: false, lineSeries, data: { t1, p1, t2, p2 } });
 }
 
 function drawFibonacci(p1, p2) {
@@ -1312,7 +1582,7 @@ function drawFibonacci(p1, p2) {
         fibLines.push(priceLine);
     });
 
-    draw.drawings.push({ type: 'fib', fibLines, priceLine: null });
+    draw.drawings.push({ id: ++drawIdCounter, type: 'fib', color: colors[3], locked: false, fibLines, priceLine: null, data: { p1, p2 } });
 }
 
 function closeCoinModal() {

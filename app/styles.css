@@ -1288,6 +1288,69 @@ body {
     border-color: rgba(239, 68, 68, 0.3);
 }
 
+/* Drawing edit panel */
+.draw-panel {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(15, 20, 30, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 6px 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    animation: mc-flag-pop 0.12s ease-out;
+}
+
+.draw-panel-colors {
+    display: flex;
+    gap: 4px;
+}
+
+.draw-color-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.1);
+    cursor: pointer;
+    transition: all 0.1s ease;
+}
+
+.draw-color-dot:hover {
+    transform: scale(1.2);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+.draw-color-dot.draw-color-active {
+    border-color: #fff;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+}
+
+.draw-panel-btn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.1s ease;
+    line-height: 1;
+}
+
+.draw-panel-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.draw-panel-delete:hover {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
 .mc-modal-chart {
     flex: 1;
     min-height: 0;
