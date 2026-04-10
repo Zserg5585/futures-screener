@@ -657,6 +657,9 @@ function wsConnect() {
 
             const vol = parseFloat(k.v);
 
+            // Check price alerts
+            checkPriceAlerts(sym, candle.close);
+
             // Update mini-chart
             if (mc.charts[sym]) {
                 mc.charts[sym].series.update(candle);
@@ -1114,9 +1117,9 @@ const drawStore = (() => {
     return {
         save(sym, drawings) {
             const store = loadAll();
-            // Serialize only data we can recreate from
             store[sym] = drawings.map(d => ({
-                type: d.type, color: d.color, locked: d.locked, data: d.data
+                type: d.type, color: d.color, locked: d.locked,
+                data: d.data, alert: d.alert || false
             }));
             saveAll(store);
         },
@@ -1124,6 +1127,7 @@ const drawStore = (() => {
             const store = loadAll();
             return store[sym] || [];
         },
+        loadAll,
         remove(sym) {
             const store = loadAll();
             delete store[sym];
@@ -1131,6 +1135,104 @@ const drawStore = (() => {
         }
     };
 })();
+
+// ==========================================
+// Price Alert System
+// ==========================================
+const alertState = {
+    // Track last known price per symbol to detect crossings
+    lastPrices: {},
+    // Cooldown per alert to avoid spam (key: "sym:price", value: timestamp)
+    cooldowns: {},
+    COOLDOWN_MS: 60000, // 1 min cooldown per alert
+};
+
+function checkPriceAlerts(sym, currentPrice) {
+    const allDrawings = drawStore.loadAll();
+    const symDrawings = allDrawings[sym];
+    if (!symDrawings || symDrawings.length === 0) return;
+
+    const lastPrice = alertState.lastPrices[sym];
+    alertState.lastPrices[sym] = currentPrice;
+    if (lastPrice === undefined) return; // first tick, no crossing possible
+
+    symDrawings.forEach(d => {
+        if (!d.alert) return;
+        if (d.type !== 'hline' && d.type !== 'ray') return;
+        const alertPrice = d.data.price;
+        if (!alertPrice) return;
+
+        // Check crossing: last was below, now above (or vice versa)
+        const crossedUp = lastPrice < alertPrice && currentPrice >= alertPrice;
+        const crossedDown = lastPrice > alertPrice && currentPrice <= alertPrice;
+        if (!crossedUp && !crossedDown) return;
+
+        // Cooldown check
+        const cooldownKey = `${sym}:${alertPrice.toFixed(8)}`;
+        const now = Date.now();
+        if (alertState.cooldowns[cooldownKey] && now - alertState.cooldowns[cooldownKey] < alertState.COOLDOWN_MS) return;
+        alertState.cooldowns[cooldownKey] = now;
+
+        const direction = crossedUp ? '▲ Crossed Above' : '▼ Crossed Below';
+        const ticker = sym.replace('USDT', '');
+        showAlertToast(sym, ticker, currentPrice, alertPrice, direction, d.color);
+    });
+}
+
+function showAlertToast(sym, ticker, currentPrice, alertPrice, direction, color) {
+    // Remove old toasts if too many
+    const existing = document.querySelectorAll('.alert-toast');
+    if (existing.length >= 5) existing[0].remove();
+
+    const prec = getPricePrecision(currentPrice);
+    const toast = document.createElement('div');
+    toast.className = 'alert-toast';
+    toast.style.borderLeftColor = color || '#5b9cf6';
+    toast.innerHTML = `
+        <div class="alert-toast-header">
+            <span class="alert-toast-icon">🔔</span>
+            <span class="alert-toast-sym">${ticker}/USDT</span>
+            <button class="alert-toast-close">&times;</button>
+        </div>
+        <div class="alert-toast-body">
+            <div class="alert-toast-dir" style="color:${direction.includes('Above') ? '#22c55e' : '#ef4444'}">${direction}</div>
+            <div class="alert-toast-price">Level: <b>$${alertPrice.toFixed(prec)}</b></div>
+            <div class="alert-toast-current">Price: <b>$${currentPrice.toFixed(prec)}</b></div>
+        </div>
+    `;
+
+    // Click toast → open modal
+    toast.addEventListener('click', (e) => {
+        if (e.target.closest('.alert-toast-close')) {
+            toast.remove();
+            return;
+        }
+        toast.remove();
+        openCoinModal(sym);
+    });
+
+    // Close button
+    toast.querySelector('.alert-toast-close').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toast.remove();
+    });
+
+    document.body.appendChild(toast);
+
+    // Auto-remove after 10s
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 10000);
+
+    // Also try browser Notification API
+    if (Notification.permission === 'granted') {
+        try {
+            new Notification(`${ticker}/USDT — ${direction}`, {
+                body: `Level: $${alertPrice.toFixed(prec)} | Price: $${currentPrice.toFixed(prec)}`,
+                icon: '🔔',
+                tag: `alert-${sym}-${alertPrice}`,
+            });
+        } catch(e) {}
+    }
+}
 
 // Fibonacci levels config (customizable, persisted in localStorage)
 const FIB_DEFAULTS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
@@ -1320,8 +1422,12 @@ function showDrawingPanel(d) {
 
     const lockIcon = d.locked ? '🔒' : '🔓';
     const fibBtn = d.type === 'fib' ? `<button class="draw-panel-btn" data-action="fib-settings" title="Fib Levels">&#9881;</button>` : '';
+    const alertBtn = (d.type === 'hline' || d.type === 'ray')
+        ? `<button class="draw-panel-btn${d.alert ? ' draw-alert-active' : ''}" data-action="alert" title="${d.alert ? 'Disable Alert' : 'Enable Alert'}">🔔</button>`
+        : '';
     panel.innerHTML = `
         <div class="draw-panel-colors">${colorsHtml}</div>
+        ${alertBtn}
         ${fibBtn}
         <button class="draw-panel-btn" data-action="lock" title="${d.locked ? 'Unlock' : 'Lock'}">${lockIcon}</button>
         <button class="draw-panel-btn draw-panel-delete" data-action="delete" title="Delete">&#10005;</button>
@@ -1343,6 +1449,20 @@ function showDrawingPanel(d) {
 
     // Delete
     panel.querySelector('[data-action="delete"]').addEventListener('click', () => deleteDrawing(d.id));
+
+    // Alert toggle
+    const alertBtn = panel.querySelector('[data-action="alert"]');
+    if (alertBtn) {
+        alertBtn.addEventListener('click', () => {
+            d.alert = !d.alert;
+            persistDrawings();
+            showDrawingPanel(d); // refresh
+            // Request browser notification permission
+            if (d.alert && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+        });
+    }
 
     // Fib settings
     const fibSettingsBtn = panel.querySelector('[data-action="fib-settings"]');

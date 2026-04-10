@@ -1489,6 +1489,108 @@ body {
     background: rgba(59, 130, 246, 0.25);
 }
 
+/* Alert button active state */
+.draw-alert-active {
+    color: #eab308 !important;
+    background: rgba(234, 179, 8, 0.15) !important;
+    border-color: rgba(234, 179, 8, 0.3) !important;
+}
+
+/* Alert Toast — bottom right */
+.alert-toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 10000;
+    min-width: 260px;
+    max-width: 340px;
+    background: rgba(15, 20, 30, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-left: 3px solid #5b9cf6;
+    border-radius: 10px;
+    padding: 12px 14px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    animation: toast-slide-in 0.3s ease-out;
+    backdrop-filter: blur(12px);
+    transition: opacity 0.3s, transform 0.3s;
+}
+
+.alert-toast:hover {
+    background: rgba(25, 30, 45, 0.98);
+    transform: translateX(-4px);
+}
+
+.alert-toast + .alert-toast {
+    margin-bottom: 8px;
+    bottom: calc(20px + var(--toast-offset, 0px));
+}
+
+.alert-toast:nth-last-child(2) { bottom: 90px; }
+.alert-toast:nth-last-child(3) { bottom: 160px; }
+.alert-toast:nth-last-child(4) { bottom: 230px; }
+.alert-toast:nth-last-child(5) { bottom: 300px; }
+
+@keyframes toast-slide-in {
+    from { opacity: 0; transform: translateX(80px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.alert-toast-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.alert-toast-icon {
+    font-size: 14px;
+}
+
+.alert-toast-sym {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.alert-toast-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+}
+
+.alert-toast-close:hover {
+    color: var(--text-primary);
+}
+
+.alert-toast-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.alert-toast-dir {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.alert-toast-price,
+.alert-toast-current {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.alert-toast-price b,
+.alert-toast-current b {
+    color: var(--text-primary);
+}
+
 .mc-modal-chart {
     flex: 1;
     min-height: 0;
