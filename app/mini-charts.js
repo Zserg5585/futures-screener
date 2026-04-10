@@ -448,7 +448,7 @@ async function loadChartData(sym, tf) {
         // Subscribe to live WS updates immediately
         wsSubscribe(sym);
 
-        // Phase 2: background load — full 500 candles for history
+        // Phase 2: background load — 500 candles
         setTimeout(async () => {
             if (!mc.charts[sym]) return;
             try {
@@ -457,12 +457,10 @@ async function loadChartData(sym, tf) {
                 if (!Array.isArray(json2) || !mc.charts[sym]) return;
 
                 const data2 = parseKlines(json2);
-                // Save current visible range before replacing data
                 const visRange = mc.charts[sym].chart.timeScale().getVisibleLogicalRange();
                 mc.charts[sym].series.setData(data2);
                 mc.charts[sym].volSeries.setData(extractVolume(data2));
 
-                // Keep the same view (user sees no jump) — offset by added history
                 const added = data2.length - data1.length;
                 if (visRange) {
                     mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
@@ -470,7 +468,7 @@ async function loadChartData(sym, tf) {
                         to: visRange.to + added
                     });
                 }
-            } catch (e) { /* background load failed, no big deal */ }
+            } catch (e) { /* background load failed */ }
         }, 300);
 
         // Auto-levels disabled for now
@@ -886,19 +884,34 @@ async function loadModalChart(sym, tf) {
             wsConnect();
         }
 
-        // Phase 2: background — full 500
+        // Phase 2: background — 1500 candles
         setTimeout(async () => {
             if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
             try {
-                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
+                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`);
                 const json2 = await res2.json();
                 if (!Array.isArray(json2) || !modal.chart) return;
 
-                const data2 = parseKlines(json2);
+                let fullData = parseKlines(json2);
                 const visRange = modal.chart.timeScale().getVisibleLogicalRange();
-                modal.series.setData(data2);
-                if (modal.volSeries) modal.volSeries.setData(extractVolume(data2));
-                const added = data2.length - data1.length;
+
+                // Phase 3: fetch another 1000 older candles for ~2500 total
+                if (fullData.length >= 1400) {
+                    try {
+                        const oldest = json2[0][0]; // oldest candle open time
+                        const res3 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000&endTime=${oldest - 1}`);
+                        const json3 = await res3.json();
+                        if (Array.isArray(json3) && json3.length > 0 && modal.chart && modal.currentSym === sym) {
+                            const olderData = parseKlines(json3);
+                            fullData = [...olderData, ...fullData];
+                        }
+                    } catch(e) { /* older history failed, use 1500 */ }
+                }
+
+                if (!modal.chart || modal.currentSym !== sym) return;
+                modal.series.setData(fullData);
+                if (modal.volSeries) modal.volSeries.setData(extractVolume(fullData));
+                const added = fullData.length - data1.length;
                 if (visRange) {
                     modal.chart.timeScale().setVisibleLogicalRange({
                         from: visRange.from + added,

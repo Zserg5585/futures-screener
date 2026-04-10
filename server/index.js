@@ -564,14 +564,16 @@ fastify.get('/api/ticker24hr', async () => {
 fastify.get('/api/klines', async (req) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const interval = String(req.query.interval || '15m')
-  const limit = Math.min(Number(req.query.limit || 200), 1000)
+  const limit = Math.min(Number(req.query.limit || 200), 1500)
+  const endTime = req.query.endTime ? Number(req.query.endTime) : null
   if (!symbol) return { error: 'symbol required' }
 
-  const key = `klines:${symbol}:${interval}:${limit}`
+  const endSuffix = endTime ? `&endTime=${endTime}` : ''
+  const key = `klines:${symbol}:${interval}:${limit}${endSuffix}`
   const cached = getProxyCached(key, 10000)
   if (cached) return cached
 
-  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${endSuffix}`)
   setProxyCached(key, data)
   return data
 })
