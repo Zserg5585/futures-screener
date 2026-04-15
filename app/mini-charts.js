@@ -477,9 +477,9 @@ async function processLoadQueue() {
     mc.loadingActive = true;
 
     while (mc.loadQueue.length > 0) {
-        // Grab up to 20 symbols from queue
+        // Grab up to 8 symbols from queue (smaller batches to not hog Binance rate limit)
         const batch = [];
-        while (mc.loadQueue.length > 0 && batch.length < 20) {
+        while (mc.loadQueue.length > 0 && batch.length < 8) {
             const sym = mc.loadQueue.shift();
             if (!mc.charts[sym]) continue; // already scrolled away
             if (mc.loadedData[sym]) continue; // already loaded
@@ -491,7 +491,7 @@ async function processLoadQueue() {
             const res = await fetch('/api/klines-batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: batch, interval: mc.globalTF, limit: 200 })
+                body: JSON.stringify({ symbols: batch, interval: mc.globalTF, limit: 500 })
             });
             const allData = await res.json();
 
@@ -503,7 +503,12 @@ async function processLoadQueue() {
                     if (parsed.length > 0) {
                         mc.charts[sym].series.setData(parsed);
                         mc.charts[sym].volSeries?.setData(extractVolume(parsed));
-                        mc.charts[sym].chart.timeScale().fitContent();
+                        // Show last ~100 candles visible, rest available by scrolling
+                        const visibleCount = Math.min(100, parsed.length);
+                        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
+                            from: parsed.length - visibleCount,
+                            to: parsed.length - 1 + 10
+                        });
                         mc.loadedData[sym] = true;
                         // Calculate and display NATR from candle data
                         const realNatr = calcNATR(parsed);
@@ -1167,8 +1172,8 @@ async function loadModalChart(sym, tf) {
                         const olderData = parseKlines(json);
                         fullData = [...olderData, ...fullData];
                         oldestTime = json[0][0];
-                        // Small delay to avoid rate limits
-                        await new Promise(r => setTimeout(r, 100));
+                        // Minimal delay (server caches, no direct Binance rate limit issue)
+                        await new Promise(r => setTimeout(r, 20));
                     } catch(e) { break; }
                 }
 
