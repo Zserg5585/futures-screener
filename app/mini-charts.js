@@ -5,6 +5,7 @@
 const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
 const mc = {
     sortBy: 'volume',
+    sortDir: 'desc',
     globalTF: '15m',
     loaded: false,
     allPairs: [],        // all fetched pairs (unfiltered)
@@ -53,12 +54,24 @@ async function initMiniCharts() {
             });
         }
 
-        // Sort select
-        const sortSel = el('mcSortBy');
-        if (sortSel) {
-            sortSel.addEventListener('change', (e) => {
-                mc.sortBy = e.target.value;
-                applyFiltersAndRebuild();
+        // Sort by column headers in sidebar
+        const colHeaders = document.getElementById('mcColHeaders');
+        if (colHeaders) {
+            colHeaders.querySelectorAll('.mc-col-hdr').forEach(hdr => {
+                hdr.addEventListener('click', () => {
+                    const key = hdr.dataset.sort;
+                    // Toggle direction if same column, else set desc
+                    if (mc.sortBy === key) {
+                        mc.sortDir = mc.sortDir === 'desc' ? 'asc' : 'desc';
+                    } else {
+                        mc.sortBy = key;
+                        mc.sortDir = 'desc';
+                    }
+                    // Update header classes
+                    colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
+                    hdr.classList.add('active', mc.sortDir);
+                    applyFiltersAndRebuild();
+                });
             });
         }
 
@@ -200,12 +213,22 @@ async function fetchServerNATR(tf) {
             }
         });
 
-        // Update displayed values on visible cards
+        // Update displayed values on visible chart cards
         Object.keys(natrMap).forEach(sym => {
             const card = document.getElementById(`mc-card-${sym}`);
             if (card) {
                 const span = card.querySelector('.mc-natr');
                 if (span) span.textContent = natrMap[sym].toFixed(1) + '%';
+            }
+        });
+
+        // Update sidebar NATR values
+        const sidebarItems = document.querySelectorAll('.mc-coin-item');
+        sidebarItems.forEach(item => {
+            const sym = item.dataset.symbol;
+            if (sym && natrMap[sym] !== undefined) {
+                const natrSpan = item.querySelector('.mc-coin-natr');
+                if (natrSpan) natrSpan.textContent = natrMap[sym].toFixed(1);
             }
         });
 
@@ -295,11 +318,13 @@ function rebuildGrid() {
 }
 
 function sortPairs() {
+    const dir = mc.sortDir === 'asc' ? 1 : -1;
     const sorter = (a, b) => {
-        if (mc.sortBy === 'natr') return b.proxyNatr - a.proxyNatr;
-        if (mc.sortBy === 'trades') return b.tradesCount - a.tradesCount;
-        if (mc.sortBy === 'change') return Math.abs(b.priceChange) - Math.abs(a.priceChange);
-        return b.quoteVol - a.quoteVol;
+        if (mc.sortBy === 'symbol') return dir * a.symbol.localeCompare(b.symbol);
+        if (mc.sortBy === 'natr') return dir * (b.proxyNatr - a.proxyNatr);
+        if (mc.sortBy === 'trades') return dir * (b.tradesCount - a.tradesCount);
+        if (mc.sortBy === 'change') return dir * (b.priceChange - a.priceChange);
+        return dir * (b.quoteVol - a.quoteVol); // volume default
     };
     mc.allPairs.sort(sorter);
     mc.filteredPairs.sort(sorter);
@@ -316,11 +341,16 @@ function renderSidebar() {
         pairs = pairs.filter(p => p.symbol.replace('USDT', '').includes(mc.searchQuery));
     }
 
-    // Sort: flagged coins first, then by current sort
+    // Sort: flagged coins first, then by current sort column
+    const dir = mc.sortDir === 'asc' ? 1 : -1;
     pairs = [...pairs].sort((a, b) => {
         const fa = mc.flags[a.symbol] ? 1 : 0;
         const fb = mc.flags[b.symbol] ? 1 : 0;
-        return fb - fa;
+        if (fb !== fa) return fb - fa;
+        if (mc.sortBy === 'symbol') return dir * a.symbol.localeCompare(b.symbol);
+        if (mc.sortBy === 'natr') return dir * ((b.proxyNatr || 0) - (a.proxyNatr || 0));
+        if (mc.sortBy === 'change') return dir * (b.priceChange - a.priceChange);
+        return dir * (b.quoteVol - a.quoteVol);
     });
 
     if (countEl) countEl.textContent = pairs.length;
@@ -332,17 +362,17 @@ function renderSidebar() {
         const chgClass = chg >= 0 ? 'mc-metric-green' : 'mc-metric-red';
         const chgSign = chg >= 0 ? '+' : '';
         const vol = p.quoteVol >= 1e9 ? (p.quoteVol / 1e9).toFixed(1) + 'B' : (p.quoteVol / 1e6).toFixed(0) + 'M';
+        const natr = p.proxyNatr ? p.proxyNatr.toFixed(1) : '—';
         const flagColor = mc.flags[sym] || '';
         const flagStyle = flagColor ? `background:${flagColor}; border-color:transparent;` : '';
         const flagClass = flagColor ? 'mc-flag-btn flagged' : 'mc-flag-btn';
 
         return `<div class="mc-coin-item" data-symbol="${sym}">
             <button class="${flagClass}" style="${flagStyle}" data-flag="${sym}" title="Set color flag"></button>
-            <div style="flex:1; min-width:0; display:flex; align-items:center; gap:4px;">
-                <span class="mc-coin-name">${ticker}</span>
-                <span class="mc-coin-vol">$${vol}</span>
-            </div>
-            <span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
+            <span class="mc-coin-name">${ticker}</span>
+            <span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(1)}%</span>
+            <span class="mc-coin-natr">${natr}</span>
+            <span class="mc-coin-vol">${vol}</span>
         </div>`;
     }).join('');
 
@@ -411,7 +441,7 @@ function createChartInstance(sym) {
         grid: { vertLines: { color: 'rgba(255,255,255,0.02)' }, horzLines: { color: 'rgba(255,255,255,0.02)' } },
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
-        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -441,17 +471,56 @@ function createChartInstance(sym) {
     attachRuler(chartEl, chart, series);
 }
 
-// Staggered load queue — prevents Binance rate limiting
+// Batch load queue — fetches multiple symbols at once via server batch endpoint
 async function processLoadQueue() {
     if (mc.loadingActive) return;
     mc.loadingActive = true;
 
     while (mc.loadQueue.length > 0) {
-        const sym = mc.loadQueue.shift();
-        if (!mc.charts[sym]) continue; // already scrolled away
-        if (mc.loadedData[sym]) continue; // already loaded this TF
-        await loadChartData(sym, mc.globalTF);
-        await new Promise(r => setTimeout(r, 80));
+        // Grab up to 20 symbols from queue
+        const batch = [];
+        while (mc.loadQueue.length > 0 && batch.length < 20) {
+            const sym = mc.loadQueue.shift();
+            if (!mc.charts[sym]) continue; // already scrolled away
+            if (mc.loadedData[sym]) continue; // already loaded
+            batch.push(sym);
+        }
+        if (batch.length === 0) continue;
+
+        try {
+            const res = await fetch('/api/klines-batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: batch, interval: mc.globalTF, limit: 200 })
+            });
+            const allData = await res.json();
+
+            // Apply data to all charts simultaneously
+            for (const sym of batch) {
+                if (!mc.charts[sym]) continue;
+                if (allData[sym] && Array.isArray(allData[sym])) {
+                    const parsed = parseKlines(allData[sym]);
+                    if (parsed.length > 0) {
+                        mc.charts[sym].series.setData(parsed);
+                        mc.charts[sym].volSeries?.setData(extractVolume(parsed));
+                        mc.charts[sym].chart.timeScale().fitContent();
+                        mc.loadedData[sym] = true;
+                        // Calculate and display NATR from candle data
+                        const realNatr = calcNATR(parsed);
+                        if (realNatr > 0) updateCardNATR(sym, realNatr);
+                        applyDrawingsToMiniChart(sym);
+                        wsSubscribe(sym);
+                    }
+                }
+            }
+        } catch(e) {
+            // Fallback: load individually
+            for (const sym of batch) {
+                if (!mc.charts[sym] || mc.loadedData[sym]) continue;
+                await loadChartData(sym, mc.globalTF);
+                await new Promise(r => setTimeout(r, 80));
+            }
+        }
     }
 
     mc.loadingActive = false;
@@ -972,7 +1041,7 @@ function openCoinModal(sym) {
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 } },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -1054,7 +1123,7 @@ async function loadModalChart(sym, tf) {
         const data1 = parseKlines(json1);
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
-        modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
+        modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 + 10 });
 
         // Update modal NATR with real value
         const modalNatr = calcNATR(data1);

@@ -15,6 +15,7 @@ const wsManager = require('./ws');
 const stateManager = require('./state');
 const { binLevels } = require('./logic');
 const { analyzeBehavior } = require('./scorer');
+const auth = require('./auth');
 
 // Connect WebSockets on Start
 wsManager.connect();
@@ -336,6 +337,14 @@ fastify.get('/mini-charts.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('mini-charts.js'))
 })
 
+fastify.get('/auth.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('auth.js'))
+})
+
+fastify.get('/settings.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('settings.js'))
+})
+
 fastify.get('/styles.css', async (req, reply) => {
   reply.type('text/css; charset=utf-8').send(readFileSafe('styles.css'))
 })
@@ -344,9 +353,173 @@ fastify.get('/favicon.ico', async (req, reply) => {
   reply.code(204).send()
 })
 
+fastify.get('/manifest.json', async (req, reply) => {
+  reply.type('application/manifest+json; charset=utf-8').send(readFileSafe('manifest.json'))
+})
+
+fastify.get('/sw.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').header('Service-Worker-Allowed', '/').send(readFileSafe('sw.js'))
+})
+
+fastify.get('/icon-192.svg', async (req, reply) => {
+  reply.type('image/svg+xml').send(readFileSafe('icon-192.svg'))
+})
+
+fastify.get('/icon-512.svg', async (req, reply) => {
+  reply.type('image/svg+xml').send(readFileSafe('icon-512.svg'))
+})
+
+// ---- Auth routes ----
+
+// Attach user to every request (non-blocking)
+fastify.addHook('onRequest', async (req) => {
+  auth.authHook(req)
+})
+
+fastify.post('/api/auth/register', async (req, reply) => {
+  const { email, password, name } = req.body || {}
+  const result = auth.register(email, password, name)
+  if (result.error) return reply.code(400).send(result)
+  return result
+})
+
+fastify.post('/api/auth/login', async (req, reply) => {
+  const { email, password } = req.body || {}
+  const result = auth.login(email, password)
+  if (result.error) return reply.code(401).send(result)
+  return result
+})
+
+fastify.get('/api/auth/me', async (req, reply) => {
+  if (!req.user) return reply.code(401).send({ error: 'Not authenticated' })
+  return { success: true, user: req.user }
+})
+
+// Google OAuth
+fastify.get('/api/auth/google/url', async () => {
+  const url = auth.getGoogleAuthUrl()
+  if (!url) return { error: 'Google OAuth not configured' }
+  return { url }
+})
+
+fastify.post('/api/auth/google/callback', async (req, reply) => {
+  const { code } = req.body || {}
+  if (!code) return reply.code(400).send({ error: 'Code required' })
+  const result = await auth.googleAuth(code)
+  if (result.error) return reply.code(400).send(result)
+  return result
+})
+
+// Admin: set user tier (requires admin tier)
+fastify.post('/api/auth/set-tier', async (req, reply) => {
+  if (!req.user || req.user.tier !== 'admin') {
+    return reply.code(403).send({ error: 'Admin only' })
+  }
+  const { userId, tier } = req.body || {}
+  if (!userId || !['free', 'pro', 'admin'].includes(tier)) {
+    return reply.code(400).send({ error: 'Invalid userId or tier' })
+  }
+  const user = auth.setTier(userId, tier)
+  return { success: true, user }
+})
+
+// Admin: list users
+fastify.get('/api/auth/users', async (req, reply) => {
+  if (!req.user || req.user.tier !== 'admin') {
+    return reply.code(403).send({ error: 'Admin only' })
+  }
+  return { users: auth.listUsers(), count: auth.getUserCount() }
+})
+
+// ---- User Data routes (settings, watchlists, layouts, alerts) ----
+
+// Settings
+fastify.get('/api/settings', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  return { success: true, settings: auth.getSettings(req.user.id) }
+})
+
+fastify.put('/api/settings', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const settings = req.body || {}
+  auth.saveSettings(req.user.id, settings)
+  return { success: true }
+})
+
+// Watchlists
+fastify.get('/api/watchlist', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  return { success: true, watchlist: auth.getWatchlist(req.user.id) }
+})
+
+fastify.post('/api/watchlist', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const { symbol, color, sort_order } = req.body || {}
+  if (!symbol) return reply.code(400).send({ error: 'Symbol required' })
+  auth.addToWatchlist(req.user.id, symbol, color, sort_order)
+  return { success: true }
+})
+
+fastify.delete('/api/watchlist/:symbol', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  auth.removeFromWatchlist(req.user.id, req.params.symbol)
+  return { success: true }
+})
+
+// Layouts
+fastify.get('/api/layouts', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  return { success: true, layouts: auth.getLayouts(req.user.id), active: auth.getActiveLayout(req.user.id) }
+})
+
+fastify.post('/api/layouts', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const { name, layout_type, config } = req.body || {}
+  const result = auth.createLayout(req.user.id, name || 'Layout', layout_type || '1', config || {})
+  return { success: true, id: result.lastInsertRowid }
+})
+
+fastify.put('/api/layouts/:id', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const { config, layout_type } = req.body || {}
+  auth.updateLayout(Number(req.params.id), req.user.id, config, layout_type)
+  return { success: true }
+})
+
+// Alerts
+fastify.get('/api/alerts', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  return { success: true, alerts: auth.getUserAlerts(req.user.id) }
+})
+
+fastify.post('/api/alerts', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const { type, symbol, condition, cooldown_sec } = req.body || {}
+  if (!type) return reply.code(400).send({ error: 'Alert type required' })
+  const result = auth.createUserAlert(req.user.id, type, symbol, condition || {}, cooldown_sec || 300)
+  return { success: true, id: result.lastInsertRowid }
+})
+
+fastify.delete('/api/alerts/:id', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  auth.stmts.deleteAlert.run(Number(req.params.id), req.user.id)
+  return { success: true }
+})
+
+fastify.get('/api/alerts/triggers', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const limit = Number(req.query.limit || 50)
+  return { success: true, triggers: auth.getAlertTriggers(req.user.id, limit) }
+})
+
+// Signal stats (public)
+fastify.get('/api/signals/stats', async () => {
+  return { success: true, stats: auth.getSignalStats(), recent: auth.getRecentSignals(20) }
+})
+
 // ---- API routes ----
 fastify.get('/health', async () => {
-  return { status: 'ok', service: process.env.SERVICE_NAME || 'futures-screener' }
+  return { status: 'ok', service: process.env.SERVICE_NAME || 'futures-screener', users: auth.getUserCount() }
 })
 
 fastify.get('/symbols', async () => {
@@ -576,6 +749,33 @@ fastify.get('/api/klines', async (req) => {
   const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${endSuffix}`)
   setProxyCached(key, data)
   return data
+})
+
+// Batch klines — fetch multiple symbols in one request (for mini-charts fast load)
+fastify.post('/api/klines-batch', async (req) => {
+  const symbols = req.body?.symbols
+  const interval = String(req.body?.interval || '15m')
+  const limit = Math.min(Number(req.body?.limit || 200), 500)
+  if (!Array.isArray(symbols) || symbols.length === 0) return { error: 'symbols[] required' }
+
+  // Cap at 30 symbols per batch
+  const syms = symbols.slice(0, 30).map(s => String(s).toUpperCase())
+  const result = {}
+
+  // Fetch all in parallel (server-side, no rate limit issues with Binance for reasonable batch)
+  const promises = syms.map(async (symbol) => {
+    try {
+      const key = `klines:${symbol}:${interval}:${limit}`
+      let data = getProxyCached(key, 10000)
+      if (!data) {
+        data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+        if (data) setProxyCached(key, data)
+      }
+      if (Array.isArray(data)) result[symbol] = data
+    } catch(e) { /* skip */ }
+  })
+  await Promise.all(promises)
+  return result
 })
 
 // NATR(14) for all USDT pairs — cached 5min
