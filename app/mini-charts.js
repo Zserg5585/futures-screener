@@ -1149,15 +1149,17 @@ async function loadModalChart(sym, tf) {
     }
 
     try {
-        // Phase 1: fast — 150 candles
-        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=150`);
+        // Phase 1: fast — 1000 candles (pre-warmed in server cache)
+        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000`);
         const json1 = await res1.json();
         if (!Array.isArray(json1) || !modal.chart) return;
 
         const data1 = parseKlines(json1);
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
-        modal.chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 + 10 });
+        // Show last ~100 candles in viewport (user can scroll back to see all 1000)
+        const visFrom = Math.max(0, data1.length - 100);
+        modal.chart.timeScale().setVisibleLogicalRange({ from: visFrom, to: data1.length - 1 + 10 });
 
         // Update modal NATR with real value
         const modalNatr = calcNATR(data1);
