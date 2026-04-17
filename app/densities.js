@@ -144,14 +144,20 @@ function setupEventListeners() {
 
             // Обновить UI в зависимости от вкладки
             if (tabName === 'densities') {
+                if (typeof stopSignals === 'function') stopSignals()
                 if (state.cache.data) {
                     renderDensities(state.cache.data)
                 } else {
                     loadDensities(true)
                 }
             } else if (tabName === 'mini-charts') {
+                if (typeof stopSignals === 'function') stopSignals()
                 if (typeof initMiniCharts === 'function') {
                     initMiniCharts()
+                }
+            } else if (tabName === 'signals') {
+                if (typeof initSignals === 'function') {
+                    initSignals()
                 }
             }
         })

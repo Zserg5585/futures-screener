@@ -16,6 +16,7 @@ const stateManager = require('./state');
 const { binLevels } = require('./logic');
 const { analyzeBehavior } = require('./scorer');
 const auth = require('./auth');
+const signals = require('./signals');
 
 // Connect WebSockets on Start
 wsManager.connect();
@@ -387,6 +388,9 @@ fastify.get('/auth.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('auth.js'))
 })
 
+fastify.get('/signals.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('signals.js'))
+})
 fastify.get('/settings.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('settings.js'))
 })
@@ -561,6 +565,25 @@ fastify.get('/api/alerts/triggers', async (req, reply) => {
 // Signal stats (public)
 fastify.get('/api/signals/stats', async () => {
   return { success: true, stats: auth.getSignalStats(), recent: auth.getRecentSignals(20) }
+})
+
+// Live signals (in-memory, real-time)
+fastify.get('/api/signals/live', async (req) => {
+  const { type, symbol, direction, minConfidence, limit } = req.query
+  const data = signals.getLiveSignals({ type, symbol, direction, minConfidence, limit })
+  return { success: true, count: data.length, data }
+})
+
+// Signal summary (counts, types)
+fastify.get('/api/signals/summary', async () => {
+  return { success: true, ...signals.getSignalSummary() }
+})
+
+// Signal history (from DB, with pagination)
+fastify.get('/api/signals/history', async (req) => {
+  const limit = Math.min(Number(req.query.limit || 50), 200)
+  const recent = auth.getRecentSignals(limit)
+  return { success: true, count: recent.length, data: recent }
 })
 
 // ---- API routes ----
@@ -914,6 +937,8 @@ const start = async () => {
   try {
     await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
+    // Init signals scanner (after server up so proxyCache is available)
+    signals.init({ getProxyCached, bgetWithRetry, auth, stateManager })
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {

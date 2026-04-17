@@ -231,6 +231,49 @@
                 </div>
             </div>
 
+            <!-- Signals Tab -->
+            <div id="tab-signals" class="tab-content" style="display:none;">
+                <div class="sig-toolbar">
+                    <div class="sig-filters">
+                        <select id="sigTypeFilter" class="mc-select">
+                            <option value="">All Types</option>
+                            <option value="volume_spike">📊 Volume Spike</option>
+                            <option value="big_mover">🚀 Big Mover</option>
+                            <option value="natr_spike">⚡ NATR Spike</option>
+                            <option value="density_break">🧱 Density Break</option>
+                        </select>
+                        <select id="sigDirFilter" class="mc-select">
+                            <option value="">All Directions</option>
+                            <option value="LONG">🟢 Long</option>
+                            <option value="SHORT">🔴 Short</option>
+                        </select>
+                        <input type="text" id="sigSearch" class="mc-search-input" placeholder="Search symbol..." style="width:120px; height:26px; font-size:12px;" />
+                    </div>
+                    <div class="sig-summary" id="sigSummary"></div>
+                </div>
+                <div class="sig-layout">
+                    <div class="sig-table-wrap" id="sigTableWrap">
+                        <table class="sig-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Type</th>
+                                    <th>Symbol</th>
+                                    <th>Dir</th>
+                                    <th>Price</th>
+                                    <th>Conf</th>
+                                    <th class="sig-desc-col">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sigTbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="sig-detail" id="sigDetail">
+                        <div class="sig-detail-empty">Select a signal to see details</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
                 <button id="filterToggle" class="btn-filters" style="display:none;">Filter</button>
@@ -372,6 +415,7 @@
     <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
     <script src="/auth.js?v=20260415-v1"></script>
     <script src="/settings.js?v=20260415-v1"></script>
+    <script src="/signals.js?v=20260417-v1"></script>
     <script src="/densities.js?v=20260417-v24"></script>
     <script src="/mini-charts.js?v=20260417-v24"></script>
 </body>

@@ -454,23 +454,6 @@ function renderSidebar() {
     });
 }
 
-// Boost mouse wheel zoom speed (3x default)
-const ZOOM_MULTIPLIER = 3;
-function boostWheelZoom(chartEl, chart) {
-    chartEl.addEventListener('wheel', (e) => {
-        if (!chart) return;
-        e.preventDefault();
-        const ts = chart.timeScale();
-        const range = ts.getVisibleLogicalRange();
-        if (!range) return;
-        const barsCount = range.to - range.from;
-        const zoomDelta = (e.deltaY > 0 ? 1 : -1) * barsCount * 0.08 * ZOOM_MULTIPLIER;
-        ts.setVisibleLogicalRange({
-            from: range.from - zoomDelta,
-            to: range.to + zoomDelta,
-        });
-    }, { passive: false });
-}
 
 function getPricePrecision(price) {
     if (price >= 1000) return 1;
@@ -498,10 +481,9 @@ function createChartInstance(sym) {
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32 },
         timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: false, pressedMouseMove: true },
-        handleScale: { mouseWheel: false, pinch: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
     });
-    boostWheelZoom(chartEl, chart);
 
     const series = chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
@@ -1165,10 +1147,9 @@ function openCoinModal(sym) {
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50 },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: false, pressedMouseMove: true },
-        handleScale: { mouseWheel: false, pinch: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
     });
-    boostWheelZoom(el('cmChartBody'), modal.chart);
 
     modal.series = modal.chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
@@ -2983,10 +2964,9 @@ function createSlotChart(slotIndex) {
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45 },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: false, pressedMouseMove: true },
-        handleScale: { mouseWheel: false, pinch: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
     });
-    boostWheelZoom(chartEl, slot.chart);
 
     slot.series = slot.chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
