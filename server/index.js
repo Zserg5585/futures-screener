@@ -801,7 +801,7 @@ fastify.get('/api/ticker24hr', async () => {
   return data
 })
 
-// Klines — cached 10s per symbol+interval combo
+// Klines — cached 10s for latest, 5min for historical (with endTime)
 fastify.get('/api/klines', async (req) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const interval = String(req.query.interval || '15m')
@@ -811,7 +811,10 @@ fastify.get('/api/klines', async (req) => {
 
   const endSuffix = endTime ? `&endTime=${endTime}` : ''
   const key = `klines:${symbol}:${interval}:${limit}${endSuffix}`
-  const cached = getProxyCached(key, 10000)
+  // Historical pages (with endTime) don't change — cache 5 min
+  // Latest candles — cache 10s for live updates
+  const ttl = endTime ? 300000 : 10000
+  const cached = getProxyCached(key, ttl)
   if (cached) return cached
 
   const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${endSuffix}`)
