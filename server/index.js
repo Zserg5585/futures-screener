@@ -146,8 +146,8 @@ function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
   return { filteredLevels, bidLevels, askLevels };
 }
 
-// Simple concurrency limiter (no deps)
-async function mapLimit(items, limit, fn) {
+// Simple concurrency limiter (no deps) with optional per-item delay
+async function mapLimit(items, limit, fn, delayMs = 0) {
   const out = new Array(items.length)
   let i = 0
   const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
@@ -155,11 +155,16 @@ async function mapLimit(items, limit, fn) {
       const idx = i++
       if (idx >= items.length) break
       out[idx] = await fn(items[idx], idx)
+      if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs))
     }
   })
   await Promise.all(workers)
   return out
 }
+
+// Density endpoint result cache (avoid re-scanning 500+ symbols on every request)
+let densityCache = { data: null, meta: null, ts: 0 }
+const DENSITY_CACHE_TTL = 30000 // 30 seconds
 
 // Scoring function: enhanced with Time To Eat, NATR, and lifetime
 function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifetimeSec }) {
@@ -255,8 +260,14 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
   }
 }
 
+// Klines stats cache (TTL 60s) to avoid hammering Binance
+const klinesStatsCache = new Map()
+const KLINES_STATS_TTL = 60000
+
 // Получить K-lines и рассчитать объёмы + ATR
 async function getKlinesWithStats(symbol) {
+  const cached = klinesStatsCache.get(symbol)
+  if (cached && (Date.now() - cached.ts) < KLINES_STATS_TTL) return cached.data
   try {
     // Получаем K-lines параллельно: 1d (для NATR) и 5m (для объемов)
     const [klines1d, klines5m] = await Promise.all([
@@ -310,7 +321,9 @@ async function getKlinesWithStats(symbol) {
       vol5 = bars5m[4] ? bars5m[4].volume : 0
     }
 
-    return { vol1, vol2, vol3, vol4, vol5, natr }
+    const result = { vol1, vol2, vol3, vol4, vol5, natr }
+    klinesStatsCache.set(symbol, { data: result, ts: Date.now() })
+    return result
 
   } catch (err) {
     // Если не удалось получить K-lines, возвращаем нули
@@ -554,20 +567,28 @@ fastify.get('/densities/simple', async (req) => {
   const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
   const natrFilter = Number(req.query.natrFilter || 0)  // фильтр по NATR (0 = без фильтра)
   const minScore = Number(req.query.minScore || 0) // фильтр по Score
-  const concurrency = Number(req.query.concurrency || 10)  // parallel Binance requests
+  const concurrency = Number(req.query.concurrency || 3)  // parallel Binance requests (3 to stay under rate limit)
 
+  const isSpecificSymbols = !!req.query.symbols
   let symbols
-  if (req.query.symbols) {
+  if (isSpecificSymbols) {
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(s => s)
   } else {
+    // Full scan — check density cache first
+    if (densityCache.data && (Date.now() - densityCache.ts) < DENSITY_CACHE_TTL) {
+      // Apply filters on cached raw data
+      let finalData = [...densityCache.data]
+      if (xFilter > 0) finalData = finalData.filter(d => d.xMult >= xFilter)
+      if (natrFilter > 0) finalData = finalData.filter(d => d.natr !== null && d.natr >= natrFilter)
+      if (minScore > 0) finalData = finalData.filter(d => d.score >= minScore)
+      return { ...densityCache.meta, xFilter, natrFilter, data: finalData, cached: true }
+    }
+
     const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
     symbols = (info.symbols || [])
       .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
       .map(s => s.symbol)
   }
-
-  // DEBUG: log symbols
-  // console.log(`DEBUG symbols: ${JSON.stringify(symbols.slice(0, 5))}`)
 
   // Optional limit (0 = no limit, scan all)
   const limitSymbols = Number(req.query.limitSymbols || 0)
@@ -578,19 +599,29 @@ fastify.get('/densities/simple', async (req) => {
   const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
   const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
 
+  // Delay between items to stay under Binance rate limit (2400/min)
+  // Full scan: 500 symbols × ~3 calls each = 1500 calls, concurrency 3, delay 500ms
+  // → ~6 calls/sec → ~360/min (safe margin)
+  const itemDelay = isSpecificSymbols ? 0 : 500
   const rowsArr = await mapLimit(symbols, concurrency, async (sym) => {
     const price = markMap.get(sym)
     if (!price) return []
 
     // 1. Subscribe to WebSocket if not already tracked
     if (!wsManager.callbacks.has(sym)) {
-      // Fetch initial snapshot to seed state
-      const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
-      stateManager.initBook(sym, ob.bids, ob.asks);
-      
-      wsManager.subscribe(sym, (payload) => {
-        stateManager.processDelta(sym, payload);
-      });
+      try {
+        // Fetch initial snapshot to seed state (with delay to avoid rate limit)
+        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
+        stateManager.initBook(sym, ob.bids, ob.asks);
+
+        wsManager.subscribe(sym, (payload) => {
+          stateManager.processDelta(sym, payload);
+        });
+      } catch (err) {
+        // Skip symbol if depth fetch fails (rate limit etc)
+        console.log(`[density] Skip ${sym}: ${err.message.slice(0, 80)}`);
+        return [];
+      }
     }
 
     // 2. Get local state from memory (from WS deltas)
@@ -657,7 +688,7 @@ fastify.get('/densities/simple', async (req) => {
     const askResult = processSide(askLevelsRaw, 'ask');
 
     return [...bidResult, ...askResult];
-  });
+  }, itemDelay);
 
   // All levels flat, sorted by score desc
   const allLevels = rowsArr.flat().sort((a, b) => b.score - a.score);
@@ -684,6 +715,19 @@ fastify.get('/densities/simple', async (req) => {
     finalData = finalData.filter(d => d.score >= minScore)
   }
 
+  // Cache full unfiltered data for subsequent requests
+  if (!isSpecificSymbols) {
+    // Store unfiltered data (before xFilter/natrFilter/minScore applied by params)
+    // allLevels already has all scored walls, perSymbol top 3 = finalData before natr/score filters
+    const unfilteredData = Object.values(perSymbol).flat()
+    unfilteredData.sort((a, b) => b.score - a.score)
+    densityCache = {
+      data: unfilteredData,
+      meta: { count: unfilteredData.length, minNotional, depthLimit, concurrency, mmMode, windowPct, mmMultiplier },
+      ts: Date.now()
+    }
+  }
+
   const result = {
     count: finalData.length,
     minNotional,
@@ -696,8 +740,6 @@ fastify.get('/densities/simple', async (req) => {
     natrFilter,
     data: finalData
   }
-
-  // Return raw data — UI will handle sorting and filtering
 
   return result
 })

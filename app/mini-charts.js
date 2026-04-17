@@ -681,6 +681,9 @@ async function loadChartData(sym, tf) {
         // Apply saved drawings to mini-chart
         applyDrawingsToMiniChart(sym);
 
+        // Apply density walls to mini-chart
+        applyDensityToMiniChart(sym);
+
         // Subscribe to live WS updates immediately
         wsSubscribe(sym);
 
@@ -1163,6 +1166,9 @@ async function loadModalChart(sym, tf) {
 
         // Restore saved drawings for this symbol
         restoreDrawings();
+
+        // Apply density walls to modal
+        applyDensityToModal();
 
         // Subscribe modal to live WS
         const stream = `${sym.toLowerCase()}@kline_${tf}`;
@@ -2707,6 +2713,75 @@ async function applyDensityToSlot(slotIndex) {
     } catch(e) {
         // silently ignore density fetch errors
     }
+}
+
+// Apply density walls to mini-chart card (grid view)
+async function applyDensityToMiniChart(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series) return;
+
+    // Clear old density lines
+    if (chartObj.densityLines) {
+        chartObj.densityLines.forEach(pl => {
+            try { chartObj.series.removePriceLine(pl); } catch(e) {}
+        });
+    }
+    chartObj.densityLines = [];
+
+    try {
+        const res = await fetch(`/densities/simple?symbols=${sym}&limitSymbols=1&xFilter=4`);
+        const json = await res.json();
+        const walls = json.data || [];
+        if (walls.length === 0) return;
+
+        walls.forEach(w => {
+            const color = w.sideKey === 'bid' ? '#22c55e' : '#ef4444';
+            const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
+            const priceLine = chartObj.series.createPriceLine({
+                price: w.price,
+                color,
+                lineWidth: 1,
+                lineStyle: 2,
+                axisLabelVisible: false,
+                title: `$${notionalStr} x${w.xMult}`,
+            });
+            chartObj.densityLines.push(priceLine);
+        });
+    } catch(e) { /* ignore */ }
+}
+
+// Apply density walls to modal chart
+async function applyDensityToModal() {
+    if (!modal.chart || !modal.series || !modal.currentSym) return;
+
+    // Clear old density lines
+    if (modal.densityLines) {
+        modal.densityLines.forEach(pl => {
+            try { modal.series.removePriceLine(pl); } catch(e) {}
+        });
+    }
+    modal.densityLines = [];
+
+    try {
+        const res = await fetch(`/densities/simple?symbols=${modal.currentSym}&limitSymbols=1&xFilter=4`);
+        const json = await res.json();
+        const walls = json.data || [];
+        if (walls.length === 0) return;
+
+        walls.forEach(w => {
+            const color = w.sideKey === 'bid' ? '#22c55e' : '#ef4444';
+            const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
+            const priceLine = modal.series.createPriceLine({
+                price: w.price,
+                color,
+                lineWidth: 1,
+                lineStyle: 2,
+                axisLabelVisible: true,
+                title: `$${notionalStr} x${w.xMult}`,
+            });
+            modal.densityLines.push(priceLine);
+        });
+    } catch(e) { /* ignore */ }
 }
 
 function applyDrawingsToSlot(slotIndex) {
