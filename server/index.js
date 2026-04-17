@@ -177,6 +177,13 @@ function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifeti
 // In-memory cache (TTL: 3 seconds)
 const cache = new Map()
 const CACHE_TTL_MS = 3000
+// Cleanup expired cache entries every 10 seconds
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.ts > CACHE_TTL_MS) cache.delete(key)
+  }
+}, 10000)
 
 // --- Level History State ---
 const levelHistory = new Map()
@@ -713,6 +720,14 @@ fastify.get('/_cache/stats', async () => ({
 
 // ---- Binance Proxy for Mini-Charts (cached) ----
 const proxyCache = new Map()
+const PROXY_MAX_TTL_MS = 300000 // 5 min max TTL for cleanup
+// Cleanup expired proxy cache entries every 30 seconds
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of proxyCache.entries()) {
+    if (now - entry.ts > PROXY_MAX_TTL_MS) proxyCache.delete(key)
+  }
+}, 30000)
 
 function getProxyCached(key, ttlMs) {
   const entry = proxyCache.get(key)

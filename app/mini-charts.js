@@ -113,6 +113,9 @@ async function initMiniCharts() {
         // Init modal events
         initModalEvents();
 
+        // Init layout picker (multi-chart)
+        initLayoutPicker();
+
         // Setup IntersectionObserver
         mc.observer = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
@@ -312,7 +315,7 @@ function rebuildGrid() {
     grid.querySelectorAll('.mc-chart-card').forEach(card => {
         mc.observer.observe(card);
         card.querySelector('.mc-chart-header').addEventListener('click', () => {
-            openCoinModal(card.dataset.symbol);
+            handleSidebarCoinClick(card.dataset.symbol);
         });
     });
 }
@@ -408,11 +411,11 @@ function renderSidebar() {
         });
     });
 
-    // Click handler — open coin modal (skip flag clicks)
+    // Click handler — open coin modal or assign to multi-chart slot
     list.querySelectorAll('.mc-coin-item').forEach(item => {
         item.addEventListener('click', (e) => {
             if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup')) return;
-            openCoinModal(item.dataset.symbol);
+            handleSidebarCoinClick(item.dataset.symbol);
         });
     });
 }
@@ -821,6 +824,29 @@ function wsConnect() {
                     value: vol,
                     color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                 });
+            }
+
+            // Update multi-chart slots
+            for (const slot of mch.slots) {
+                if (slot.sym === sym && slot.chart && slot.series) {
+                    const slotStream = `${sym.toLowerCase()}@kline_${slot.tf}`;
+                    const incomingStream = msg.stream || '';
+                    if (incomingStream === slotStream) {
+                        slot.series.update(candle);
+                        if (slot.volSeries) slot.volSeries.update({
+                            time: candle.time,
+                            value: vol,
+                            color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
+                        });
+                        // Update header price/change
+                        const pair = mc.allPairs.find(p => p.symbol === sym);
+                        if (pair) {
+                            const prec = getPricePrecision(candle.close);
+                            const priceEl = slot.el.querySelector('.mch-slot-price');
+                            if (priceEl) priceEl.textContent = '$' + candle.close.toFixed(prec);
+                        }
+                    }
+                }
             }
 
             // Update modal chart if same symbol & TF
@@ -2332,4 +2358,347 @@ function initModalEvents() {
         draw.drawings = [];
         loadModalChart(modal.currentSym, modal.currentTF);
     });
+}
+
+// ==========================================
+// Multi-Chart Layout System
+// ==========================================
+const mch = {
+    layout: 'grid',      // 'grid' | '1' | '2' | '4'
+    activeSlot: 0,        // which slot receives next symbol click
+    slots: [],            // { sym, tf, chart, series, volSeries, legend }
+};
+
+// Restore layout from localStorage
+try { mch.layout = localStorage.getItem('mch_layout') || 'grid'; } catch(e) {}
+
+function initLayoutPicker() {
+    const picker = el('mcLayoutPicker');
+    if (!picker) return;
+
+    // Set initial active state
+    picker.querySelectorAll('.mc-layout-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.layout === mch.layout);
+    });
+
+    picker.addEventListener('click', (e) => {
+        const btn = e.target.closest('.mc-layout-btn');
+        if (!btn) return;
+        const layout = btn.dataset.layout;
+        if (layout === mch.layout) return;
+
+        picker.querySelectorAll('.mc-layout-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        switchLayout(layout);
+    });
+
+    // Apply saved layout on init
+    if (mch.layout !== 'grid') {
+        switchLayout(mch.layout);
+    }
+}
+
+function switchLayout(layout) {
+    mch.layout = layout;
+    localStorage.setItem('mch_layout', layout);
+
+    const miniChartsLayout = el('mcMiniChartsLayout');
+    const multiChart = el('mcMultiChart');
+    const sidebar = el('mcSidebar');
+
+    if (layout === 'grid') {
+        // Show mini-charts grid, hide multi-chart
+        miniChartsLayout.style.display = 'flex';
+        multiChart.style.display = 'none';
+        // Sidebar stays inside mc-layout
+        if (sidebar.parentElement !== miniChartsLayout) {
+            miniChartsLayout.appendChild(sidebar);
+        }
+    } else {
+        // Hide mini-charts grid, show multi-chart
+        miniChartsLayout.style.display = 'none';
+        multiChart.style.display = 'flex';
+        // Move sidebar into multi-chart container
+        if (sidebar.parentElement !== multiChart) {
+            multiChart.appendChild(sidebar);
+        }
+        renderMultiChartSlots(layout);
+    }
+}
+
+function renderMultiChartSlots(layout) {
+    const grid = el('mchGrid');
+    grid.dataset.layout = layout;
+    const count = parseInt(layout);
+
+    // Preserve existing slot symbols
+    const savedSyms = mch.slots.map(s => s.sym);
+
+    // Restore from localStorage if first time
+    if (savedSyms.length === 0) {
+        try {
+            const saved = JSON.parse(localStorage.getItem('mch_slots') || '[]');
+            for (let i = 0; i < count; i++) {
+                savedSyms[i] = saved[i] || null;
+            }
+        } catch(e) {}
+    }
+
+    // Destroy old chart instances
+    mch.slots.forEach(slot => {
+        if (slot.chart) {
+            try { slot.chart.remove(); } catch(e) {}
+        }
+    });
+    mch.slots = [];
+    grid.innerHTML = '';
+
+    for (let i = 0; i < count; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'mch-slot' + (i === mch.activeSlot ? ' active' : '');
+        slot.dataset.index = i;
+
+        const sym = savedSyms[i] || null;
+
+        slot.innerHTML = `
+            <div class="mch-slot-header">
+                <span class="mch-slot-sym">${sym ? sym.replace('USDT','') + '/USDT' : '—'}</span>
+                <span class="mch-slot-price"></span>
+                <span class="mch-slot-change"></span>
+                <div class="mch-slot-tf">
+                    <button class="mc-tf-btn" data-tf="1m">1m</button>
+                    <button class="mc-tf-btn" data-tf="5m">5m</button>
+                    <button class="mc-tf-btn active" data-tf="15m">15m</button>
+                    <button class="mc-tf-btn" data-tf="1h">1h</button>
+                    <button class="mc-tf-btn" data-tf="4h">4h</button>
+                    <button class="mc-tf-btn" data-tf="1d">1d</button>
+                </div>
+            </div>
+            ${sym ? '<div class="mch-slot-chart" id="mch-chart-' + i + '"></div>' : '<div class="mch-slot-empty">Click a coin in sidebar</div>'}
+        `;
+
+        // Click slot to make it active
+        slot.addEventListener('click', (e) => {
+            if (e.target.closest('.mc-tf-btn')) return; // skip TF clicks
+            setActiveSlot(i);
+        });
+
+        // TF buttons per slot
+        slot.querySelector('.mch-slot-tf').addEventListener('click', (e) => {
+            const btn = e.target.closest('.mc-tf-btn');
+            if (!btn) return;
+            const slotData = mch.slots[i];
+            if (!slotData || !slotData.sym) return;
+            slot.querySelectorAll('.mch-slot-tf .mc-tf-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            // Unsubscribe old TF stream, subscribe new
+            mchWsUnsubscribe(slotData.sym, slotData.tf);
+            slotData.tf = btn.dataset.tf;
+            mchWsSubscribe(slotData.sym, slotData.tf);
+            loadSlotChart(i);
+        });
+
+        grid.appendChild(slot);
+
+        mch.slots.push({
+            sym: sym,
+            tf: mc.globalTF,
+            chart: null,
+            series: null,
+            volSeries: null,
+            legend: null,
+            el: slot
+        });
+
+        // If slot has a symbol, create chart + subscribe WS
+        if (sym) {
+            createSlotChart(i);
+            loadSlotChart(i);
+            mchWsSubscribe(sym, mc.globalTF);
+        }
+    }
+}
+
+function setActiveSlot(index) {
+    mch.activeSlot = index;
+    document.querySelectorAll('.mch-slot').forEach((s, i) => {
+        s.classList.toggle('active', i === index);
+    });
+}
+
+function assignSymbolToSlot(sym, slotIndex) {
+    const slot = mch.slots[slotIndex];
+    if (!slot) return;
+
+    // Unsubscribe old symbol WS stream
+    if (slot.sym) {
+        mchWsUnsubscribe(slot.sym, slot.tf);
+    }
+
+    // Destroy old chart
+    if (slot.chart) {
+        try { slot.chart.remove(); } catch(e) {}
+        slot.chart = null;
+        slot.series = null;
+        slot.volSeries = null;
+    }
+
+    slot.sym = sym;
+    const pair = mc.allPairs.find(p => p.symbol === sym);
+
+    // Update header
+    const header = slot.el.querySelector('.mch-slot-sym');
+    header.textContent = sym ? sym.replace('USDT','') + '/USDT' : '—';
+
+    if (pair) {
+        const prec = getPricePrecision(pair.lastPrice);
+        slot.el.querySelector('.mch-slot-price').textContent = '$' + pair.lastPrice.toFixed(prec);
+        const chg = pair.priceChange;
+        const chgEl = slot.el.querySelector('.mch-slot-change');
+        chgEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+        chgEl.style.color = chg >= 0 ? '#22c55e' : '#ef4444';
+    }
+
+    // Replace empty placeholder with chart div
+    const empty = slot.el.querySelector('.mch-slot-empty');
+    if (empty) {
+        const chartDiv = document.createElement('div');
+        chartDiv.className = 'mch-slot-chart';
+        chartDiv.id = 'mch-chart-' + slotIndex;
+        empty.replaceWith(chartDiv);
+    }
+
+    createSlotChart(slotIndex);
+    loadSlotChart(slotIndex);
+    saveSlotSymbols();
+
+    // Subscribe to WS for live updates
+    mchWsSubscribe(sym, slot.tf);
+
+    // Auto-advance to next slot
+    const nextSlot = (slotIndex + 1) % mch.slots.length;
+    setActiveSlot(nextSlot);
+}
+
+function createSlotChart(slotIndex) {
+    const slot = mch.slots[slotIndex];
+    const chartEl = el('mch-chart-' + slotIndex);
+    if (!chartEl || !slot.sym) return;
+
+    const pair = mc.allPairs.find(p => p.symbol === slot.sym);
+    const price = pair ? pair.lastPrice : 1;
+    const prec = getPricePrecision(price);
+    const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
+
+    slot.chart = LightweightCharts.createChart(chartEl, {
+        autoSize: true,
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        crosshair: { mode: 0 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { mouseWheel: true, pinch: true },
+    });
+
+    slot.series = slot.chart.addCandlestickSeries({
+        upColor: '#22c55e', downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+        priceFormat: { type: 'price', precision: prec, minMove: minMove }
+    });
+
+    slot.volSeries = slot.chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+        color: 'rgba(100,116,139,0.3)',
+    });
+    slot.chart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+        drawTicks: false,
+        borderVisible: false,
+    });
+
+    // OHLCV legend
+    const legend = document.createElement('div');
+    legend.className = 'mc-ohlcv-legend';
+    chartEl.appendChild(legend);
+    slot.legend = legend;
+
+    slot.chart.subscribeCrosshairMove(param => {
+        if (!param || !param.time || !slot.legend) {
+            if (slot.legend) slot.legend.style.display = 'none';
+            return;
+        }
+        const data = param.seriesData.get(slot.series);
+        if (!data) { slot.legend.style.display = 'none'; return; }
+        const p = getPricePrecision(data.close || data.open || 1);
+        const o = (data.open||0).toFixed(p), h = (data.high||0).toFixed(p);
+        const l = (data.low||0).toFixed(p), c = (data.close||0).toFixed(p);
+        const volData = param.seriesData.get(slot.volSeries);
+        const v = volData ? (volData.value >= 1e6 ? (volData.value/1e6).toFixed(1)+'M' : (volData.value >= 1e3 ? (volData.value/1e3).toFixed(0)+'K' : volData.value.toFixed(0))) : '—';
+        const color = data.close >= data.open ? '#22c55e' : '#ef4444';
+        slot.legend.style.display = 'flex';
+        slot.legend.innerHTML = `<span style="color:${color}">O <b>${o}</b></span><span style="color:${color}">H <b>${h}</b></span><span style="color:${color}">L <b>${l}</b></span><span style="color:${color}">C <b>${c}</b></span><span style="color:var(--text-muted)">V <b>${v}</b></span>`;
+    });
+}
+
+async function loadSlotChart(slotIndex) {
+    const slot = mch.slots[slotIndex];
+    if (!slot || !slot.sym || !slot.series) return;
+
+    try {
+        const res = await fetch(`/api/klines?symbol=${slot.sym}&interval=${slot.tf}&limit=500`);
+        const raw = await res.json();
+        if (!Array.isArray(raw) || raw.length === 0) return;
+
+        const parsed = parseKlines(raw);
+        slot.series.setData(parsed);
+        slot.volSeries?.setData(extractVolume(parsed));
+
+        // Scroll to end respecting rightOffset
+        slot.chart.timeScale().scrollToRealTime();
+    } catch(e) {
+        console.error('[MCH] Load error slot', slotIndex, e);
+    }
+}
+
+function saveSlotSymbols() {
+    const syms = mch.slots.map(s => s.sym || null);
+    localStorage.setItem('mch_slots', JSON.stringify(syms));
+}
+
+// WS helpers for multi-chart slots
+function mchWsSubscribe(sym, tf) {
+    if (!sym) return;
+    const stream = `${sym.toLowerCase()}@kline_${tf}`;
+    if (mc.wsStreams.has(stream)) return;
+    mc.wsStreams.add(stream);
+    if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+        mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [stream], id: Date.now() }));
+    } else {
+        wsConnect();
+    }
+}
+
+function mchWsUnsubscribe(sym, tf) {
+    if (!sym) return;
+    const stream = `${sym.toLowerCase()}@kline_${tf}`;
+    // Only unsubscribe if no other slot uses same stream
+    const othersUsing = mch.slots.some(s => s.sym === sym && s.tf === tf && s.chart);
+    if (othersUsing) return;
+    if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+        mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [stream], id: Date.now() }));
+    }
+    mc.wsStreams.delete(stream);
+}
+
+// Override sidebar click when in multi-chart mode
+function handleSidebarCoinClick(sym) {
+    if (mch.layout === 'grid') {
+        openCoinModal(sym);
+    } else {
+        assignSymbolToSlot(sym, mch.activeSlot);
+    }
 }

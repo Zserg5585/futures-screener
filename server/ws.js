@@ -11,6 +11,11 @@ class BinanceWS {
   }
 
   connect() {
+    // Clean up old WS instance to prevent listener leaks on reconnect
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      try { this.ws.terminate(); } catch (_) {}
+    }
     console.log('[WS] Connecting to Binance Futures...');
     this.ws = new WebSocket(BINANCE_WS_URL);
 

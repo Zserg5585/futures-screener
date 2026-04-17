@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20260410-v16" />
+    <link rel="stylesheet" href="/styles.css?v=20260417-v18" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -174,14 +174,37 @@
                             <option value="500000">≥500K</option>
                         </select>
                     </div>
+                    <div class="mc-toolbar-divider"></div>
+                    <div class="mc-toolbar-group mc-layout-picker" id="mcLayoutPicker">
+                        <span class="mc-toolbar-label">Layout:</span>
+                        <button class="mc-layout-btn" data-layout="grid" title="Mini-Charts Grid">
+                            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="0" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/></svg>
+                        </button>
+                        <button class="mc-layout-btn" data-layout="1" title="1 Chart">
+                            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="14" height="14" rx="1" fill="currentColor" opacity="0.6"/></svg>
+                        </button>
+                        <button class="mc-layout-btn" data-layout="2" title="2 Charts">
+                            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="6" height="14" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="0" width="6" height="14" rx="1" fill="currentColor" opacity="0.6"/></svg>
+                        </button>
+                        <button class="mc-layout-btn" data-layout="4" title="4 Charts">
+                            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="0" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/></svg>
+                        </button>
+                    </div>
                     <div class="mc-toolbar-group" style="margin-left:auto;">
                         <span id="mcStatus" class="mc-status"></span>
                         <button id="mcRefreshBtn" class="mc-refresh-btn">Refresh</button>
                     </div>
                 </div>
 
-                <!-- Charts + Sidebar Layout -->
-                <div class="mc-layout">
+                <!-- Multi-Chart Layout (hidden by default, shown when layout=1/2/4) -->
+                <div id="mcMultiChart" class="mch-container" style="display:none;">
+                    <div class="mch-grid" id="mchGrid">
+                        <!-- Slots injected by JS -->
+                    </div>
+                </div>
+
+                <!-- Charts + Sidebar Layout (default mini-charts grid) -->
+                <div class="mc-layout" id="mcMiniChartsLayout">
                     <!-- Charts Grid 3x2 -->
                     <div class="mc-charts-area">
                         <div id="chartsGrid" class="mc-grid"></div>
@@ -350,7 +373,7 @@
     <script src="/auth.js?v=20260415-v1"></script>
     <script src="/settings.js?v=20260415-v1"></script>
     <script src="/densities.js?v=20260410-v16"></script>
-    <script src="/mini-charts.js?v=20260415-v17"></script>
+    <script src="/mini-charts.js?v=20260417-v18"></script>
 </body>
 
 </html>

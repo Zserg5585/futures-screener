@@ -836,6 +836,122 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* ========== Layout Picker ========== */
+.mc-layout-picker {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.mc-layout-btn {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text-muted);
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+}
+.mc-layout-btn:hover {
+    background: rgba(255,255,255,0.08);
+    color: var(--text-secondary);
+}
+.mc-layout-btn.active {
+    background: rgba(59,130,246,0.15);
+    border-color: rgba(59,130,246,0.4);
+    color: #60a5fa;
+}
+
+/* ========== Multi-Chart Container ========== */
+.mch-container {
+    height: calc(100vh - 140px);
+    overflow: hidden;
+    background: var(--bg-base);
+    display: flex;
+}
+.mch-grid {
+    flex: 1;
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    min-height: 0;
+}
+.mch-grid[data-layout="1"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+.mch-grid[data-layout="2"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+.mch-grid[data-layout="4"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+/* Individual chart slot */
+.mch-slot {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    overflow: hidden;
+    min-height: 0;
+}
+.mch-slot.active {
+    border-color: rgba(59,130,246,0.4);
+}
+.mch-slot-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--glass-border);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+.mch-slot-sym {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.mch-slot-price {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.mch-slot-change {
+    font-size: 11px;
+    font-weight: 500;
+}
+.mch-slot-tf {
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+}
+.mch-slot-tf .mc-tf-btn {
+    font-size: 10px;
+    padding: 2px 5px;
+}
+.mch-slot-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    opacity: 0.5;
+    flex: 1;
+}
+.mch-slot-chart {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
 /* Charts + Sidebar Layout */
 .mc-layout {
     display: flex;

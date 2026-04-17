@@ -82,6 +82,18 @@ class StateManager {
     });
 
     state.lastUpdateId = payload.u;
+
+    // Cleanup stale price levels not updated in 2 minutes
+    if (!state._lastCleanup || now - state._lastCleanup > 60000) {
+      state._lastCleanup = now;
+      const staleMs = 120000;
+      for (const [price, data] of state.bids.entries()) {
+        if (now - data.lastUpdate > staleMs) state.bids.delete(price);
+      }
+      for (const [price, data] of state.asks.entries()) {
+        if (now - data.lastUpdate > staleMs) state.asks.delete(price);
+      }
+    }
   }
 
   getTopLevels(symbol, side, markPrice, minNotional, limit, windowPct) {
@@ -178,8 +190,9 @@ class StateManager {
       });
     }
 
-    // Cleanup very old bins (not seen in 1 minute)
-    if (Math.random() < 0.05) { // Run randomly ~5% of calls to save CPU
+    // Cleanup very old bins (not seen in 1 minute) — deterministic, every 30s
+    if (!this._lastBinCleanup || now - this._lastBinCleanup > 30000) {
+      this._lastBinCleanup = now;
       for (const [k, v] of this.binHistory.entries()) {
         if (now - v.lastUpdate > 60000) {
           this.binHistory.delete(k);
