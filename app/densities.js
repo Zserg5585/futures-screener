@@ -40,7 +40,7 @@ let state = {
     },
     lastError: null,
     currentPreset: null,
-    watchlist: [], // Список символов в watchlist (из localStorage)
+    watchlist: [], // Список symbols в watchlist (из localStorage)
     currentTab: 'mini-charts', // текущая вкладка
     watchlistData: null // кэш данных watchlist
 }
@@ -216,7 +216,7 @@ async function loadDensities(forceRefresh = false) {
     const errorEl = el('error')
 
     // Show loading state
-    stateEl.textContent = 'Загрузка...'
+    stateEl.textContent = 'Loading...'
     stateEl.classList.add('loading')
     errorEl.classList.add('hidden')
 
@@ -226,7 +226,7 @@ async function loadDensities(forceRefresh = false) {
             renderDensities(state.cache.data)
             // Debug: count unique symbols
             const uniqueSymbols = new Set(state.cache.data.map(e => e.symbol))
-            stateEl.textContent = `✅ Загружено: ${state.cache.data.length} уровней, ${uniqueSymbols.size} символов`
+            stateEl.textContent = `✅ Loaded: ${state.cache.data.length} walls, ${uniqueSymbols.size} symbols`
             stateEl.classList.remove('loading')
             return
         }
@@ -263,7 +263,7 @@ async function loadDensities(forceRefresh = false) {
 
         // Update status
         const uniqueSymbols = new Set(data.map(e => e.symbol))
-        stateEl.textContent = `✅ Загружено: ${data.length} уровней, ${uniqueSymbols.size} символов`
+        stateEl.textContent = `✅ Loaded: ${data.length} walls, ${uniqueSymbols.size} symbols`
         stateEl.classList.remove('loading')
         el('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`
 
@@ -272,7 +272,7 @@ async function loadDensities(forceRefresh = false) {
         state.lastError = error.message
         errorEl.textContent = error.message
         errorEl.classList.remove('hidden')
-        stateEl.textContent = '❌ Ошибка'
+        stateEl.textContent = '❌ Error'
         stateEl.classList.remove('loading')
     }
 }
@@ -298,80 +298,76 @@ function renderVolIndicator(vol1, vol2, vol3, vol4, vol5, density) {
     `;
 }
 
+// Severity badge helper
+function severityBadge(severity) {
+    if (severity === 'S') return '<span class="sev-badge sev-s" title="Strong (x15+)">S</span>';
+    if (severity === 'M') return '<span class="sev-badge sev-m" title="Medium (x8-15)">M</span>';
+    return '<span class="sev-badge sev-l" title="Low (x4-8)">L</span>';
+}
+
+// Tag label helper
+function renderTags(tags) {
+    if (!tags || tags.length === 0) return '<span style="color:var(--text-muted);">—</span>';
+    const map = {
+        'CONCRETE': '<span style="color:#22c55e;">🧱 Concrete</span>',
+        'HOLDING': '<span style="color:#86efac;">⏳ Holding</span>',
+        'ROBOT-AGGRESSOR': '<span style="color:#f59e0b;">⚔️ Robot</span>',
+        'TECH-NATR': '<span style="color:#a855f7;">🎯 Tech Level</span>',
+        'CLOSE': '<span style="color:#60a5fa;">📍 Close</span>',
+        'SPOOF-FAR': '<span style="color:#ef4444;">❌ Spoof</span>',
+        'NEW-FAR': '<span style="color:#ef4444;">⚠ New+Far</span>',
+        'FAR': '<span style="color:#94a3b8;">↔ Far</span>',
+    };
+    return tags.map(t => map[t] || t).join(' ');
+}
+
 // Render table (desktop)
 function renderTable(entries) {
     const tbody = el('tbody')
 
     if (!entries || entries.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center; padding: 20px;">Нет данных</td></tr>'
+        tbody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center; padding: 20px;">No significant walls found</td></tr>'
         return
     }
 
-    // Сортируем данные напрямую (без группировки)
     const sorted = [...entries].sort((a, b) => {
         if (state.sortField === 'symbol') {
             return state.sortAsc ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol)
         }
-
         let fieldMap = state.sortField
         if (fieldMap === 'distance') fieldMap = 'distancePct'
         if (fieldMap === 'speed') fieldMap = 'timeToEatMinutes'
-        if (fieldMap === 'age') fieldMap = 'lifetimeSec'
-
+        if (fieldMap === 'age') fieldMap = 'lifetimeMins'
+        if (fieldMap === 'xMult') fieldMap = 'xMult'
         const valA = a[fieldMap] || 0
         const valB = b[fieldMap] || 0
-
         return state.sortAsc ? (valA - valB) : (valB - valA)
     })
 
     const rows = sorted.map(entry => {
         const symbol = entry.symbol
-        const inWatchlist = isSymbolInWatchlist(symbol)
-
-        const isMM = entry.levelsCount > 1
-        let stateDot = '<span style="color:var(--text-muted);">🛡️</span> <span style="color:var(--text-muted);">Waiting</span>'
-
-        if (entry.tags && entry.tags.length > 0) {
-            if (entry.tags.includes('SPOOF-FAR') || entry.tags.includes('NEW-FAR')) {
-                stateDot = '<span style="color:#ef4444;">❌</span> Спуфер'
-            } else if (entry.tags.includes('ROBOT-AGGRESSOR')) {
-                stateDot = '<span style="color:#f59e0b;">⚔️</span> Робот-толкач'
-            } else if (entry.tags.includes('CONCRETE-15M') || entry.tags.includes('CONCRETE-5M')) {
-                stateDot = '<span style="color:var(--neon-green);">🧱</span> Бетон'
-            } else if (entry.tags.includes('TECH-NATR')) {
-                 stateDot = '<span style="color:#a855f7;">🎯</span> Тех.Уровень'
-            }
-        }
 
         const sideBlock = entry.sideKey === 'bid'
-            ? '<span style="color:#60a5fa; font-weight:600;">LONG (BID)</span>'
-            : '<span style="color:#fb923c; font-weight:600;">SHORT (ASK)</span>'
+            ? '<span style="color:#22c55e; font-weight:600;">BID</span>'
+            : '<span style="color:#ef4444; font-weight:600;">ASK</span>'
 
         return `
-        <tr class="${isMM ? 'isMM' : ''}">
+        <tr>
             <td class="sym">
-                <a href="https://www.bybit.com/trade/usdt/${symbol}" target="_blank" style="margin-right: 6px;">${symbol.replace('USDT', '')}</a>
-                <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures" style="text-decoration:none;">
-                    <span style="display:inline-block; width:14px; height:14px; line-height:14px; text-align:center; background:#f3ba2f; color:#000; border-radius:50%; font-size:10px; font-weight:bold; vertical-align:middle; opacity:0.8; transition:opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">B</span>
-                </a>
+                <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures">${symbol.replace('USDT', '')}</a>
             </td>
             <td>${sideBlock}</td>
+            <td>${severityBadge(entry.severity)}</td>
+            <td style="font-weight:600; color:var(--neon-yellow);">${(entry.xMult || 0).toFixed(1)}x</td>
             <td>
-                <span style="color:#e2e8f0; font-weight:500;">${formatNumber(entry.price, 4)}</span><br>
-                <span style="color:#94a3b8; font-size:11px;">${formatPercent(entry.distancePct)}</span>
+                <span style="color:#e2e8f0; font-weight:500;">${formatNumber(entry.price, 4)}</span>
+                <span style="color:#64748b; font-size:11px; margin-left:4px;">${formatPercent(entry.distancePct)}</span>
             </td>
-            <td style="font-family: monospace; font-size: 14px;">${formatNotional(entry.notional)}</td>
+            <td style="font-family:monospace;">${formatNotional(entry.notional)}</td>
             <td>${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</td>
             <td class="natr">${(entry.natr || 0) > 0 ? entry.natr.toFixed(1) + '%' : '—'}</td>
-            <td class="score" style="color:var(--neon-yellow);">${(entry.score || 0).toFixed(1)}</td>
-            <td style="font-family: monospace; color: #a1a1aa;">${entry.lifetimeMins}m</td>
-            <td class="state-cell">${stateDot}</td>
-            <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
-            <td class="watchlist-btn">
-                <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
-                    ${inWatchlist ? '⭐' : '☆'}
-                </button>
-            </td>
+            <td style="font-family:monospace; color:#a1a1aa;">${entry.lifetimeMins}m</td>
+            <td class="state-cell">${renderTags(entry.tags)}</td>
         </tr>
         `
     }).join('')
@@ -379,11 +375,10 @@ function renderTable(entries) {
     tbody.innerHTML = rows
 }
 
-// Render table
+// Render densities (table or cards)
 function renderDensities(entries) {
     if (!entries) return
 
-    // Применяем локальные фильтры (Blacklist и HideSqueezes)
     let finalEntries = entries
 
     if (state.blacklist && state.blacklist.trim() !== '') {
@@ -393,30 +388,18 @@ function renderDensities(entries) {
         }
     }
 
-    // Авто-определение mobile/desktop
-    const isMobile = window.innerWidth <= 768 || /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-    console.log('renderDensities:', isMobile, 'entries:', finalEntries.length)
-
+    const isMobile = window.innerWidth <= 768
     entries = finalEntries
 
     const cardsContainer = el('cardsContent')
     const tableContainer = el('table-container')
 
-    console.log('Containers:', { cardsContainer: !!cardsContainer, tableContainer: !!tableContainer })
-
     if (isMobile) {
-        console.log('Using cards')
-        if (!cardsContainer) {
-            console.error('cardsContent element not found!')
-            // Fallback: show error on page
-            document.body.innerHTML += `< div style = "color:red;padding:20px;" > ERROR: cardsContent element not found</div > `
-            return
-        }
+        if (!cardsContainer) return
         renderCards(entries)
         cardsContainer.style.display = 'flex'
         if (tableContainer) tableContainer.style.display = 'none'
     } else {
-        console.log('Using table')
         renderTable(entries)
         if (cardsContainer) cardsContainer.style.display = 'none'
         if (tableContainer) tableContainer.style.display = 'block'
@@ -485,7 +468,7 @@ function renderCards(entries) {
     const container = el('cardsContent')
 
     if (!entries || entries.length === 0) {
-        container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">Нет данных</p>`
+        container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">No significant walls found</p>`
         return
     }
 
@@ -493,7 +476,7 @@ function renderCards(entries) {
         let fieldMap = state.sortField
         if (fieldMap === 'distance') fieldMap = 'distancePct'
         if (fieldMap === 'speed') fieldMap = 'timeToEatMinutes'
-        if (fieldMap === 'age') fieldMap = 'lifetimeSec'
+        if (fieldMap === 'age') fieldMap = 'lifetimeMins'
         const valA = a[fieldMap] || 0
         const valB = b[fieldMap] || 0
         return state.sortAsc ? (valA - valB) : (valB - valA)
@@ -501,63 +484,33 @@ function renderCards(entries) {
 
     const cards = sorted.map(entry => {
         const symbol = entry.symbol
-        const inWatchlist = isSymbolInWatchlist(symbol)
-
-        const isMM = entry.levelsCount > 1
-        let stateDot = '<span style="color:var(--text-muted);">🛡️</span> <span style="color:var(--text-muted);">Waiting</span>'
-
-        if (entry.tags && entry.tags.length > 0) {
-            if (entry.tags.includes('SPOOF-FAR') || entry.tags.includes('NEW-FAR')) {
-                stateDot = '<span style="color:#ef4444;">❌</span> Спуфер'
-            } else if (entry.tags.includes('ROBOT-AGGRESSOR')) {
-                stateDot = '<span style="color:#f59e0b;">⚔️</span> Робот-толкач'
-            } else if (entry.tags.includes('CONCRETE-15M') || entry.tags.includes('CONCRETE-5M')) {
-                stateDot = '<span style="color:var(--neon-green);">🧱</span> Бетон'
-            } else if (entry.tags.includes('TECH-NATR')) {
-                 stateDot = '<span style="color:#a855f7;">🎯</span> Тех.Уровень'
-            }
-        }
-
-        const sideClass = entry.sideKey === 'bid' ? 'bid' : 'ask'
-        const sideIcon = entry.sideKey === 'bid' ? '<span style="color:#60a5fa;">🔵 LONG (BID)</span>' : '<span style="color:#fb923c;">🟠 SHORT (ASK)</span>'
+        const sideColor = entry.sideKey === 'bid' ? '#22c55e' : '#ef4444'
+        const sideLabel = entry.sideKey === 'bid' ? 'BID' : 'ASK'
 
         return `
-        <div class="card ${isMM ? 'isMM' : ''}" data-symbol="${symbol}">
+        <div class="card" data-symbol="${symbol}">
             <div class="card-header">
                 <div>
-                    <a href="https://www.bybit.com/trade/usdt/${symbol}" target="_blank" style="margin-right: 6px;">${symbol.replace('USDT', '')}</a>
-                    <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures" style="text-decoration:none;">
-                        <span style="display:inline-block; width:16px; height:16px; line-height:16px; text-align:center; background:#f3ba2f; color:#000; border-radius:50%; font-size:11px; font-weight:bold; vertical-align:text-bottom; opacity:0.8;">B</span>
-                    </a>
-                    
-                    <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
+                    <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol.replace('USDT', '')}</a>
+                    <span style="color:${sideColor}; font-weight:600; margin-left:6px;">${sideLabel}</span>
+                    ${severityBadge(entry.severity)}
                 </div>
-                <div style="font-size:12px; opacity:0.8">${stateDot}</div>
+                <div style="font-weight:600; color:var(--neon-yellow);">${(entry.xMult || 0).toFixed(1)}x</div>
             </div>
             <div class="card-body">
-                <div class="card-row ${sideClass} ${isMM ? 'isMM' : ''}">
-                    <span class="label">${sideIcon}</span>
-                    <span class="value" style="display:flex; flex-direction:column; align-items:flex-end;">
-                        <span style="font-weight:500; font-size:14px;">${formatNumber(entry.price, 4)}</span>
-                        <span class="dist" style="font-size:11px; margin-top:2px;">${formatPercent(entry.distancePct)}</span>
-                    </span>
-                    <span class="notional">${formatNotional(entry.notional)}</span>
-                </div>
-                <div class="card-row" style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
-                    <span class="label">Vol Indicator:</span>
-                    <span class="value">${renderVolIndicator(entry.vol1, entry.vol2, entry.vol3, entry.vol4, entry.vol5, entry.notional)}</span>
+                <div class="card-row">
+                    <span class="label">Wall:</span>
+                    <span class="value" style="font-weight:500;">${formatNotional(entry.notional)} @ ${formatNumber(entry.price, 4)}</span>
+                    <span style="color:#64748b; font-size:11px;">${formatPercent(entry.distancePct)}</span>
                 </div>
                 <div class="card-row" style="margin-top:4px;">
                     <span class="label">NATR:</span>
                     <span class="value">${(entry.natr || 0) > 0 ? entry.natr.toFixed(1) + '%' : '—'}</span>
-                    <span class="label" style="margin-left:10px">Score:</span>
-                    <span class="value" style="color:var(--neon-yellow); font-weight: 600;">${(entry.score || 0).toFixed(1)}</span>
+                    <span class="label" style="margin-left:10px">Age:</span>
+                    <span class="value" style="color:#a1a1aa;">${entry.lifetimeMins}m</span>
                 </div>
                 <div class="card-row" style="margin-top:4px;">
-                    <span class="label">Age (Mins):</span>
-                    <span class="value" style="color: #a1a1aa;">${entry.lifetimeMins}m</span>
-                    <span class="label" style="margin-left:10px">Time To Eat:</span>
-                    <span class="value" style="color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</span>
+                    ${renderTags(entry.tags)}
                 </div>
             </div>
         </div>
@@ -652,9 +605,9 @@ function renderWatchlist(entries) {
 
     if (watchlistEntries.length === 0) {
         if (el('cardsContent').style.display !== 'none') {
-            container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</p>`
+            container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">В watchlist нет walls с текущими фильтрами.</p>`
         } else {
-            table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</th></tr></thead></table>`
+            table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">В watchlist нет walls с текущими фильтрами.</th></tr></thead></table>`
         }
         return
     }
