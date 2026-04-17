@@ -164,7 +164,33 @@ async function mapLimit(items, limit, fn, delayMs = 0) {
 
 // Density endpoint result cache (avoid re-scanning 500+ symbols on every request)
 let densityCache = { data: null, meta: null, ts: 0 }
-const DENSITY_CACHE_TTL = 30000 // 30 seconds
+const DENSITY_CACHE_TTL = 60000 // 60 seconds (was 30s)
+// Disk cache helpers for density results (survive PM2 restarts)
+const DENSITY_CACHE_FILE = require('path').join(__dirname, '..', 'data', 'density-cache.json')
+function saveDensityToDisk(data, meta) {
+  try {
+    const dir = require('path').dirname(DENSITY_CACHE_FILE)
+    if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
+    require('fs').writeFileSync(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
+  } catch (e) { console.log('[density-cache] disk save error:', e.message) }
+}
+function loadDensityFromDisk() {
+  try {
+    if (!require('fs').existsSync(DENSITY_CACHE_FILE)) return null
+    const raw = JSON.parse(require('fs').readFileSync(DENSITY_CACHE_FILE, 'utf8'))
+    // Accept disk cache up to 10 minutes old (stale but better than nothing)
+    if (raw && raw.data && (Date.now() - raw.ts) < 600000) {
+      console.log(`[density-cache] Loaded ${raw.data.length} walls from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)
+      return raw
+    }
+  } catch (e) { console.log('[density-cache] disk load error:', e.message) }
+  return null
+}
+// Load disk cache on startup
+const diskCache = loadDensityFromDisk()
+if (diskCache) {
+  densityCache = { data: diskCache.data, meta: diskCache.meta, ts: diskCache.ts }
+}
 
 // Scoring function: enhanced with Time To Eat, NATR, and lifetime
 function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifetimeSec }) {
@@ -607,18 +633,17 @@ fastify.get('/densities/simple', async (req) => {
     const price = markMap.get(sym)
     if (!price) return []
 
-    // 1. Subscribe to WebSocket if not already tracked
+    // 1. If not yet WS-subscribed: for full scans, skip (no data yet).
+    //    For specific symbol queries (charts), fetch depth on demand.
     if (!wsManager.callbacks.has(sym)) {
+      if (!isSpecificSymbols) {
+        return []; // Full scan: skip unsubscribed symbols, they'll warm up via chart views
+      }
       try {
-        // Fetch initial snapshot to seed state (with delay to avoid rate limit)
         const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
         stateManager.initBook(sym, ob.bids, ob.asks);
-
-        wsManager.subscribe(sym, (payload) => {
-          stateManager.processDelta(sym, payload);
-        });
+        wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload); });
       } catch (err) {
-        // Skip symbol if depth fetch fails (rate limit etc)
         console.log(`[density] Skip ${sym}: ${err.message.slice(0, 80)}`);
         return [];
       }
@@ -721,11 +746,10 @@ fastify.get('/densities/simple', async (req) => {
     // allLevels already has all scored walls, perSymbol top 3 = finalData before natr/score filters
     const unfilteredData = Object.values(perSymbol).flat()
     unfilteredData.sort((a, b) => b.score - a.score)
-    densityCache = {
-      data: unfilteredData,
-      meta: { count: unfilteredData.length, minNotional, depthLimit, concurrency, mmMode, windowPct, mmMultiplier },
-      ts: Date.now()
-    }
+    const meta = { count: unfilteredData.length, minNotional, depthLimit, concurrency, mmMode, windowPct, mmMultiplier }
+    densityCache = { data: unfilteredData, meta, ts: Date.now() }
+    // Persist to disk so data survives PM2 restarts
+    saveDensityToDisk(unfilteredData, meta)
   }
 
   const result = {
@@ -890,9 +914,53 @@ const start = async () => {
   try {
     await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
+    // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
+    warmupDensitySubscriptions()
   } catch (err) {
     fastify.log.error(err)
     process.exit(1)
   }
 }
+
+// Gradually subscribe symbols to depth WS (10 per batch, 15s between batches)
+async function warmupDensitySubscriptions() {
+  try {
+    const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
+    const symbols = (info.symbols || [])
+      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
+      .map(s => s.symbol)
+
+    console.log(`[warmup] Starting: ${symbols.length} symbols, 10/batch, 15s interval`)
+    let subscribed = 0
+
+    for (let i = 0; i < symbols.length; i += 10) {
+      const batch = symbols.slice(i, i + 10)
+      for (const sym of batch) {
+        if (wsManager.callbacks.has(sym)) continue
+        try {
+          const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
+          stateManager.initBook(sym, ob.bids, ob.asks)
+          wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
+          subscribed++
+        } catch (err) {
+          // Rate limited — wait longer and retry this batch
+          console.log(`[warmup] Rate limited at ${subscribed}/${symbols.length}, pausing 60s...`)
+          await new Promise(r => setTimeout(r, 60000))
+          i -= 10 // retry this batch
+          break
+        }
+        // Small delay between items in batch (200ms)
+        await new Promise(r => setTimeout(r, 200))
+      }
+      // 15s pause between batches (~10 depth + 20 klines = 30 req/15s = 120/min safe)
+      if (i + 10 < symbols.length) {
+        await new Promise(r => setTimeout(r, 15000))
+      }
+    }
+    console.log(`[warmup] Done: ${subscribed} symbols subscribed`)
+  } catch (err) {
+    console.log(`[warmup] Failed: ${err.message.slice(0, 100)}`)
+  }
+}
+
 start()
