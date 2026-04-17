@@ -966,8 +966,64 @@ async function warmupDensitySubscriptions() {
       }
     }
     console.log(`[warmup] Done: ${subscribed} symbols`)
+    // After density warmup, pre-warm klines cache for fast chart loads
+    warmupKlinesCache()
   } catch (err) {
     console.log(`[warmup] Failed: ${err.message.slice(0, 100)}`)
+  }
+}
+
+// Pre-warm klines cache: top 200 by volume × main TFs → instant chart opens
+async function warmupKlinesCache() {
+  try {
+    // Get top 200 symbols by 24h volume
+    const ticker = await bgetWithRetry('/fapi/v1/ticker/24hr')
+    const sorted = ticker
+      .filter(t => t.symbol.endsWith('USDT'))
+      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      .slice(0, 200)
+      .map(t => t.symbol)
+
+    const TFS = ['15m', '1h', '4h']
+    const LIMITS = { '15m': 1500, '1h': 1500, '4h': 1500 }
+    const total = sorted.length * TFS.length
+    let done = 0, cached = 0
+
+    console.log(`[klines-warmup] Starting: ${sorted.length} symbols × ${TFS.length} TFs = ${total} requests`)
+
+    for (const tf of TFS) {
+      for (let i = 0; i < sorted.length; i++) {
+        const sym = sorted[i]
+        const limit = LIMITS[tf]
+        const key = `klines:${sym}:${tf}:${limit}`
+
+        // Skip if already cached
+        if (getProxyCached(key, 300000)) { done++; cached++; continue }
+
+        try {
+          const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`)
+          setProxyCached(key, data)
+          done++
+        } catch (err) {
+          // Rate limit — pause 30s and continue
+          console.log(`[klines-warmup] Rate limited at ${done}/${total}, pausing 30s...`)
+          await new Promise(r => setTimeout(r, 30000))
+          i-- // retry this symbol
+          continue
+        }
+
+        // Throttle: 150ms between requests (concurrency 1, ~400 req/min safe)
+        await new Promise(r => setTimeout(r, 150))
+
+        // Progress every 100 requests
+        if (done % 100 === 0) {
+          console.log(`[klines-warmup] ${done}/${total} (${cached} from cache)`)
+        }
+      }
+    }
+    console.log(`[klines-warmup] Done: ${done}/${total} cached (${cached} already had)`)
+  } catch (err) {
+    console.log(`[klines-warmup] Failed: ${err.message.slice(0, 100)}`)
   }
 }
 
