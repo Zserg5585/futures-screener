@@ -2659,9 +2659,89 @@ async function loadSlotChart(slotIndex) {
 
         // Scroll to end respecting rightOffset
         slot.chart.timeScale().scrollToRealTime();
+
+        // Apply saved drawings (per-symbol, visible on all TFs)
+        applyDrawingsToSlot(slotIndex);
     } catch(e) {
         console.error('[MCH] Load error slot', slotIndex, e);
     }
+}
+
+function applyDrawingsToSlot(slotIndex) {
+    const slot = mch.slots[slotIndex];
+    if (!slot || !slot.sym || !slot.chart || !slot.series) return;
+
+    // Clear old drawing objects
+    if (slot.drawObjs) {
+        slot.drawObjs.forEach(obj => {
+            if (obj.priceLine) try { slot.series.removePriceLine(obj.priceLine); } catch(e) {}
+            if (obj.lineSeries) try { slot.chart.removeSeries(obj.lineSeries); } catch(e) {}
+        });
+    }
+    slot.drawObjs = [];
+
+    const saved = drawStore.load(slot.sym);
+    if (!saved || saved.length === 0) return;
+
+    saved.forEach(s => {
+        if (s.type === 'hline' && s.data) {
+            const pl = slot.series.createPriceLine({
+                price: s.data.price,
+                color: s.color || '#5b9cf6',
+                lineWidth: 2,
+                lineStyle: 0,
+                axisLabelVisible: true,
+                title: '',
+            });
+            slot.drawObjs.push({ priceLine: pl });
+        } else if (s.type === 'fib' && s.data) {
+            const levels = s.data.levels || [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const fibColors = ['#787b86','#f44336','#ff9800','#4caf50','#2196f3','#9c27b0','#787b86','#e91e63','#00bcd4','#8bc34a'];
+            const diff = s.data.p2 - s.data.p1;
+            levels.forEach((lvl, i) => {
+                const price = s.data.p1 + diff * lvl;
+                const pl = slot.series.createPriceLine({
+                    price,
+                    color: s.color || fibColors[i % fibColors.length],
+                    lineWidth: 1.5,
+                    lineStyle: 2,
+                    axisLabelVisible: true,
+                    title: `${(lvl * 100).toFixed(1)}%`,
+                });
+                slot.drawObjs.push({ priceLine: pl });
+            });
+        } else if (s.type === 'ray' && s.data) {
+            const startTime = s.data.startTime || s.data.t1;
+            const farTime = startTime + 365 * 24 * 3600;
+            const ls = slot.chart.addLineSeries({
+                color: s.color || '#5b9cf6',
+                lineWidth: 2,
+                crosshairMarkerVisible: false,
+                lastValueVisible: false,
+                priceLineVisible: false,
+                pointMarkersVisible: false,
+            });
+            ls.setData([
+                { time: startTime, value: s.data.price },
+                { time: farTime, value: s.data.price },
+            ]);
+            slot.drawObjs.push({ lineSeries: ls });
+        } else if (s.type === 'trendline' && s.data) {
+            const ls = slot.chart.addLineSeries({
+                color: s.color || '#5b9cf6',
+                lineWidth: 2,
+                crosshairMarkerVisible: false,
+                lastValueVisible: false,
+                priceLineVisible: false,
+                pointMarkersVisible: false,
+            });
+            ls.setData([
+                { time: s.data.t1, value: s.data.p1 },
+                { time: s.data.t2, value: s.data.p2 },
+            ]);
+            slot.drawObjs.push({ lineSeries: ls });
+        }
+    });
 }
 
 function saveSlotSymbols() {
