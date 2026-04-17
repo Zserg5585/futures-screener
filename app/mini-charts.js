@@ -4,8 +4,8 @@
 // ==========================================
 const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
 const mc = {
-    sortBy: 'volume',
-    sortDir: 'desc',
+    sortBy: 'change',
+    sortDir: 'asc',
     globalTF: '15m',
     loaded: false,
     allPairs: [],        // all fetched pairs (unfiltered)
@@ -307,6 +307,7 @@ function rebuildGrid() {
         return `<div class="mc-chart-card" data-symbol="${sym}" id="mc-card-${sym}">
             <div class="mc-chart-header">
                 <span class="mc-chart-symbol">${ticker}</span>
+                <button class="mc-copy-btn mc-copy-card" data-ticker="${sym.toLowerCase()}" title="Copy ${sym.toLowerCase()}"><svg width="10" height="10" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
                 <div class="mc-chart-metrics">
                     <span class="${chgClass}">${chgSign}${chg.toFixed(2)}%</span>
                     <span class="mc-metric-muted" title="24h Volume"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:1px"><rect x="1" y="5" width="2" height="5" fill="currentColor" opacity="0.5"/><rect x="4" y="2" width="2" height="8" fill="currentColor" opacity="0.7"/><rect x="7" y="0" width="2" height="10" fill="currentColor"/></svg>${vol}</span>
@@ -317,6 +318,17 @@ function rebuildGrid() {
             <div class="mc-chart-body" id="mc-body-${sym}"></div>
         </div>`;
     }).join('');
+
+    // Copy ticker on mini-chart cards
+    grid.querySelectorAll('.mc-copy-card').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(btn.dataset.ticker).then(() => {
+                btn.classList.add('mc-copy-ok');
+                setTimeout(() => btn.classList.remove('mc-copy-ok'), 800);
+            });
+        });
+    });
 
     // Observe all cards + click to open modal
     grid.querySelectorAll('.mc-chart-card').forEach(card => {
@@ -380,6 +392,9 @@ function renderSidebar() {
         return `<div class="mc-coin-item" data-symbol="${sym}">
             <button class="${flagClass}" style="${flagStyle}" data-flag="${sym}" title="Set color flag"></button>
             <span class="mc-coin-name">${ticker}</span>
+            <button class="mc-copy-btn" data-ticker="${ticker.toLowerCase()}usdt" title="Copy ${ticker.toLowerCase()}usdt">
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
             <span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(1)}%</span>
             <span class="mc-coin-natr">${natr}</span>
             <span class="mc-coin-vol">${vol}</span>
@@ -418,21 +433,52 @@ function renderSidebar() {
         });
     });
 
+    // Copy ticker button
+    list.querySelectorAll('.mc-copy-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const ticker = btn.dataset.ticker;
+            navigator.clipboard.writeText(ticker).then(() => {
+                btn.classList.add('mc-copy-ok');
+                setTimeout(() => btn.classList.remove('mc-copy-ok'), 800);
+            });
+        });
+    });
+
     // Click handler — open coin modal or assign to multi-chart slot
     list.querySelectorAll('.mc-coin-item').forEach(item => {
         item.addEventListener('click', (e) => {
-            if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup')) return;
+            if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup') || e.target.closest('.mc-copy-btn')) return;
             handleSidebarCoinClick(item.dataset.symbol);
         });
     });
 }
 
+// Boost mouse wheel zoom speed (3x default)
+const ZOOM_MULTIPLIER = 3;
+function boostWheelZoom(chartEl, chart) {
+    chartEl.addEventListener('wheel', (e) => {
+        if (!chart) return;
+        e.preventDefault();
+        const ts = chart.timeScale();
+        const range = ts.getVisibleLogicalRange();
+        if (!range) return;
+        const barsCount = range.to - range.from;
+        const zoomDelta = (e.deltaY > 0 ? 1 : -1) * barsCount * 0.08 * ZOOM_MULTIPLIER;
+        ts.setVisibleLogicalRange({
+            from: range.from - zoomDelta,
+            to: range.to + zoomDelta,
+        });
+    }, { passive: false });
+}
+
 function getPricePrecision(price) {
-    if (price >= 1000) return 2;
-    if (price >= 1) return 4;
-    if (price >= 0.01) return 5;
-    if (price >= 0.001) return 6;
-    return 8;
+    if (price >= 1000) return 1;
+    if (price >= 100) return 2;
+    if (price >= 1) return 3;
+    if (price >= 0.01) return 4;
+    if (price >= 0.001) return 5;
+    return 6;
 }
 
 function createChartInstance(sym) {
@@ -447,14 +493,15 @@ function createChartInstance(sym) {
 
     const chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
-        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b' },
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b', fontSize: 9 },
         grid: { vertLines: { color: 'rgba(255,255,255,0.02)' }, horzLines: { color: 'rgba(255,255,255,0.02)' } },
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32 },
         timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
-        handleScale: { mouseWheel: true, pinch: true },
+        handleScroll: { mouseWheel: false, pressedMouseMove: true },
+        handleScale: { mouseWheel: false, pinch: true },
     });
+    boostWheelZoom(chartEl, chart);
 
     const series = chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
@@ -593,15 +640,17 @@ function applyDrawingsToMiniChart(sym) {
             });
             c.drawObjs.push({ priceLine: pl });
         } else if (s.type === 'fib' && s.data) {
-            const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const rawLevels = s.data.levels || FIB_DEFAULTS_OBJ;
             const diff = s.data.p2 - s.data.p1;
-            levels.forEach(lvl => {
+            rawLevels.forEach((item, i) => {
+                const lvl = typeof item === 'number' ? item : item.level;
+                const clr = (typeof item === 'object' && item.color) ? item.color : (s.color || '#5b9cf6');
                 const price = s.data.p1 + diff * lvl;
                 const pl = c.series.createPriceLine({
                     price,
-                    color: s.color || '#5b9cf6',
+                    color: clr,
                     lineWidth: 1,
-                    lineStyle: 2,
+                    lineStyle: 0,
                     axisLabelVisible: false,
                     title: '',
                 });
@@ -637,6 +686,23 @@ function applyDrawingsToMiniChart(sym) {
             });
             ls.setData(points);
             c.drawObjs.push({ lineSeries: ls });
+        } else if (s.type === 'rect' && s.data) {
+            // Rectangle on mini-chart: top + bottom border lines
+            const { t1, p1, t2, p2 } = s.data;
+            const clr = s.color || '#5b9cf6';
+            const topLs = c.chart.addLineSeries({
+                color: clr, lineWidth: 1, crosshairMarkerVisible: false,
+                lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+            });
+            topLs.setData([{ time: t1, value: Math.max(p1, p2) }, { time: t2, value: Math.max(p1, p2) }]);
+            c.drawObjs.push({ lineSeries: topLs });
+
+            const botLs = c.chart.addLineSeries({
+                color: clr, lineWidth: 1, crosshairMarkerVisible: false,
+                lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+            });
+            botLs.setData([{ time: t1, value: Math.min(p1, p2) }, { time: t2, value: Math.min(p1, p2) }]);
+            c.drawObjs.push({ lineSeries: botLs });
         }
     });
 }
@@ -1043,6 +1109,18 @@ function openCoinModal(sym) {
 
     // Header
     el('cmSymbol').textContent = ticker + '/USDT';
+    const cmCopyBtn = el('cmCopyBtn');
+    if (cmCopyBtn) {
+        cmCopyBtn.dataset.ticker = sym.toLowerCase();
+        cmCopyBtn.title = `Copy ${sym.toLowerCase()}`;
+        cmCopyBtn.onclick = (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(sym.toLowerCase()).then(() => {
+                cmCopyBtn.classList.add('mc-copy-ok');
+                setTimeout(() => cmCopyBtn.classList.remove('mc-copy-ok'), 800);
+            });
+        };
+    }
     el('cmPrice').textContent = '$' + pair.lastPrice.toFixed(prec);
     const cmChange = el('cmChange');
     cmChange.textContent = chgSign + chg.toFixed(2) + '%';
@@ -1085,11 +1163,12 @@ function openCoinModal(sym) {
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50 },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
-        handleScale: { mouseWheel: true, pinch: true },
+        handleScroll: { mouseWheel: false, pressedMouseMove: true },
+        handleScale: { mouseWheel: false, pinch: true },
     });
+    boostWheelZoom(el('cmChartBody'), modal.chart);
 
     modal.series = modal.chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
@@ -1302,6 +1381,7 @@ const DRAW_TOOLS = [
     { id: 'ray', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="8" r="1.5" fill="currentColor"/><line x1="3" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M13 5.5L15.5 8 13 10.5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
     { id: 'trendline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="13" cy="4" r="1.5" fill="currentColor"/><line x1="3" y1="12" x2="13" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>', title: 'Trend Line (T)', key: 't' },
     { id: 'fib', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="2" x2="15" y2="2" stroke="currentColor" stroke-width="1" opacity="0.5"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="10" x2="15" y2="10" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="14" x2="15" y2="14" stroke="currentColor" stroke-width="1" opacity="0.5"/></svg>', title: 'Fibonacci (F)', key: 'f' },
+    { id: 'rect', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.1"/></svg>', title: 'Rectangle (B)', key: 'b' },
     { id: 'trash', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-8 0h10m-9 0v10a1 1 0 001 1h6a1 1 0 001-1V3" stroke="currentColor" stroke-width="1.3"/></svg>', title: 'Clear All', key: 'Delete' },
 ];
 
@@ -1438,20 +1518,39 @@ function showAlertToast(sym, ticker, currentPrice, alertPrice, direction, color)
 }
 
 // Fibonacci levels config (customizable, persisted in localStorage)
-const FIB_DEFAULTS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+// Format: [{level: 0, color: '#4caf50'}, ...] — each level has its own color
+const FIB_DEFAULT_COLORS = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86', '#e91e63', '#00bcd4', '#8bc34a'];
+const FIB_DEFAULTS_OBJ = [
+    { level: 0, color: '#4caf50' },
+    { level: 0.236, color: '#2196f3' },
+    { level: 0.382, color: '#ff9800' },
+    { level: 0.5, color: '#f59e0b' },
+    { level: 0.618, color: '#ff9800' },
+    { level: 0.786, color: '#2196f3' },
+    { level: 1, color: '#4caf50' },
+];
 const fibConfig = (() => {
     const KEY = 'mc_fib_levels';
     function load() {
         try {
             const saved = JSON.parse(localStorage.getItem(KEY));
-            if (Array.isArray(saved) && saved.length > 0) return saved;
+            if (Array.isArray(saved) && saved.length > 0) {
+                // Migration: old format was plain numbers → convert to {level, color}
+                if (typeof saved[0] === 'number') {
+                    return saved.map((lvl, i) => ({ level: lvl, color: FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] }));
+                }
+                return saved;
+            }
         } catch(e) {}
-        return [...FIB_DEFAULTS];
+        return FIB_DEFAULTS_OBJ.map(o => ({ ...o }));
     }
     function save(levels) {
         localStorage.setItem(KEY, JSON.stringify(levels));
     }
-    return { load, save };
+    // Helper: extract plain level numbers from config
+    function levels(cfg) { return (cfg || load()).map(o => typeof o === 'number' ? o : o.level); }
+    function colorAt(cfg, i) { const c = cfg || load(); const item = c[i]; return (item && item.color) || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length]; }
+    return { load, save, levels, colorAt };
 })();
 
 const draw = {
@@ -1587,6 +1686,17 @@ function removeDrawingFromChart(d) {
             try { modal.series.removePriceLine(fl); } catch(e) {}
         });
     }
+    if (d.rectLines && modal.chart) {
+        d.rectLines.forEach(ls => {
+            try { modal.chart.removeSeries(ls); } catch(e) {}
+        });
+    }
+    if (d.fillSeries && modal.chart) {
+        try { modal.chart.removeSeries(d.fillSeries); } catch(e) {}
+    }
+    if (d.bottomPriceLine && modal.series) {
+        try { modal.series.removePriceLine(d.bottomPriceLine); } catch(e) {}
+    }
 }
 
 function selectDrawing(id) {
@@ -1674,6 +1784,50 @@ function showDrawingPanel(d) {
     }
 }
 
+function showFibColorPicker(dotEl) {
+    // Remove old picker if exists
+    const oldPicker = document.getElementById('fibColorPicker');
+    if (oldPicker) oldPicker.remove();
+
+    const colors = ['#4caf50', '#2196f3', '#ff9800', '#f59e0b', '#f44336', '#9c27b0', '#e91e63', '#00bcd4', '#8bc34a', '#787b86', '#ffffff', '#5b9cf6'];
+    const picker = document.createElement('div');
+    picker.id = 'fibColorPicker';
+    picker.className = 'fib-color-picker';
+
+    // Position relative to dot
+    const dotRect = dotEl.getBoundingClientRect();
+    const popupEl = dotEl.closest('.fib-levels-popup');
+    const popupRect = popupEl.getBoundingClientRect();
+    picker.style.top = (dotRect.top - popupRect.top + dotRect.height + 4) + 'px';
+    picker.style.left = (dotRect.left - popupRect.left) + 'px';
+
+    picker.innerHTML = colors.map(c =>
+        `<span class="fib-color-opt${c === dotEl.dataset.color ? ' active' : ''}" data-c="${c}" style="background:${c}"></span>`
+    ).join('');
+
+    picker.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const opt = e.target.closest('.fib-color-opt');
+        if (!opt) return;
+        const newColor = opt.dataset.c;
+        dotEl.style.background = newColor;
+        dotEl.dataset.color = newColor;
+        picker.remove();
+    });
+    picker.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    popupEl.appendChild(picker);
+
+    // Close on outside click
+    const closeHandler = (ev) => {
+        if (!picker.contains(ev.target) && ev.target !== dotEl) {
+            picker.remove();
+            document.removeEventListener('click', closeHandler, true);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler, true), 10);
+}
+
 function showFibLevelsPopup(d) {
     // Remove old popup if exists
     const oldPopup = document.getElementById('fibLevelsPopup');
@@ -1682,7 +1836,12 @@ function showFibLevelsPopup(d) {
     const chartEl = el('cmChartBody');
     if (!chartEl) return;
 
-    const levels = d.data.levels || fibConfig.load();
+    const rawLevels = d.data.levels || fibConfig.load();
+    // Normalize: support both old format (number[]) and new ({level,color}[])
+    const levels = rawLevels.map((item, i) => {
+        if (typeof item === 'number') return { level: item, color: FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
+        return { level: item.level, color: item.color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
+    });
 
     const popup = document.createElement('div');
     popup.id = 'fibLevelsPopup';
@@ -1690,9 +1849,10 @@ function showFibLevelsPopup(d) {
     popup.innerHTML = `
         <div class="fib-popup-title">Fibonacci Levels</div>
         <div class="fib-popup-list" id="fibLevelsList">
-            ${levels.map((lvl, i) => `
+            ${levels.map((item, i) => `
                 <div class="fib-level-row" data-idx="${i}">
-                    <input type="number" class="fib-level-input" value="${(lvl * 100).toFixed(1)}" step="0.1" />
+                    <span class="fib-level-color" style="background:${item.color}" data-color="${item.color}" title="Change color"></span>
+                    <input type="number" class="fib-level-input" value="${(item.level * 100).toFixed(1)}" step="0.1" />
                     <span class="fib-level-pct">%</span>
                     <button class="fib-level-remove" title="Remove">×</button>
                 </div>
@@ -1718,10 +1878,12 @@ function showFibLevelsPopup(d) {
         e.stopPropagation();
         const list = popup.querySelector('#fibLevelsList');
         const idx = list.children.length;
+        const defColor = FIB_DEFAULT_COLORS[idx % FIB_DEFAULT_COLORS.length];
         const row = document.createElement('div');
         row.className = 'fib-level-row';
         row.dataset.idx = idx;
         row.innerHTML = `
+            <span class="fib-level-color" style="background:${defColor}" data-color="${defColor}" title="Change color"></span>
             <input type="number" class="fib-level-input" value="50.0" step="0.1" />
             <span class="fib-level-pct">%</span>
             <button class="fib-level-remove" title="Remove">×</button>
@@ -1730,6 +1892,10 @@ function showFibLevelsPopup(d) {
         row.querySelector('.fib-level-remove').addEventListener('click', (ev) => {
             ev.stopPropagation();
             row.remove();
+        });
+        row.querySelector('.fib-level-color').addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            showFibColorPicker(ev.target);
         });
     });
 
@@ -1741,13 +1907,22 @@ function showFibLevelsPopup(d) {
         });
     });
 
+    // Color picker on each dot
+    popup.querySelectorAll('.fib-level-color').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showFibColorPicker(dot);
+        });
+    });
+
     // Reset
     popup.querySelector('#fibResetLevels').addEventListener('click', (e) => {
         e.stopPropagation();
         const list = popup.querySelector('#fibLevelsList');
-        list.innerHTML = FIB_DEFAULTS.map((lvl, i) => `
+        list.innerHTML = FIB_DEFAULTS_OBJ.map((item, i) => `
             <div class="fib-level-row" data-idx="${i}">
-                <input type="number" class="fib-level-input" value="${(lvl * 100).toFixed(1)}" step="0.1" />
+                <span class="fib-level-color" style="background:${item.color}" data-color="${item.color}" title="Change color"></span>
+                <input type="number" class="fib-level-input" value="${(item.level * 100).toFixed(1)}" step="0.1" />
                 <span class="fib-level-pct">%</span>
                 <button class="fib-level-remove" title="Remove">×</button>
             </div>
@@ -1758,18 +1933,31 @@ function showFibLevelsPopup(d) {
                 btn.closest('.fib-level-row').remove();
             });
         });
+        list.querySelectorAll('.fib-level-color').forEach(dot => {
+            dot.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                showFibColorPicker(dot);
+            });
+        });
     });
 
     // Apply
     popup.querySelector('#fibApplyLevels').addEventListener('click', (e) => {
         e.stopPropagation();
-        const inputs = popup.querySelectorAll('.fib-level-input');
+        const rows = popup.querySelectorAll('.fib-level-row');
         const newLevels = [];
-        inputs.forEach(inp => {
+        rows.forEach(row => {
+            const inp = row.querySelector('.fib-level-input');
+            const colorDot = row.querySelector('.fib-level-color');
             const val = parseFloat(inp.value);
-            if (!isNaN(val)) newLevels.push(val / 100);
+            if (!isNaN(val)) {
+                newLevels.push({
+                    level: val / 100,
+                    color: colorDot ? colorDot.dataset.color : FIB_DEFAULT_COLORS[newLevels.length % FIB_DEFAULT_COLORS.length]
+                });
+            }
         });
-        newLevels.sort((a, b) => a - b);
+        newLevels.sort((a, b) => a.level - b.level);
 
         // Save globally
         fibConfig.save(newLevels);
@@ -1782,16 +1970,15 @@ function showFibLevelsPopup(d) {
         }
         d.data.levels = newLevels;
         const diff = d.data.p2 - d.data.p1;
-        const fibColors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86', '#e91e63', '#00bcd4', '#8bc34a'];
-        d.fibLines = newLevels.map((lvl, i) => {
-            const price = d.data.p1 + diff * lvl;
+        d.fibLines = newLevels.map((item, i) => {
+            const price = d.data.p1 + diff * item.level;
             return modal.series.createPriceLine({
                 price,
-                color: d.color || fibColors[i % fibColors.length],
+                color: item.color,
                 lineWidth: 1.5,
-                lineStyle: 2,
+                lineStyle: 0,
                 axisLabelVisible: true,
-                title: `${(lvl * 100).toFixed(1)}%`,
+                title: `${(item.level * 100).toFixed(1)}%`,
             });
         });
         persistDrawings();
@@ -1826,15 +2013,35 @@ function changeDrawingColor(id, color) {
         d.fibLines.forEach(fl => {
             try { modal.series.removePriceLine(fl); } catch(e) {}
         });
-        const levels = d.data.levels || fibConfig.load();
+        const rawLevels = d.data.levels || fibConfig.load();
         const diff = d.data.p2 - d.data.p1;
-        d.fibLines = levels.map((lvl, i) => {
+        // When user changes color via panel, apply to ALL levels (override per-level)
+        d.fibLines = rawLevels.map((item, i) => {
+            const lvl = typeof item === 'number' ? item : item.level;
             const price = d.data.p1 + diff * lvl;
             return modal.series.createPriceLine({
-                price, color, lineWidth: 1, lineStyle: 2,
+                price, color, lineWidth: 1, lineStyle: 0,
                 axisLabelVisible: true, title: `${(lvl * 100).toFixed(1)}%`,
             });
         });
+        // Update per-level colors in data
+        if (Array.isArray(d.data.levels)) {
+            d.data.levels = d.data.levels.map(item => {
+                if (typeof item === 'number') return { level: item, color };
+                return { ...item, color };
+            });
+        }
+    } else if (d.type === 'rect' && d.rectLines && modal.chart) {
+        d.rectLines.forEach(ls => ls.applyOptions({ color }));
+        if (d.fillSeries) {
+            const r = parseInt(color.slice(1, 3), 16);
+            const g = parseInt(color.slice(3, 5), 16);
+            const b = parseInt(color.slice(5, 7), 16);
+            d.fillSeries.applyOptions({
+                topColor: `rgba(${r}, ${g}, ${b}, 0.08)`,
+                lineColor: 'transparent',
+            });
+        }
     }
     persistDrawings();
     showDrawingPanel(d); // refresh panel
@@ -1854,11 +2061,18 @@ function findDrawingNearPrice(price) {
         }
         if (d.type === 'fib' && d.data) {
             const diff = d.data.p2 - d.data.p1;
-            const levels = d.data.levels || fibConfig.load();
-            for (const lvl of levels) {
+            const rawLevels = d.data.levels || fibConfig.load();
+            for (const item of rawLevels) {
+                const lvl = typeof item === 'number' ? item : item.level;
                 const fibPrice = d.data.p1 + diff * lvl;
                 if (Math.abs(fibPrice - price) < threshold) return d;
             }
+        }
+        if (d.type === 'rect' && d.data) {
+            // Select if price is near top or bottom border
+            if (Math.abs(d.data.p1 - price) < threshold || Math.abs(d.data.p2 - price) < threshold) return d;
+            // Or if price is inside the rectangle
+            if (price >= Math.min(d.data.p1, d.data.p2) && price <= Math.max(d.data.p1, d.data.p2)) return d;
         }
     }
     return null;
@@ -1889,7 +2103,11 @@ function restoreDrawings() {
             const d = draw.drawings[draw.drawings.length - 1];
             d.locked = s.locked;
         } else if (s.type === 'fib') {
-            drawFibonacci(s.data.p1, s.data.p2, s.color);
+            drawFibonacci(s.data.p1, s.data.p2, null, s.data.levels);
+            const d = draw.drawings[draw.drawings.length - 1];
+            d.locked = s.locked;
+        } else if (s.type === 'rect') {
+            drawRectangle(s.data.t1, s.data.p1, s.data.t2, s.data.p2, s.color);
             const d = draw.drawings[draw.drawings.length - 1];
             d.locked = s.locked;
         }
@@ -1969,6 +2187,19 @@ function setupDrawingHandlers() {
                 draw.clickCount = 1;
             } else {
                 drawFibonacci(draw.startPrice, price);
+                draw.clickCount = 0;
+                removePreviewOverlay();
+                draw.activeTool = 'cursor';
+                renderDrawToolbar();
+                updateModalCursor();
+            }
+        } else if (draw.activeTool === 'rect') {
+            if (draw.clickCount === 0) {
+                draw.startPrice = price;
+                draw.startTime = time;
+                draw.clickCount = 1;
+            } else {
+                drawRectangle(draw.startTime, draw.startPrice, time, price);
                 draw.clickCount = 0;
                 removePreviewOverlay();
                 draw.activeTool = 'cursor';
@@ -2167,7 +2398,7 @@ function setupDrawingHandlers() {
     chartEl.addEventListener('mousemove', (e) => {
         if (!modal.chart || !modal.series) return;
         if (draw.clickCount !== 1) return;
-        if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib') return;
+        if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib' && draw.activeTool !== 'rect') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -2192,23 +2423,34 @@ function setupDrawingHandlers() {
 
         if (draw.activeTool === 'fib') {
             // Preview fib levels
-            const levels = fibConfig.load();
-            const fibColors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86', '#e91e63', '#00bcd4', '#8bc34a'];
+            const fibCfg = fibConfig.load();
             const diff = price - draw.startPrice;
-            levels.forEach((lvl, i) => {
+            fibCfg.forEach((item, i) => {
+                const lvl = typeof item === 'number' ? item : item.level;
+                const clr = (typeof item === 'object' && item.color) ? item.color : FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length];
                 const fibPrice = draw.startPrice + diff * lvl;
                 const fibY = modal.series.priceToCoordinate(fibPrice);
                 if (fibY === null) return;
-                ctx.strokeStyle = fibColors[i];
+                ctx.strokeStyle = clr;
                 ctx.setLineDash([3, 3]);
                 ctx.beginPath();
                 ctx.moveTo(0, fibY);
                 ctx.lineTo(canvas.width, fibY);
                 ctx.stroke();
-                ctx.fillStyle = fibColors[i];
+                ctx.fillStyle = clr;
                 ctx.font = '10px Inter, sans-serif';
                 ctx.fillText(`${(lvl * 100).toFixed(1)}%  ${fibPrice.toFixed(getPricePrecision(fibPrice))}`, 5, fibY - 3);
             });
+        } else if (draw.activeTool === 'rect') {
+            // Preview rectangle
+            const w = x - startX2;
+            const h = y - startY2;
+            ctx.strokeStyle = '#5b9cf6';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([5, 3]);
+            ctx.strokeRect(startX2, startY2, w, h);
+            ctx.fillStyle = 'rgba(91, 156, 246, 0.08)';
+            ctx.fillRect(startX2, startY2, w, h);
         } else {
             // Preview trendline
             ctx.beginPath();
@@ -2289,28 +2531,117 @@ function drawTwoPointLine(type, t1, p1, t2, p2, color) {
     persistDrawings();
 }
 
+function drawRectangle(t1, p1, t2, p2, color) {
+    if (!modal.chart || !modal.series) return;
+    const c = color || '#5b9cf6';
+
+    // Sort times so t1 < t2
+    const tMin = Math.min(t1, t2);
+    const tMax = Math.max(t1, t2);
+    const pMin = Math.min(p1, p2);
+    const pMax = Math.max(p1, p2);
+
+    // Top border
+    const topLine = modal.chart.addLineSeries({
+        color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+    });
+    topLine.setData([{ time: tMin, value: pMax }, { time: tMax, value: pMax }]);
+
+    // Bottom border
+    const bottomLine = modal.chart.addLineSeries({
+        color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+    });
+    bottomLine.setData([{ time: tMin, value: pMin }, { time: tMax, value: pMin }]);
+
+    // Left border
+    const leftLine = modal.chart.addLineSeries({
+        color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+    });
+    leftLine.setData([{ time: tMin, value: pMin }, { time: tMin + 1, value: pMax }]);
+
+    // Right border
+    const rightLine = modal.chart.addLineSeries({
+        color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+    });
+    rightLine.setData([{ time: tMax, value: pMin }, { time: tMax + 1, value: pMax }]);
+
+    // Fill area
+    const hexToFill = (hex) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r}, ${g}, ${b}, 0.08)`;
+    };
+    const fillSeries = modal.chart.addAreaSeries({
+        topColor: hexToFill(c),
+        bottomColor: 'transparent',
+        lineColor: 'transparent',
+        lineWidth: 0,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    // Generate fill data points
+    const fillPoints = [];
+    const steps = 20;
+    for (let i = 0; i <= steps; i++) {
+        const t = Math.round(tMin + (tMax - tMin) * i / steps);
+        fillPoints.push({ time: t, value: pMax });
+    }
+    // Deduplicate times
+    const seenTimes = new Set();
+    const uniqueFill = fillPoints.filter(p => {
+        if (seenTimes.has(p.time)) return false;
+        seenTimes.add(p.time);
+        return true;
+    });
+    fillSeries.setData(uniqueFill);
+
+    // Bottom price line for visual boundary
+    const bottomPriceLine = modal.series.createPriceLine({
+        price: pMin, color: 'transparent', lineWidth: 0, lineStyle: 2,
+        axisLabelVisible: false, title: '',
+    });
+
+    draw.drawings.push({
+        id: ++drawIdCounter, type: 'rect', color: c, locked: false,
+        rectLines: [topLine, bottomLine, leftLine, rightLine],
+        fillSeries, bottomPriceLine,
+        data: { t1: tMin, p1: pMin, t2: tMax, p2: pMax }
+    });
+    persistDrawings();
+}
+
 function drawFibonacci(p1, p2, color, customLevels) {
     if (!modal.series) return;
-    const levels = customLevels || fibConfig.load();
-    const fibColors = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86', '#e91e63', '#00bcd4', '#8bc34a'];
+    const rawLevels = customLevels || fibConfig.load();
+    // Normalize to {level, color} format
+    const levels = rawLevels.map((item, i) => {
+        if (typeof item === 'number') return { level: item, color: color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
+        return { level: item.level, color: color || item.color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
+    });
     const diff = p2 - p1;
     const fibLines = [];
 
-    levels.forEach((lvl, i) => {
-        const price = p1 + diff * lvl;
-        const label = `${(lvl * 100).toFixed(1)}%`;
+    levels.forEach((item, i) => {
+        const price = p1 + diff * item.level;
+        const label = `${(item.level * 100).toFixed(1)}%`;
         const priceLine = modal.series.createPriceLine({
             price: price,
-            color: color || fibColors[i % fibColors.length],
+            color: item.color,
             lineWidth: 1.5,
-            lineStyle: 2,
+            lineStyle: 0,
             axisLabelVisible: true,
             title: label,
         });
         fibLines.push(priceLine);
     });
 
-    const savedColor = color || fibColors[3];
+    const savedColor = color || levels[0]?.color || '#4caf50';
     draw.drawings.push({
         id: ++drawIdCounter, type: 'fib', color: savedColor, locked: false,
         fibLines, priceLine: null, data: { p1, p2, levels }
@@ -2483,6 +2814,7 @@ function renderMultiChartSlots(layout) {
         slot.innerHTML = `
             <div class="mch-slot-header">
                 <span class="mch-slot-sym">${sym ? sym.replace('USDT','') + '/USDT' : '—'}</span>
+                ${sym ? `<button class="mch-copy-btn" data-ticker="${sym.toLowerCase()}" title="Copy ${sym.toLowerCase()}"><svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` : ''}
                 <span class="mch-slot-price"></span>
                 <span class="mch-slot-change"></span>
                 <div class="mch-slot-tf">
@@ -2497,9 +2829,21 @@ function renderMultiChartSlots(layout) {
             ${sym ? '<div class="mch-slot-chart" id="mch-chart-' + i + '"></div>' : '<div class="mch-slot-empty">Click a coin in sidebar</div>'}
         `;
 
+        // Copy ticker button
+        const copyBtn = slot.querySelector('.mch-copy-btn');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(copyBtn.dataset.ticker).then(() => {
+                    copyBtn.classList.add('mc-copy-ok');
+                    setTimeout(() => copyBtn.classList.remove('mc-copy-ok'), 800);
+                });
+            });
+        }
+
         // Click slot to make it active
         slot.addEventListener('click', (e) => {
-            if (e.target.closest('.mc-tf-btn')) return; // skip TF clicks
+            if (e.target.closest('.mc-tf-btn') || e.target.closest('.mch-copy-btn')) return;
             setActiveSlot(i);
         });
 
@@ -2570,6 +2914,28 @@ function assignSymbolToSlot(sym, slotIndex) {
     const header = slot.el.querySelector('.mch-slot-sym');
     header.textContent = sym ? sym.replace('USDT','') + '/USDT' : '—';
 
+    // Update or create copy button
+    let copyBtn = slot.el.querySelector('.mch-copy-btn');
+    if (sym) {
+        if (!copyBtn) {
+            copyBtn = document.createElement('button');
+            copyBtn.className = 'mch-copy-btn';
+            copyBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+            header.after(copyBtn);
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(copyBtn.dataset.ticker).then(() => {
+                    copyBtn.classList.add('mc-copy-ok');
+                    setTimeout(() => copyBtn.classList.remove('mc-copy-ok'), 800);
+                });
+            });
+        }
+        copyBtn.dataset.ticker = sym.toLowerCase();
+        copyBtn.title = `Copy ${sym.toLowerCase()}`;
+    } else if (copyBtn) {
+        copyBtn.remove();
+    }
+
     if (pair) {
         const prec = getPricePrecision(pair.lastPrice);
         slot.el.querySelector('.mch-slot-price').textContent = '$' + pair.lastPrice.toFixed(prec);
@@ -2612,14 +2978,15 @@ function createSlotChart(slotIndex) {
 
     slot.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
-        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8', fontSize: 10 },
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45 },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
-        handleScale: { mouseWheel: true, pinch: true },
+        handleScroll: { mouseWheel: false, pressedMouseMove: true },
+        handleScale: { mouseWheel: false, pinch: true },
     });
+    boostWheelZoom(chartEl, slot.chart);
 
     slot.series = slot.chart.addCandlestickSeries({
         upColor: '#22c55e', downColor: '#ef4444',
@@ -2865,16 +3232,17 @@ function applyDrawingsToSlot(slotIndex) {
             });
             slot.drawObjs.push({ priceLine: pl });
         } else if (s.type === 'fib' && s.data) {
-            const levels = s.data.levels || [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-            const fibColors = ['#787b86','#f44336','#ff9800','#4caf50','#2196f3','#9c27b0','#787b86','#e91e63','#00bcd4','#8bc34a'];
+            const rawLevels = s.data.levels || FIB_DEFAULTS_OBJ;
             const diff = s.data.p2 - s.data.p1;
-            levels.forEach((lvl, i) => {
+            rawLevels.forEach((item, i) => {
+                const lvl = typeof item === 'number' ? item : item.level;
+                const clr = (typeof item === 'object' && item.color) ? item.color : (s.color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length]);
                 const price = s.data.p1 + diff * lvl;
                 const pl = slot.series.createPriceLine({
                     price,
-                    color: s.color || fibColors[i % fibColors.length],
+                    color: clr,
                     lineWidth: 1.5,
-                    lineStyle: 2,
+                    lineStyle: 0,
                     axisLabelVisible: true,
                     title: `${(lvl * 100).toFixed(1)}%`,
                 });
@@ -2910,6 +3278,25 @@ function applyDrawingsToSlot(slotIndex) {
                 { time: s.data.t2, value: s.data.p2 },
             ]);
             slot.drawObjs.push({ lineSeries: ls });
+        } else if (s.type === 'rect' && s.data) {
+            const { t1, p1, t2, p2 } = s.data;
+            const clr = s.color || '#5b9cf6';
+            const pMax = Math.max(p1, p2);
+            const pMin = Math.min(p1, p2);
+            // Top border
+            const topLs = slot.chart.addLineSeries({
+                color: clr, lineWidth: 1.5, crosshairMarkerVisible: false,
+                lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+            });
+            topLs.setData([{ time: t1, value: pMax }, { time: t2, value: pMax }]);
+            slot.drawObjs.push({ lineSeries: topLs });
+            // Bottom border
+            const botLs = slot.chart.addLineSeries({
+                color: clr, lineWidth: 1.5, crosshairMarkerVisible: false,
+                lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+            });
+            botLs.setData([{ time: t1, value: pMin }, { time: t2, value: pMin }]);
+            slot.drawObjs.push({ lineSeries: botLs });
         }
     });
 }

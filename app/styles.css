@@ -1231,7 +1231,7 @@ body {
 
 .mc-coin-item {
     display: grid;
-    grid-template-columns: 20px 1fr 54px 38px 42px;
+    grid-template-columns: 20px 1fr 16px 50px 34px 40px;
     align-items: center;
     padding: 6px 8px;
     cursor: pointer;
@@ -1255,7 +1255,52 @@ body {
     color: var(--text-primary);
     font-size: 11px;
     letter-spacing: 0.2px;
-    min-width: 48px;
+    min-width: 40px;
+}
+
+.mc-copy-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 1px 2px;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+
+.mc-coin-item:hover .mc-copy-btn,
+.mc-chart-header:hover .mc-copy-btn {
+    opacity: 0.7;
+}
+
+.mc-copy-btn:hover {
+    opacity: 1 !important;
+    color: var(--neon-blue);
+}
+
+.mc-copy-ok {
+    opacity: 1 !important;
+    color: var(--neon-green) !important;
+}
+
+.mch-copy-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 3px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+
+.mch-copy-btn:hover {
+    opacity: 1;
+    color: var(--neon-blue);
+}
 }
 
 .mc-coin-price {
@@ -1293,7 +1338,7 @@ body {
 /* Column headers */
 .mc-col-headers {
     display: grid;
-    grid-template-columns: 1fr 54px 38px 42px;
+    grid-template-columns: 1fr 50px 34px 40px;
     align-items: center;
     padding: 5px 8px 5px 28px;
     border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -1617,6 +1662,54 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
+}
+
+.fib-level-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.15s, transform 0.1s;
+}
+
+.fib-level-color:hover {
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: scale(1.15);
+}
+
+.fib-color-picker {
+    position: absolute;
+    z-index: 260;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px;
+    background: rgba(10, 14, 22, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
+    width: 112px;
+    animation: mc-flag-pop 0.1s ease-out;
+}
+
+.fib-color-opt {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: border-color 0.1s, transform 0.1s;
+}
+
+.fib-color-opt:hover {
+    border-color: rgba(255, 255, 255, 0.6);
+    transform: scale(1.2);
+}
+
+.fib-color-opt.active {
+    border-color: #fff;
 }
 
 .fib-level-input {

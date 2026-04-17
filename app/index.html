@@ -220,9 +220,9 @@
                         </div>
                         <div class="mc-col-headers" id="mcColHeaders">
                             <span class="mc-col-hdr" data-sort="symbol">Coin</span>
-                            <span class="mc-col-hdr" data-sort="change">Chg%</span>
+                            <span class="mc-col-hdr active asc" data-sort="change">Chg%</span>
                             <span class="mc-col-hdr" data-sort="natr">NATR</span>
-                            <span class="mc-col-hdr active desc" data-sort="volume">Vol</span>
+                            <span class="mc-col-hdr" data-sort="volume">Vol</span>
                         </div>
                         <div class="mc-coin-list" id="mcCoinList">
                             <!-- populated by JS -->
@@ -295,6 +295,7 @@
             <div class="mc-modal-header">
                 <div class="mc-modal-title">
                     <span id="cmSymbol" class="mc-modal-sym"></span>
+                    <button id="cmCopyBtn" class="mch-copy-btn" title="Copy ticker"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
                     <span id="cmPrice" class="mc-modal-price"></span>
                     <span id="cmChange" class="mc-modal-change"></span>
                     <div class="cm-metrics" id="cmStats"></div>
