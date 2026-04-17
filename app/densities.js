@@ -358,7 +358,7 @@ function renderTable(entries) {
         return `
         <tr>
             <td class="sym">
-                <a href="https://www.binance.com/en/futures/${symbol}" target="_blank" title="Binance Futures">${symbol.replace('USDT', '')}</a>
+                <a href="#" onclick="event.preventDefault(); if(typeof openCoinModal==='function') openCoinModal('${symbol}');" style="cursor:pointer;" title="${symbol}">${symbol.replace('USDT', '')}</a>
             </td>
             <td>${sideBlock}</td>
             <td>${severityBadge(entry.severity)}</td>
@@ -495,7 +495,7 @@ function renderCards(entries) {
         <div class="card" data-symbol="${symbol}">
             <div class="card-header">
                 <div>
-                    <a href="https://www.binance.com/en/futures/${symbol}" target="_blank">${symbol.replace('USDT', '')}</a>
+                    <a href="#" onclick="event.preventDefault(); if(typeof openCoinModal==='function') openCoinModal('${symbol}');" style="cursor:pointer;">${symbol.replace('USDT', '')}</a>
                     <span style="color:${sideColor}; font-weight:600; margin-left:6px;">${sideLabel}</span>
                     ${severityBadge(entry.severity)}
                 </div>
