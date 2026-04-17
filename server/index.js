@@ -554,27 +554,23 @@ fastify.get('/densities/simple', async (req) => {
   const xFilter = Number(req.query.xFilter || 0)  // фильтр по x (0 = без фильтра)
   const natrFilter = Number(req.query.natrFilter || 0)  // фильтр по NATR (0 = без фильтра)
   const minScore = Number(req.query.minScore || 0) // фильтр по Score
-  const concurrency = Number(req.query.concurrency || 5)  // ускоренная загрузка (5 вместо 3)
-
-  // Blacklist монет (топовые не торгуем в этой стратегии — исключаем из сканирования)
-  const blacklistedSymbols = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'REPEUSDT', 'AVAXUSDT', 'TRXUSDT', 'NEARUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT', 'LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'AAVEUSDT', 'UNIUSDT', 'COMPUSDT'])
+  const concurrency = Number(req.query.concurrency || 10)  // parallel Binance requests
 
   let symbols
   if (req.query.symbols) {
-    // Если символы переданы явно — не фильтруем через blacklist (пользователь знает, что делает)
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(s => s)
   } else {
     const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
     symbols = (info.symbols || [])
-      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING' && !blacklistedSymbols.has(s.symbol))
+      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
       .map(s => s.symbol)
   }
 
   // DEBUG: log symbols
   // console.log(`DEBUG symbols: ${JSON.stringify(symbols.slice(0, 5))}`)
 
-  // Ограничиваем количество символов (чтобы не сканировать всё)
-  const limitSymbols = Number(req.query.limitSymbols || 30)
+  // Optional limit (0 = no limit, scan all)
+  const limitSymbols = Number(req.query.limitSymbols || 0)
   if (limitSymbols > 0 && symbols.length > limitSymbols) {
     symbols = symbols.slice(0, limitSymbols)
   }
@@ -604,31 +600,25 @@ fastify.get('/densities/simple', async (req) => {
     // Получить K-lines для объёмов и ATR
     const klinesStats = await getKlinesWithStats(sym)
 
-    // 3. Binning & Density Analysis (New Logic)
+    // 3. Binning & Density Analysis v2 (x-multiplier based)
+    const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5;
+
     const processSide = (levels, sideKey) => {
-      // Grouping orders in 0.1% dynamic bins
       const BIN_SIZE_PCT = 0.1;
       const rawBins = binLevels(levels, BIN_SIZE_PCT);
-
-      // Filtering out empty bins and noise
       const validBins = rawBins.filter(b => b.notional >= minNotional);
-
-      // --- ROBOT TRACKING ---
-      // Pass valid bins to stateManager to figure out which ones moved recently
       const trackedBins = stateManager.trackAndEnrichBins(sym, sideKey, validBins, price);
 
       const scoredBins = trackedBins.map(bin => {
-        const behavior = analyzeBehavior(bin, price, klinesStats.natr);
+        const behavior = analyzeBehavior(bin, price, klinesStats.natr, avg5mVol);
 
-        const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5;
-        // Фильтр: плотность должна быть >= 3 * средний 5m объем
-        if (avg5mVol > 0 && bin.notional < (avg5mVol * 3)) {
-            return null; // Игнорируем слишком мелкие плотности
-        }
+        // x-multiplier filter: only walls >= xFilter (default x4)
+        const minX = xFilter > 0 ? xFilter : 4;
+        if (behavior.xMult < minX) return null;
 
         let tte = Infinity;
         if (avg5mVol > 0) {
-            tte = bin.notional / (avg5mVol / 5); // рассчитываем время в минутах
+            tte = bin.notional / (avg5mVol / 5);
         }
 
         return {
@@ -636,12 +626,15 @@ fastify.get('/densities/simple', async (req) => {
           sideKey,
           price: Math.round(bin.anchorPrice * 10000) / 10000,
           notional: bin.notional,
-          distancePct: behavior.distancePct,
+          distancePct: Math.round(behavior.distancePct * 100) / 100,
           lifetimeMins: Math.round(behavior.lifetimeMins * 10) / 10,
-          score: behavior.trustScore, 
+          score: behavior.trustScore,
+          xMult: Math.round(behavior.xMult * 10) / 10,
+          severity: behavior.severity,
           tags: behavior.tags,
           levelsCount: bin.levelsCount,
           natr: klinesStats.natr,
+          avg5mVol: Math.round(avg5mVol),
           vol1: klinesStats.vol1,
           vol2: klinesStats.vol2,
           vol3: klinesStats.vol3,
@@ -651,13 +644,12 @@ fastify.get('/densities/simple', async (req) => {
         };
       }).filter(Boolean);
 
-      // Сортировка по Score (убывание) и дистанции
       scoredBins.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return a.distancePct - b.distancePct;
       });
 
-      // Return Top 2 Zones per coin per side
+      // Top 2 per side (best bid wall + best ask wall)
       return scoredBins.slice(0, 2);
     };
 
@@ -667,22 +659,20 @@ fastify.get('/densities/simple', async (req) => {
     return [...bidResult, ...askResult];
   });
 
-  // Получаем все уровни
-  const allLevels = rowsArr.flat()
+  // All levels flat, sorted by score desc
+  const allLevels = rowsArr.flat().sort((a, b) => b.score - a.score);
 
-  // Дедупликация: Оставляем только ОДНУ самую сильную плотность на монету
-  const maxPerSymbol = {};
+  // Top 3 per symbol (best bid + best ask + next best)
+  const perSymbol = {};
   for (const entry of allLevels) {
-      if (!maxPerSymbol[entry.symbol] || entry.score > maxPerSymbol[entry.symbol].score) {
-          maxPerSymbol[entry.symbol] = entry;
-      } else if (entry.score === maxPerSymbol[entry.symbol].score) {
-          if (entry.notional > maxPerSymbol[entry.symbol].notional) {
-              maxPerSymbol[entry.symbol] = entry;
-          }
-      }
+    if (!perSymbol[entry.symbol]) perSymbol[entry.symbol] = [];
+    if (perSymbol[entry.symbol].length < 3) {
+      perSymbol[entry.symbol].push(entry);
+    }
   }
 
-  let finalData = Object.values(maxPerSymbol);
+  let finalData = Object.values(perSymbol).flat();
+  finalData.sort((a, b) => b.score - a.score);
 
   // Фильтрация по NATR (если natrFilter > 0, показываем только уровни с natr >= natrFilter%)
   if (natrFilter > 0) {
