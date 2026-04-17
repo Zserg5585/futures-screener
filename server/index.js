@@ -600,20 +600,17 @@ fastify.get('/densities/simple', async (req) => {
   if (isSpecificSymbols) {
     symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(s => s)
   } else {
-    // Full scan — check density cache first
-    if (densityCache.data && (Date.now() - densityCache.ts) < DENSITY_CACHE_TTL) {
-      // Apply filters on cached raw data
+    // Full scan — always return from cache (warmup populates it)
+    if (densityCache.data) {
       let finalData = [...densityCache.data]
       if (xFilter > 0) finalData = finalData.filter(d => d.xMult >= xFilter)
       if (natrFilter > 0) finalData = finalData.filter(d => d.natr !== null && d.natr >= natrFilter)
       if (minScore > 0) finalData = finalData.filter(d => d.score >= minScore)
-      return { ...densityCache.meta, xFilter, natrFilter, data: finalData, cached: true }
+      const ageSec = ((Date.now() - densityCache.ts) / 1000).toFixed(0)
+      return { ...densityCache.meta, xFilter, natrFilter, data: finalData, cached: true, cacheAgeSec: Number(ageSec) }
     }
-
-    const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
-    symbols = (info.symbols || [])
-      .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
-      .map(s => s.symbol)
+    // No cache at all — return empty (warmup will fill it)
+    return { count: 0, data: [], cached: false, message: 'Warming up, try again in 30s' }
   }
 
   // Optional limit (0 = no limit, scan all)
@@ -922,45 +919,110 @@ const start = async () => {
   }
 }
 
-// Gradually subscribe symbols to depth WS (10 per batch, 15s between batches)
+// Gradually subscribe symbols to depth WS and build density cache
 async function warmupDensitySubscriptions() {
   try {
     const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
-    const symbols = (info.symbols || [])
+    const allSymbols = (info.symbols || [])
       .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
       .map(s => s.symbol)
 
-    console.log(`[warmup] Starting: ${symbols.length} symbols, 10/batch, 15s interval`)
+    const BATCH = 10
+    const BATCH_PAUSE = 20000 // 20s between batches
+    const ITEM_DELAY = 300   // 300ms between items
+    console.log(`[warmup] ${allSymbols.length} symbols, ${BATCH}/batch, ${BATCH_PAUSE/1000}s pause`)
     let subscribed = 0
 
-    for (let i = 0; i < symbols.length; i += 10) {
-      const batch = symbols.slice(i, i + 10)
+    for (let i = 0; i < allSymbols.length; i += BATCH) {
+      const batch = allSymbols.slice(i, i + BATCH)
       for (const sym of batch) {
-        if (wsManager.callbacks.has(sym)) continue
+        if (wsManager.callbacks.has(sym)) { subscribed++; continue }
         try {
           const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
           stateManager.initBook(sym, ob.bids, ob.asks)
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
         } catch (err) {
-          // Rate limited — wait longer and retry this batch
-          console.log(`[warmup] Rate limited at ${subscribed}/${symbols.length}, pausing 60s...`)
+          console.log(`[warmup] Error ${sym}: ${err.message.slice(0, 60)}, pausing 60s...`)
           await new Promise(r => setTimeout(r, 60000))
-          i -= 10 // retry this batch
+          i -= BATCH // retry this batch
           break
         }
-        // Small delay between items in batch (200ms)
-        await new Promise(r => setTimeout(r, 200))
+        await new Promise(r => setTimeout(r, ITEM_DELAY))
       }
-      // 15s pause between batches (~10 depth + 20 klines = 30 req/15s = 120/min safe)
-      if (i + 10 < symbols.length) {
-        await new Promise(r => setTimeout(r, 15000))
+
+      // After every 5 batches (50 symbols), rebuild density cache
+      const batchNum = Math.floor(i / BATCH) + 1
+      if (batchNum % 5 === 0 || i + BATCH >= allSymbols.length) {
+        try { await rebuildDensityCache(allSymbols) } catch (_) {}
+        console.log(`[warmup] ${subscribed}/${allSymbols.length} subscribed, cache: ${densityCache.data ? densityCache.data.length : 0} walls`)
+      }
+
+      if (i + BATCH < allSymbols.length) {
+        await new Promise(r => setTimeout(r, BATCH_PAUSE))
       }
     }
-    console.log(`[warmup] Done: ${subscribed} symbols subscribed`)
+    console.log(`[warmup] Done: ${subscribed} symbols`)
   } catch (err) {
     console.log(`[warmup] Failed: ${err.message.slice(0, 100)}`)
   }
+}
+
+// Rebuild density cache from currently subscribed symbols (no Binance depth calls)
+async function rebuildDensityCache(allSymbols) {
+  const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
+  const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
+
+  const subscribedSyms = allSymbols.filter(s => wsManager.callbacks.has(s))
+  const allWalls = []
+
+  for (const sym of subscribedSyms) {
+    const price = markMap.get(sym)
+    if (!price) continue
+
+    const bidLevelsRaw = stateManager.getTopLevels(sym, 'bid', price, 0, 100, 5.0)
+    const askLevelsRaw = stateManager.getTopLevels(sym, 'ask', price, 0, 100, 5.0)
+
+    let klinesStats
+    try { klinesStats = await getKlinesWithStats(sym) } catch (_) { continue }
+    const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5
+
+    const processSide = (levels, sideKey) => {
+      const BIN_SIZE_PCT = 0.1
+      const rawBins = binLevels(levels, BIN_SIZE_PCT)
+      const validBins = rawBins.filter(b => b.notional >= 0)
+      const trackedBins = stateManager.trackAndEnrichBins(sym, sideKey, validBins, price)
+      return trackedBins.map(bin => {
+        const behavior = analyzeBehavior(bin, price, klinesStats.natr, avg5mVol)
+        if (behavior.xMult < 4) return null
+        let tte = avg5mVol > 0 ? bin.notional / (avg5mVol / 5) : Infinity
+        return {
+          symbol: sym, sideKey, price: Math.round(bin.anchorPrice * 10000) / 10000,
+          notional: bin.notional, distancePct: Math.round(behavior.distancePct * 100) / 100,
+          lifetimeMins: Math.round(behavior.lifetimeMins * 10) / 10,
+          score: behavior.trustScore, xMult: Math.round(behavior.xMult * 10) / 10,
+          severity: behavior.severity, tags: behavior.tags, levelsCount: bin.levelsCount,
+          natr: klinesStats.natr, avg5mVol: Math.round(avg5mVol),
+          vol1: klinesStats.vol1, vol2: klinesStats.vol2, vol3: klinesStats.vol3,
+          vol4: klinesStats.vol4, vol5: klinesStats.vol5, timeToEatMinutes: tte
+        }
+      }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 2)
+    }
+
+    allWalls.push(...processSide(bidLevelsRaw, 'bid'), ...processSide(askLevelsRaw, 'ask'))
+  }
+
+  allWalls.sort((a, b) => b.score - a.score)
+  // Top 3 per symbol
+  const perSym = {}
+  for (const w of allWalls) {
+    if (!perSym[w.symbol]) perSym[w.symbol] = []
+    if (perSym[w.symbol].length < 3) perSym[w.symbol].push(w)
+  }
+  const finalData = Object.values(perSym).flat().sort((a, b) => b.score - a.score)
+  const meta = { count: finalData.length, minNotional: 0, depthLimit: 100, concurrency: 0, mmMode: false, windowPct: 5, mmMultiplier: 4 }
+  densityCache = { data: finalData, meta, ts: Date.now() }
+  saveDensityToDisk(finalData, meta)
 }
 
 start()
