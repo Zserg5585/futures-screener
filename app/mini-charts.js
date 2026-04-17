@@ -116,17 +116,19 @@ async function initMiniCharts() {
         // Init layout picker (multi-chart)
         initLayoutPicker();
 
-        // Setup IntersectionObserver
+        // Setup IntersectionObserver with debounced batch loading
+        mc._queueFlushTimer = null;
         mc.observer = new IntersectionObserver((entries) => {
+            let added = 0;
             entries.forEach(entry => {
                 const sym = entry.target.dataset.symbol;
                 if (!sym) return;
                 if (entry.isIntersecting) {
-                    // Card scrolled into view — create chart & load data
+                    // Card scrolled into view — create chart & queue for batch load
                     if (!mc.charts[sym]) {
                         createChartInstance(sym);
                         mc.loadQueue.push(sym);
-                        processLoadQueue();
+                        added++;
                     }
                 } else {
                     // Card scrolled out — destroy chart & unsubscribe WS
@@ -143,6 +145,11 @@ async function initMiniCharts() {
                     }
                 }
             });
+            // Debounce: wait 50ms for all visible cards to register, then flush as one big batch
+            if (added > 0) {
+                clearTimeout(mc._queueFlushTimer);
+                mc._queueFlushTimer = setTimeout(() => processLoadQueue(), 50);
+            }
         }, {
             root: null,
             rootMargin: '200px', // preload 200px before visible
@@ -480,9 +487,9 @@ async function processLoadQueue() {
     mc.loadingActive = true;
 
     while (mc.loadQueue.length > 0) {
-        // Grab up to 8 symbols from queue (smaller batches to not hog Binance rate limit)
+        // Grab up to 20 symbols from queue (all visible cards at once)
         const batch = [];
-        while (mc.loadQueue.length > 0 && batch.length < 8) {
+        while (mc.loadQueue.length > 0 && batch.length < 20) {
             const sym = mc.loadQueue.shift();
             if (!mc.charts[sym]) continue; // already scrolled away
             if (mc.loadedData[sym]) continue; // already loaded
@@ -498,7 +505,8 @@ async function processLoadQueue() {
             });
             const allData = await res.json();
 
-            // Apply data to all charts simultaneously
+            // Apply data to all charts simultaneously (no awaits — pure DOM ops)
+            const loadedSyms = [];
             for (const sym of batch) {
                 if (!mc.charts[sym]) continue;
                 if (allData[sym] && Array.isArray(allData[sym])) {
@@ -506,20 +514,23 @@ async function processLoadQueue() {
                     if (parsed.length > 0) {
                         mc.charts[sym].series.setData(parsed);
                         mc.charts[sym].volSeries?.setData(extractVolume(parsed));
-                        // Show last ~100 candles visible, rest available by scrolling
                         const visibleCount = Math.min(100, parsed.length);
                         mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
                             from: parsed.length - visibleCount,
                             to: parsed.length - 1 + 10
                         });
                         mc.loadedData[sym] = true;
-                        // Calculate and display NATR from candle data
                         const realNatr = calcNATR(parsed);
                         if (realNatr > 0) updateCardNATR(sym, realNatr);
                         applyDrawingsToMiniChart(sym);
                         wsSubscribe(sym);
+                        loadedSyms.push(sym);
                     }
                 }
+            }
+            // Batch density load for all loaded symbols (one request instead of N)
+            if (loadedSyms.length > 0) {
+                applyDensityToBatch(loadedSyms);
             }
         } catch(e) {
             // Fallback: load individually
@@ -2718,6 +2729,46 @@ async function applyDensityToSlot(slotIndex) {
 }
 
 // Apply density walls to mini-chart card (grid view)
+// Batch density load — one request for all visible symbols
+async function applyDensityToBatch(symbols) {
+    try {
+        const res = await fetch(`/densities/simple?symbols=${symbols.join(',')}&xFilter=4`);
+        const json = await res.json();
+        const walls = json.data || [];
+        if (walls.length === 0) return;
+
+        // Group walls by symbol
+        const bySymbol = {};
+        walls.forEach(w => {
+            if (!bySymbol[w.symbol]) bySymbol[w.symbol] = [];
+            bySymbol[w.symbol].push(w);
+        });
+
+        // Apply to each chart
+        for (const sym of symbols) {
+            const chartObj = mc.charts[sym];
+            if (!chartObj || !chartObj.series) continue;
+
+            // Clear old
+            if (chartObj.densityLines) {
+                chartObj.densityLines.forEach(pl => { try { chartObj.series.removePriceLine(pl); } catch(e) {} });
+            }
+            chartObj.densityLines = [];
+
+            const symWalls = bySymbol[sym] || [];
+            symWalls.forEach(w => {
+                const color = w.sideKey === 'bid' ? '#22c55e' : '#ef4444';
+                const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
+                const priceLine = chartObj.series.createPriceLine({
+                    price: w.price, color, lineWidth: 1, lineStyle: 2,
+                    axisLabelVisible: false, title: `$${notionalStr} x${w.xMult}`,
+                });
+                chartObj.densityLines.push(priceLine);
+            });
+        }
+    } catch(e) { /* ignore */ }
+}
+
 async function applyDensityToMiniChart(sym) {
     const chartObj = mc.charts[sym];
     if (!chartObj || !chartObj.series) return;
