@@ -60,8 +60,11 @@ function stop() {
 
 async function scan() {
   try {
-    const ticker = _getProxyCached('ticker24hr', 60_000)
-    if (!Array.isArray(ticker) || ticker.length === 0) return
+    let ticker = _getProxyCached('ticker24hr', 60_000)
+    if (!Array.isArray(ticker) || ticker.length === 0) {
+      try { ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr') } catch { return }
+      if (!Array.isArray(ticker)) return
+    }
 
     const usdtPairs = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
@@ -141,8 +144,12 @@ async function scan() {
 
 async function scanOiCvd() {
   try {
-    const ticker = _getProxyCached('ticker24hr', 60_000)
-    if (!Array.isArray(ticker) || ticker.length === 0) return
+    let ticker = _getProxyCached('ticker24hr', 60_000)
+    if (!Array.isArray(ticker) || ticker.length === 0) {
+      // Ticker not cached yet — fetch it ourselves
+      try { ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr') } catch { return }
+      if (!Array.isArray(ticker)) return
+    }
 
     const top = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
@@ -225,7 +232,9 @@ async function scanOiCvd() {
         })
         signalCount++
 
-      } catch (e) { /* skip */ }
+      } catch (e) {
+        if (signalCount === 0 && top.indexOf(t) < 3) console.log(`[Signals] OI+CVD ${symbol} error: ${e.message}`)
+      }
 
       await new Promise(r => setTimeout(r, OI_CVD_DELAY_MS))
     }
