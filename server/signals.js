@@ -1,7 +1,7 @@
 /**
  * Signals Scanner — detects trading signals from market data
- * Types: volume_spike, big_mover, natr_spike, oi_cvd
- * Fast scan (60s): ticker-based signals
+ * Types: volume_spike (5m klines SMA20-based), oi_cvd
+ * Volume scan (60s): fetches 5m klines for liquid symbols, compares current candle vs SMA(20)
  * OI+CVD scan (5min): uses Binance openInterestHist 1h period + taker ratio
  * Outcome tracker: snapshots at 5m/15m/1h/4h/1d + MFE/MAE tracking
  */
@@ -10,11 +10,11 @@ const SCAN_INTERVAL_MS = 60_000
 const OI_CVD_INTERVAL_MS = 5 * 60_000
 const OUTCOME_CHECK_MS = 30_000
 
-// Thresholds
-const VOL_SPIKE_X = 3.0
-const BIG_MOVE_PCT = 5.0
-const NATR_SPIKE_PCT = 5.0
-const MIN_VOLUME_USD = 20_000_000
+// Volume spike: current 5m candle vs SMA(20) of 5m candles
+const VOL_SMA_PERIOD = 20
+const VOL_MIN_RATIO = 2.0            // server emits from 2x, frontend filters by user setting
+const MIN_VOLUME_24H_USD = 30_000_000 // only scan symbols with 24h vol >= $30M
+const MIN_AVG_5M_VOL = 100_000       // skip if avg 5m vol < $100K (too illiquid)
 const OI_CHANGE_PCT = 3.0      // OI 1h change >3% → signal
 const OI_CVD_TOP_N = 50
 const OI_CVD_DELAY_MS = 200
@@ -24,8 +24,6 @@ const MAX_LIVE = 200
 
 const cooldowns = new Map()
 const COOLDOWN_MS = 15 * 60_000
-
-let prevSnapshot = new Map()
 
 // MFE/MAE in-memory tracker: signalId → { entryPrice, direction, mfe, mae }
 const mfeTracker = new Map()
@@ -56,7 +54,10 @@ function stop() {
   if (_outcomeTimer) clearInterval(_outcomeTimer)
 }
 
-// ======================== FAST SCANNER (60s) ========================
+// ======================== VOLUME SPIKE SCANNER (60s) ========================
+// Fetches 5m klines for liquid symbols, compares latest candle volume vs SMA(20)
+
+const VOL_SCAN_DELAY_MS = 150 // delay between klines requests
 
 async function scan() {
   try {
@@ -66,77 +67,79 @@ async function scan() {
       if (!Array.isArray(ticker)) return
     }
 
-    const usdtPairs = ticker
+    const liquid = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
-      .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_USD)
-
-    const volumes = usdtPairs.map(t => parseFloat(t.quoteVolume)).sort((a, b) => a - b)
-    const medianVol = volumes[Math.floor(volumes.length / 2)] || 1
+      .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_24H_USD)
+      .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
 
     const now = Date.now()
-    const newSnapshot = new Map()
+    let signalCount = 0
 
-    for (const t of usdtPairs) {
+    for (const t of liquid) {
       const symbol = t.symbol
       const price = parseFloat(t.lastPrice)
       const change = parseFloat(t.priceChangePercent)
-      const vol = parseFloat(t.quoteVolume)
-      const high = parseFloat(t.highPrice)
-      const low = parseFloat(t.lowPrice)
-      const closeTime = parseInt(t.closeTime) || now
+      if (!price) continue
 
-      newSnapshot.set(symbol, { vol, price, change })
-      const signalTime = new Date(closeTime).toISOString()
+      try {
+        // Fetch 21 x 5m klines: 20 for SMA + 1 current
+        const klines = await _bgetWithRetry(
+          `/fapi/v1/klines?symbol=${symbol}&interval=5m&limit=${VOL_SMA_PERIOD + 1}`
+        )
+        if (!Array.isArray(klines) || klines.length < VOL_SMA_PERIOD + 1) continue
 
-      // --- Volume Spike ---
-      if (vol > medianVol * VOL_SPIKE_X) {
-        const volX = parseFloat((vol / medianVol).toFixed(1))
-        const prev = prevSnapshot.get(symbol)
-        const volDelta = prev ? ((vol - prev.vol) / prev.vol * 100) : 0
+        // Parse quote volumes (index 7 = quoteAssetVolume in USDT)
+        const vols = klines.map(k => parseFloat(k[7]))
+        const currentVol = vols[vols.length - 1]
+        const smaVols = vols.slice(0, VOL_SMA_PERIOD)
+        const sma = smaVols.reduce((s, v) => s + v, 0) / VOL_SMA_PERIOD
 
-        emitSignal({
-          type: 'volume_spike',
-          symbol, price, signalTime,
-          direction: change > 0 ? 'LONG' : 'SHORT',
-          confidence: Math.min(95, 50 + volX * 5),
-          description: `Volume ${volX}x median ($${fmtVol(vol)})${volDelta > 10 ? ` ↑${volDelta.toFixed(0)}%` : ''}`,
-          metadata: { volX, volume: vol, change, volDelta: parseFloat(volDelta.toFixed(1)) }
-        })
+        if (sma <= 0 || sma < MIN_AVG_5M_VOL) continue
+        const ratio = currentVol / sma
+
+        if (ratio >= VOL_MIN_RATIO) {
+          // Direction from 5m price change (current candle)
+          const lastCandle = klines[klines.length - 1]
+          const candleOpen = parseFloat(lastCandle[1])
+          const candleClose = parseFloat(lastCandle[4])
+          const candleChange = ((candleClose - candleOpen) / candleOpen) * 100
+          const direction = candleChange >= 0 ? 'LONG' : 'SHORT'
+
+          // Confidence: 2x=55, 3x=65, 5x=75, 10x=90, 20x+=95
+          const conf = Math.min(95, 50 + Math.log2(ratio) * 10)
+
+          emitSignal({
+            type: 'volume_spike',
+            symbol, price,
+            signalTime: new Date(now).toISOString(),
+            direction,
+            confidence: Math.round(conf),
+            description: `Volume ${ratio.toFixed(1)}x avg ($${fmtVol(currentVol)} vs avg $${fmtVol(sma)})`,
+            metadata: {
+              ratio: parseFloat(ratio.toFixed(1)),
+              currentVol: Math.round(currentVol),
+              avgVol: Math.round(sma),
+              candleChange: parseFloat(candleChange.toFixed(2)),
+              change24h: parseFloat(change),
+            }
+          })
+          signalCount++
+        }
+      } catch (e) {
+        // skip symbol on error
       }
 
-      // --- Big Mover ---
-      if (Math.abs(change) >= BIG_MOVE_PCT) {
-        emitSignal({
-          type: 'big_mover',
-          symbol, price, signalTime,
-          direction: change > 0 ? 'LONG' : 'SHORT',
-          confidence: Math.min(95, 50 + Math.abs(change) * 3),
-          description: `${change > 0 ? '🚀' : '💥'} ${change > 0 ? '+' : ''}${change.toFixed(1)}% in 24h`,
-          metadata: { change, high, low, range: parseFloat(((high - low) / low * 100).toFixed(2)) }
-        })
-      }
-
-      // --- NATR Spike ---
-      const natr = price > 0 ? ((high - low) / price) * 100 : 0
-      if (natr >= NATR_SPIKE_PCT) {
-        emitSignal({
-          type: 'natr_spike',
-          symbol, price, signalTime,
-          direction: change > 0 ? 'LONG' : 'SHORT',
-          confidence: Math.min(90, 50 + natr * 5),
-          description: `NATR ${natr.toFixed(1)}% — high volatility`,
-          metadata: { natr: parseFloat(natr.toFixed(2)), high, low, change }
-        })
-      }
+      await new Promise(r => setTimeout(r, VOL_SCAN_DELAY_MS))
     }
 
-    prevSnapshot = newSnapshot
-
+    // Cleanup old cooldowns
     for (const [key, ts] of cooldowns.entries()) {
       if (now - ts > COOLDOWN_MS) cooldowns.delete(key)
     }
+
+    console.log(`[Signals] Volume scan: ${liquid.length} symbols, ${signalCount} spikes (>=${VOL_MIN_RATIO}x)`)
   } catch (err) {
-    console.error('[Signals] Scan error:', err.message)
+    console.error('[Signals] Volume scan error:', err.message)
   }
 }
 
@@ -153,7 +156,7 @@ async function scanOiCvd() {
 
     const top = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
-      .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_USD)
+      .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_24H_USD)
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
       .slice(0, OI_CVD_TOP_N)
 
@@ -386,8 +389,6 @@ function getLiveSignals(filters = {}) {
 function getSignalTypes() {
   return [
     { id: 'volume_spike', label: 'Volume Spike', icon: '📊', color: '#3b82f6' },
-    { id: 'big_mover', label: 'Big Mover', icon: '🚀', color: '#f59e0b' },
-    { id: 'natr_spike', label: 'NATR Spike', icon: '⚡', color: '#ef4444' },
     { id: 'oi_cvd', label: 'OI + CVD', icon: '🔮', color: '#8b5cf6' },
   ]
 }

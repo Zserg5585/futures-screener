@@ -13,6 +13,7 @@ const sigState = {
   typeFilter: '',
   dirFilter: '',
   search: '',
+  minRatio: 3,  // user-configurable: show volume spikes >= Nx
   refreshTimer: null,
   active: false,
 }
@@ -27,10 +28,21 @@ function initSignals() {
   const typeF = sigEl('sigTypeFilter')
   const dirF = sigEl('sigDirFilter')
   const searchF = sigEl('sigSearch')
+  const settingsBtn = sigEl('sigSettingsBtn')
 
   if (typeF) typeF.onchange = () => { sigState.typeFilter = typeF.value; loadSignals() }
   if (dirF) dirF.onchange = () => { sigState.dirFilter = dirF.value; loadSignals() }
   if (searchF) searchF.oninput = () => { sigState.search = searchF.value; renderSignals() }
+  if (settingsBtn) settingsBtn.onclick = () => toggleSignalSettings()
+
+  // Load saved settings from localStorage
+  const saved = localStorage.getItem('sig_settings')
+  if (saved) {
+    try {
+      const s = JSON.parse(saved)
+      if (s.minRatio) sigState.minRatio = s.minRatio
+    } catch {}
+  }
 
   loadSignals()
   sigState.refreshTimer = setInterval(loadSignals, SIG_REFRESH_MS)
@@ -100,7 +112,7 @@ function renderOutcomeStats() {
     const wrColor = wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444'
     const avgPnl = s.avg_pnl != null ? (s.avg_pnl > 0 ? '+' : '') + s.avg_pnl.toFixed(2) + '%' : '—'
     const pnlColor = s.avg_pnl > 0 ? '#22c55e' : '#ef4444'
-    const icon = { volume_spike: '📊', big_mover: '🚀', natr_spike: '⚡' }[s.type] || '•'
+    const icon = { volume_spike: '📊', oi_cvd: '🔮' }[s.type] || '•'
 
     return `<div class="sig-outcome-card">
       <div class="sig-outcome-type">${icon} ${formatTypeShort(s.type)}</div>
@@ -123,6 +135,15 @@ function renderSignals() {
   if (!tbody) return
 
   let list = [...sigState.signals]
+
+  // Filter volume spikes by min ratio
+  if (sigState.minRatio > 0) {
+    list = list.filter(s => {
+      if (s.type !== 'volume_spike') return true
+      const ratio = s.metadata?.ratio || 0
+      return ratio >= sigState.minRatio
+    })
+  }
 
   if (sigState.search) {
     const q = sigState.search.toUpperCase()
@@ -174,14 +195,12 @@ function selectSignal(id) {
   const confColor = s.confidence >= 80 ? '#22c55e' : s.confidence >= 60 ? '#f59e0b' : '#ef4444'
 
   const metaItems = []
-  if (meta.change !== undefined) metaItems.push({ key: 'Change 24h', val: `${meta.change > 0 ? '+' : ''}${Number(meta.change).toFixed(2)}%`, color: meta.change > 0 ? '#22c55e' : '#ef4444' })
-  if (meta.volume !== undefined) metaItems.push({ key: 'Volume', val: fmtVol(meta.volume) })
-  if (meta.volX !== undefined) metaItems.push({ key: 'Vol / Median', val: `${meta.volX}x` })
-  if (meta.volDelta !== undefined && meta.volDelta > 0) metaItems.push({ key: 'Vol Δ', val: `+${meta.volDelta}%`, color: '#3b82f6' })
-  if (meta.natr !== undefined) metaItems.push({ key: 'NATR', val: `${meta.natr}%` })
-  if (meta.range !== undefined) metaItems.push({ key: 'Range', val: `${meta.range}%` })
-  if (meta.high !== undefined) metaItems.push({ key: 'High', val: formatPrice(meta.high) })
-  if (meta.low !== undefined) metaItems.push({ key: 'Low', val: formatPrice(meta.low) })
+  // Volume spike metadata
+  if (meta.ratio !== undefined) metaItems.push({ key: 'Volume Ratio', val: `${meta.ratio}x avg`, color: meta.ratio >= 5 ? '#22c55e' : '#3b82f6' })
+  if (meta.currentVol !== undefined) metaItems.push({ key: 'Current Vol (5m)', val: fmtVol(meta.currentVol) })
+  if (meta.avgVol !== undefined) metaItems.push({ key: 'Avg Vol (SMA20)', val: fmtVol(meta.avgVol) })
+  if (meta.candleChange !== undefined) metaItems.push({ key: 'Candle Chg', val: `${meta.candleChange > 0 ? '+' : ''}${meta.candleChange}%`, color: meta.candleChange > 0 ? '#22c55e' : '#ef4444' })
+  if (meta.change24h !== undefined) metaItems.push({ key: 'Change 24h', val: `${meta.change24h > 0 ? '+' : ''}${Number(meta.change24h).toFixed(2)}%`, color: meta.change24h > 0 ? '#22c55e' : '#ef4444' })
   if (meta.oiChangePct !== undefined) metaItems.push({ key: 'OI Change', val: `${meta.oiChangePct > 0 ? '+' : ''}${meta.oiChangePct}%`, color: meta.oiChangePct > 0 ? '#3b82f6' : '#ef4444' })
   if (meta.oiValue !== undefined) metaItems.push({ key: 'OI Value', val: fmtVol(meta.oiValue) })
   if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
@@ -235,36 +254,85 @@ function selectSignal(id) {
   `
 }
 
-// ---- Open Chart ----
-function openSignalChart(symbol) {
-  if (typeof openCoinModal === 'function') {
-    const tabs = document.querySelectorAll('.tab')
-    tabs.forEach(t => t.classList.remove('active'))
-    const mcTab = document.querySelector('.tab[data-tab="mini-charts"]')
-    if (mcTab) {
-      mcTab.classList.add('active')
-      document.querySelectorAll('.tab-content').forEach(tc => tc.style.display = 'none')
-      const mcContent = document.getElementById('tab-mini-charts')
-      if (mcContent) mcContent.style.display = 'block'
-      if (typeof initMiniCharts === 'function') initMiniCharts()
-    }
-    setTimeout(() => openCoinModal(symbol), 200)
+// ---- Settings Panel ----
+function toggleSignalSettings() {
+  let panel = sigEl('sigSettingsPanel')
+  if (panel) { panel.remove(); return }
+
+  const btn = sigEl('sigSettingsBtn')
+  panel = document.createElement('div')
+  panel.id = 'sigSettingsPanel'
+  panel.className = 'sig-settings-panel'
+  panel.innerHTML = `
+    <div class="sig-settings-title">Signal Settings</div>
+    <div class="sig-settings-row">
+      <label>Min Volume Ratio</label>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <input type="range" id="sigRatioSlider" min="2" max="20" step="1" value="${sigState.minRatio}"
+               style="flex:1; accent-color:#3b82f6;" />
+        <span id="sigRatioLabel" style="font-weight:600; color:#3b82f6; min-width:32px;">${sigState.minRatio}x</span>
+      </div>
+      <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">
+        Current 5m candle volume vs average of last 20 candles
+      </div>
+    </div>
+  `
+  btn.parentElement.appendChild(panel)
+
+  const slider = sigEl('sigRatioSlider')
+  const label = sigEl('sigRatioLabel')
+  slider.oninput = () => {
+    const v = parseInt(slider.value)
+    label.textContent = v + 'x'
+    sigState.minRatio = v
+    localStorage.setItem('sig_settings', JSON.stringify({ minRatio: v }))
+    renderSignals()
   }
+
+  // Close on click outside
+  setTimeout(() => {
+    const closeHandler = (e) => {
+      if (!panel.contains(e.target) && e.target !== btn) {
+        panel.remove()
+        document.removeEventListener('click', closeHandler)
+      }
+    }
+    document.addEventListener('click', closeHandler)
+  }, 10)
+}
+
+// ---- Open Chart (modal overlay, stays on Signals tab) ----
+// Store pending signal marker for modal chart
+window._pendingSignalMarker = null
+
+function openSignalChart(symbol) {
+  if (typeof openCoinModal !== 'function') return
+
+  // Find signal data for marker
+  const sig = sigState.selected
+  if (sig && sig.symbol === symbol) {
+    window._pendingSignalMarker = {
+      time: Math.floor(new Date(sig.created_at).getTime() / 1000),
+      price: sig.price,
+      direction: sig.direction,
+      type: sig.type,
+      description: sig.description,
+    }
+  }
+  openCoinModal(symbol)
 }
 
 // ---- Formatters ----
 function formatType(type) {
   const map = {
     volume_spike: '📊 Vol Spike',
-    big_mover: '🚀 Big Mover',
-    natr_spike: '⚡ NATR Spike',
     oi_cvd: '🔮 OI+CVD',
   }
   return map[type] || type
 }
 
 function formatTypeShort(type) {
-  const map = { volume_spike: 'Vol Spike', big_mover: 'Big Mover', natr_spike: 'NATR Spike', oi_cvd: 'OI+CVD' }
+  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD' }
   return map[type] || type
 }
 

@@ -574,9 +574,12 @@ async function processLoadQueue() {
     mc.loadingActive = false;
 }
 
+// Timezone offset in seconds (user's local vs UTC)
+const TZ_OFFSET_SEC = -(new Date().getTimezoneOffset()) * 60;
+
 function parseKlines(json) {
     return json.map(k => ({
-        time: k[0] / 1000,
+        time: k[0] / 1000 + TZ_OFFSET_SEC,
         open: parseFloat(k[1]),
         high: parseFloat(k[2]),
         low: parseFloat(k[3]),
@@ -1239,6 +1242,40 @@ async function loadModalChart(sym, tf) {
 
         // Restore saved drawings for this symbol
         restoreDrawings();
+
+        // Signal marker (from Signals tab "Open Chart")
+        if (window._pendingSignalMarker && modal.series) {
+          const m = window._pendingSignalMarker;
+          window._pendingSignalMarker = null;
+          // Find nearest candle (apply same TZ offset as klines)
+          const target = m.time + TZ_OFFSET_SEC;
+          let best = data1[data1.length - 1];
+          let bestDiff = Infinity;
+          for (const c of data1) {
+            const diff = Math.abs(c.time - target);
+            if (diff < bestDiff) { bestDiff = diff; best = c; }
+          }
+          const isLong = m.direction === 'LONG';
+          modal.series.setMarkers([{
+            time: best.time,
+            position: isLong ? 'belowBar' : 'aboveBar',
+            color: isLong ? '#22c55e' : '#ef4444',
+            shape: isLong ? 'arrowUp' : 'arrowDown',
+            text: `${m.type === 'oi_cvd' ? '🔮 OI+CVD' : m.type === 'volume_spike' ? '📊 Vol' : m.type === 'big_mover' ? '🚀 Mover' : '⚡ NATR'} ${m.direction}`,
+          }]);
+          // Price line at signal price
+          if (m.price) {
+            const sigLine = modal.series.createPriceLine({
+              price: m.price,
+              color: isLong ? '#22c55e' : '#ef4444',
+              lineWidth: 1,
+              lineStyle: 2, // dashed
+              axisLabelVisible: true,
+              title: `Signal ${m.direction}`,
+            });
+            modal._signalLine = sigLine;
+          }
+        }
 
         // Apply density walls to modal
         applyDensityToModal();
@@ -2633,6 +2670,13 @@ function drawFibonacci(p1, p2, color, customLevels) {
 function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
+    // Clear signal markers
+    if (modal.series) modal.series.setMarkers([]);
+    if (modal._signalLine && modal.series) {
+      try { modal.series.removePriceLine(modal._signalLine); } catch {}
+      modal._signalLine = null;
+    }
+    window._pendingSignalMarker = null;
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
         if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
