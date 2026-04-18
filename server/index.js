@@ -579,6 +579,11 @@ fastify.get('/api/signals/summary', async () => {
   return { success: true, ...signals.getSignalSummary() }
 })
 
+// Outcome stats (WIN/LOSS by type)
+fastify.get('/api/signals/outcomes', async () => {
+  return { success: true, stats: signals.getOutcomeStats() }
+})
+
 // Signal history (from DB, with pagination)
 fastify.get('/api/signals/history', async (req) => {
   const limit = Math.min(Number(req.query.limit || 50), 200)
@@ -938,7 +943,7 @@ const start = async () => {
     await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
     // Init signals scanner (after server up so proxyCache is available)
-    signals.init({ getProxyCached, bgetWithRetry, auth, stateManager })
+    signals.init({ getProxyCached, bgetWithRetry, auth })
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {

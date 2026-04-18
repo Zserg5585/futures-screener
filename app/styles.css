@@ -2540,6 +2540,7 @@ body {
 .sig-type-badge.volume_spike { background: rgba(59,130,246,0.12); color: #60a5fa; }
 .sig-type-badge.big_mover { background: rgba(245,158,11,0.12); color: #fbbf24; }
 .sig-type-badge.natr_spike { background: rgba(239,68,68,0.12); color: #f87171; }
+.sig-type-badge.oi_cvd { background: rgba(139,92,246,0.12); color: #a78bfa; }
 .sig-type-badge.density_break { background: rgba(139,92,246,0.12); color: #a78bfa; }
 
 .sig-dir { font-weight: 600; font-size: 11px; }
@@ -2589,6 +2590,22 @@ body {
     cursor: pointer; transition: background 0.15s; width: 100%;
 }
 .sig-detail-btn:hover { background: rgba(59,130,246,0.25); }
+
+/* Outcome Stats Bar */
+.sig-outcome-bar {
+    display: flex; gap: 10px; padding: 8px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    overflow-x: auto;
+}
+.sig-outcome-card {
+    background: rgba(255,255,255,0.03); border-radius: 8px; padding: 8px 14px;
+    min-width: 130px; font-size: 12px;
+}
+.sig-outcome-type { font-weight: 600; color: var(--text-primary); margin-bottom: 6px; font-size: 11px; }
+.sig-outcome-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 2px 0; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
 
 @media (max-width: 900px) {
     .sig-detail { display: none; }

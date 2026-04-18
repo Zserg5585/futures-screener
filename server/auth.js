@@ -126,6 +126,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_signal_log_created ON signal_log(created_at);
 `)
 
+// Migration: add new columns if missing (mfe_pct, mae_pct, spot_after_1d)
+try {
+  db.exec(`ALTER TABLE signal_log ADD COLUMN spot_after_1d REAL`)
+} catch(e) { /* column exists */ }
+try {
+  db.exec(`ALTER TABLE signal_log ADD COLUMN mfe_pct REAL`)
+} catch(e) { /* column exists */ }
+try {
+  db.exec(`ALTER TABLE signal_log ADD COLUMN mae_pct REAL`)
+} catch(e) { /* column exists */ }
+
 // --- Prepared Statements ---
 const stmts = {
   findByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
@@ -183,10 +194,10 @@ const stmts = {
   // Signal Log
   logSignal: db.prepare('INSERT INTO signal_log (type, symbol, direction, entry_price, confidence, metadata) VALUES (?, ?, ?, ?, ?, ?)'),
   updateSignalOutcome: db.prepare(`
-    UPDATE signal_log SET spot_after_5m = ?, spot_after_15m = ?, spot_after_1h = ?, spot_after_4h = ?,
-    outcome = ?, pnl_pct = ? WHERE id = ?
+    UPDATE signal_log SET spot_after_5m = ?, spot_after_15m = ?, spot_after_1h = ?, spot_after_4h = ?, spot_after_1d = ?,
+    outcome = ?, pnl_pct = ?, mfe_pct = ?, mae_pct = ? WHERE id = ?
   `),
-  getPendingSignals: db.prepare("SELECT * FROM signal_log WHERE outcome IS NULL AND created_at > datetime('now', '-5 hours')"),
+  getPendingSignals: db.prepare("SELECT * FROM signal_log WHERE outcome IS NULL AND created_at > datetime('now', '-25 hours')"),
   getSignalStats: db.prepare(`
     SELECT type, COUNT(*) as total,
       SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) as wins,

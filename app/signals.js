@@ -1,14 +1,15 @@
 /**
  * Signals Tab — Variant 3 (Hybrid: table + detail panel)
- * Fetches live signals from /api/signals/live, renders table + detail
+ * Fetches live signals + outcome stats
  */
 
 const SIG_API = window.location.origin
-const SIG_REFRESH_MS = 30_000 // auto-refresh every 30s
+const SIG_REFRESH_MS = 30_000
 
 const sigState = {
   signals: [],
   selected: null,
+  outcomes: [],
   typeFilter: '',
   dirFilter: '',
   search: '',
@@ -16,15 +17,13 @@ const sigState = {
   active: false,
 }
 
-// ---- DOM helpers ----
 const sigEl = (id) => document.getElementById(id)
 
-// ---- Init (called from densities.js tab switch) ----
+// ---- Init / Stop ----
 function initSignals() {
   if (sigState.active) { loadSignals(); return }
   sigState.active = true
 
-  // Bind filters
   const typeF = sigEl('sigTypeFilter')
   const dirF = sigEl('sigDirFilter')
   const searchF = sigEl('sigSearch')
@@ -52,14 +51,17 @@ async function loadSignals() {
     if (sigState.typeFilter) params.set('type', sigState.typeFilter)
     if (sigState.dirFilter) params.set('direction', sigState.dirFilter)
 
-    const [liveRes, summaryRes] = await Promise.all([
+    const [liveRes, summaryRes, outcomesRes] = await Promise.all([
       fetch(`${SIG_API}/api/signals/live?${params}`).then(r => r.json()),
       fetch(`${SIG_API}/api/signals/summary`).then(r => r.json()),
+      fetch(`${SIG_API}/api/signals/outcomes`).then(r => r.json()),
     ])
 
     if (liveRes.success) sigState.signals = liveRes.data || []
+    if (outcomesRes.success) sigState.outcomes = outcomesRes.stats || []
     if (summaryRes.success) renderSummary(summaryRes)
     renderSignals()
+    renderOutcomeStats()
   } catch (err) {
     console.error('[Signals] Load error:', err)
   }
@@ -82,6 +84,39 @@ function renderSummary(data) {
   }).join('') + `<span class="sig-summary-item" style="margin-left:8px;">Total: <span class="sig-summary-count">${data.last_1h || 0}</span>/1h</span>`
 }
 
+// ---- Outcome Stats ----
+function renderOutcomeStats() {
+  const container = sigEl('sigOutcomeStats')
+  if (!container) return
+
+  const stats = sigState.outcomes
+  if (!stats || stats.length === 0) {
+    container.innerHTML = '<span style="color:var(--text-muted); font-size:11px;">Outcome tracking: collecting data...</span>'
+    return
+  }
+
+  container.innerHTML = stats.map(s => {
+    const wr = s.total > 0 ? ((s.wins / s.total) * 100).toFixed(0) : '—'
+    const wrColor = wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444'
+    const avgPnl = s.avg_pnl != null ? (s.avg_pnl > 0 ? '+' : '') + s.avg_pnl.toFixed(2) + '%' : '—'
+    const pnlColor = s.avg_pnl > 0 ? '#22c55e' : '#ef4444'
+    const icon = { volume_spike: '📊', big_mover: '🚀', natr_spike: '⚡' }[s.type] || '•'
+
+    return `<div class="sig-outcome-card">
+      <div class="sig-outcome-type">${icon} ${formatTypeShort(s.type)}</div>
+      <div class="sig-outcome-row">
+        <span>WR</span><span style="color:${wrColor}; font-weight:600;">${wr}%</span>
+      </div>
+      <div class="sig-outcome-row">
+        <span>Avg P&L</span><span style="color:${pnlColor}; font-weight:600;">${avgPnl}</span>
+      </div>
+      <div class="sig-outcome-row">
+        <span>Signals</span><span>${s.total}</span>
+      </div>
+    </div>`
+  }).join('')
+}
+
 // ---- Table ----
 function renderSignals() {
   const tbody = sigEl('sigTbody')
@@ -89,7 +124,6 @@ function renderSignals() {
 
   let list = [...sigState.signals]
 
-  // Client-side search filter
   if (sigState.search) {
     const q = sigState.search.toUpperCase()
     list = list.filter(s => s.symbol.includes(q))
@@ -126,7 +160,6 @@ function selectSignal(id) {
   if (!s) return
   sigState.selected = s
 
-  // Highlight row
   const tbody = sigEl('sigTbody')
   if (tbody) {
     tbody.querySelectorAll('tr').forEach(r => r.classList.remove('sig-active'))
@@ -140,18 +173,19 @@ function selectSignal(id) {
   const meta = s.metadata || {}
   const confColor = s.confidence >= 80 ? '#22c55e' : s.confidence >= 60 ? '#f59e0b' : '#ef4444'
 
-  // Build metadata grid items
   const metaItems = []
   if (meta.change !== undefined) metaItems.push({ key: 'Change 24h', val: `${meta.change > 0 ? '+' : ''}${Number(meta.change).toFixed(2)}%`, color: meta.change > 0 ? '#22c55e' : '#ef4444' })
   if (meta.volume !== undefined) metaItems.push({ key: 'Volume', val: fmtVol(meta.volume) })
   if (meta.volX !== undefined) metaItems.push({ key: 'Vol / Median', val: `${meta.volX}x` })
+  if (meta.volDelta !== undefined && meta.volDelta > 0) metaItems.push({ key: 'Vol Δ', val: `+${meta.volDelta}%`, color: '#3b82f6' })
   if (meta.natr !== undefined) metaItems.push({ key: 'NATR', val: `${meta.natr}%` })
+  if (meta.range !== undefined) metaItems.push({ key: 'Range', val: `${meta.range}%` })
   if (meta.high !== undefined) metaItems.push({ key: 'High', val: formatPrice(meta.high) })
   if (meta.low !== undefined) metaItems.push({ key: 'Low', val: formatPrice(meta.low) })
-  if (meta.wallPrice !== undefined) metaItems.push({ key: 'Wall Price', val: formatPrice(meta.wallPrice) })
-  if (meta.notional !== undefined) metaItems.push({ key: 'Wall Size', val: `$${fmtVol(meta.notional)}` })
-  if (meta.side !== undefined) metaItems.push({ key: 'Side', val: meta.side })
-  if (meta.distPct !== undefined) metaItems.push({ key: 'Distance', val: `${meta.distPct}%` })
+  if (meta.oiChangePct !== undefined) metaItems.push({ key: 'OI Change', val: `${meta.oiChangePct > 0 ? '+' : ''}${meta.oiChangePct}%`, color: meta.oiChangePct > 0 ? '#3b82f6' : '#ef4444' })
+  if (meta.oiValue !== undefined) metaItems.push({ key: 'OI Value', val: fmtVol(meta.oiValue) })
+  if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
+  if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation' }[meta.subType] || meta.subType })
 
   panel.innerHTML = `
     <div class="sig-detail-header">
@@ -161,7 +195,7 @@ function selectSignal(id) {
     </div>
 
     <div class="sig-detail-section">
-      <div class="sig-detail-label">Price</div>
+      <div class="sig-detail-label">Price at Signal</div>
       <div class="sig-detail-price">${formatPrice(s.price)} USDT</div>
     </div>
 
@@ -193,7 +227,7 @@ function selectSignal(id) {
     </div>
 
     <div class="sig-detail-section">
-      <div class="sig-detail-label">Time</div>
+      <div class="sig-detail-label">Signal Time</div>
       <div class="sig-detail-value">${new Date(s.created_at).toLocaleString()}</div>
     </div>
 
@@ -201,10 +235,9 @@ function selectSignal(id) {
   `
 }
 
-// ---- Open Chart (reuse mini-charts modal) ----
+// ---- Open Chart ----
 function openSignalChart(symbol) {
   if (typeof openCoinModal === 'function') {
-    // Switch to mini-charts tab and open modal
     const tabs = document.querySelectorAll('.tab')
     tabs.forEach(t => t.classList.remove('active'))
     const mcTab = document.querySelector('.tab[data-tab="mini-charts"]')
@@ -215,7 +248,6 @@ function openSignalChart(symbol) {
       if (mcContent) mcContent.style.display = 'block'
       if (typeof initMiniCharts === 'function') initMiniCharts()
     }
-    // Small delay to ensure mini-charts is initialized
     setTimeout(() => openCoinModal(symbol), 200)
   }
 }
@@ -226,8 +258,13 @@ function formatType(type) {
     volume_spike: '📊 Vol Spike',
     big_mover: '🚀 Big Mover',
     natr_spike: '⚡ NATR Spike',
-    density_break: '🧱 Density',
+    oi_cvd: '🔮 OI+CVD',
   }
+  return map[type] || type
+}
+
+function formatTypeShort(type) {
+  const map = { volume_spike: 'Vol Spike', big_mover: 'Big Mover', natr_spike: 'NATR Spike', oi_cvd: 'OI+CVD' }
   return map[type] || type
 }
 
