@@ -192,7 +192,7 @@ const stmts = {
   `),
 
   // Signal Log
-  logSignal: db.prepare('INSERT INTO signal_log (type, symbol, direction, entry_price, confidence, metadata) VALUES (?, ?, ?, ?, ?, ?)'),
+  logSignal: db.prepare('INSERT INTO signal_log (type, symbol, direction, entry_price, confidence, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   updateSignalOutcome: db.prepare(`
     UPDATE signal_log SET spot_after_5m = ?, spot_after_15m = ?, spot_after_1h = ?, spot_after_4h = ?, spot_after_1d = ?,
     outcome = ?, pnl_pct = ?, mfe_pct = ?, mae_pct = ? WHERE id = ?
@@ -205,6 +205,7 @@ const stmts = {
     FROM signal_log WHERE outcome IS NOT NULL GROUP BY type
   `),
   getRecentSignals: db.prepare('SELECT * FROM signal_log ORDER BY created_at DESC LIMIT ?'),
+  getSignalsSince: db.prepare("SELECT * FROM signal_log WHERE created_at > datetime('now', '-' || ? || ' hours') ORDER BY created_at DESC"),
   cleanupSignals: db.prepare("DELETE FROM signal_log WHERE created_at < datetime('now', '-30 days')"),
 }
 
@@ -494,8 +495,9 @@ function getAlertTriggers(userId, limit = 50) {
   return stmts.getTriggers.all(userId, limit).map(t => ({ ...t, data: JSON.parse(t.data || '{}') }))
 }
 
-function logSignal(type, symbol, direction, entryPrice, confidence, metadata = {}) {
-  return stmts.logSignal.run(type, symbol, direction, entryPrice, confidence, JSON.stringify(metadata))
+function logSignal(type, symbol, direction, entryPrice, confidence, metadata = {}, createdAt = null) {
+  const ts = createdAt || new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')
+  return stmts.logSignal.run(type, symbol, direction, entryPrice, confidence, JSON.stringify(metadata), ts)
 }
 
 function getSignalStats() {

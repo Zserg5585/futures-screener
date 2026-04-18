@@ -108,10 +108,12 @@ async function scan() {
           // Confidence: 2x=55, 3x=65, 5x=75, 10x=90, 20x+=95
           const conf = Math.min(95, 50 + Math.log2(ratio) * 10)
 
+          // Use candle openTime as signal time (not scan time)
+          const candleOpenMs = parseInt(lastCandle[0])
           emitSignal({
             type: 'volume_spike',
             symbol, price,
-            signalTime: new Date(now).toISOString(),
+            signalTime: new Date(candleOpenMs).toISOString(),
             direction,
             confidence: Math.round(conf),
             description: `Volume ${ratio.toFixed(1)}x avg ($${fmtVol(currentVol)} vs avg $${fmtVol(sma)})`,
@@ -219,10 +221,12 @@ async function scanOiCvd() {
 
         const confBase = 55 + Math.min(30, Math.abs(oiChangePct) * 3)
         const confRatio = Math.abs(buySellRatio - 1) * 10
+        // Use OI candle timestamp (not scan time)
+        const oiCandleMs = parseInt(oiHist[1].timestamp)
         emitSignal({
           type: 'oi_cvd',
           symbol, price,
-          signalTime: new Date(now).toISOString(),
+          signalTime: new Date(oiCandleMs).toISOString(),
           direction: signalDir,
           confidence: Math.min(95, confBase + confRatio),
           description: signalDesc,
@@ -342,7 +346,17 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
   const key = `${type}:${symbol}`
   const now = Date.now()
 
+  // In-memory cooldown (fast path)
   if (cooldowns.has(key) && now - cooldowns.get(key) < COOLDOWN_MS) return
+
+  // DB-based dedup (survives restarts)
+  try {
+    const recent = _auth.db.prepare(
+      "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
+    ).get(type, symbol, Math.floor(COOLDOWN_MS / 60_000))
+    if (recent) { cooldowns.set(key, now); return }
+  } catch {}
+
   cooldowns.set(key, now)
 
   const signal = {
@@ -357,7 +371,9 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
   if (liveSignals.length > MAX_LIVE) liveSignals.length = MAX_LIVE
 
   try {
-    _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata))
+    // Pass candle-based created_at to DB for accurate outcome tracking
+    const dbTs = signal.created_at.replace('T', ' ').replace(/\.\d+Z$/, '')
+    _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata), dbTs)
   } catch (err) {
     console.error('[Signals] DB log error:', err.message)
   }
@@ -375,14 +391,54 @@ function fmtVol(v) {
 // ======================== API ========================
 
 function getLiveSignals(filters = {}) {
-  let result = [...liveSignals]
+  // Read from DB (persists across restarts, 24h window)
+  const hours = Number(filters.hours) || 24
+  let result
+  try {
+    const rows = _auth.stmts.getSignalsSince.all(hours)
+    result = rows.map(r => ({
+      id: String(r.id),
+      type: r.type,
+      symbol: r.symbol,
+      direction: r.direction,
+      price: r.entry_price,
+      confidence: r.confidence,
+      description: null, // DB doesn't store description, build from metadata
+      metadata: JSON.parse(r.metadata || '{}'),
+      created_at: r.created_at,
+      // Outcome data
+      spot_after_5m: r.spot_after_5m,
+      spot_after_15m: r.spot_after_15m,
+      spot_after_1h: r.spot_after_1h,
+      spot_after_4h: r.spot_after_4h,
+      spot_after_1d: r.spot_after_1d,
+      outcome: r.outcome,
+      pnl_pct: r.pnl_pct,
+      mfe_pct: r.mfe_pct,
+      mae_pct: r.mae_pct,
+    }))
+    // Rebuild description from metadata
+    for (const s of result) {
+      const m = s.metadata
+      if (s.type === 'volume_spike' && m.ratio) {
+        s.description = `Volume ${m.ratio}x avg ($${fmtVol(m.currentVol)} vs avg $${fmtVol(m.avgVol)})`
+      } else if (s.type === 'oi_cvd' && m.oiChangePct !== undefined) {
+        const sub = m.subType || ''
+        const labels = { oi_longs: '🟢 Longs accumulating', oi_shorts: '🔴 Shorts accumulating', oi_squeeze: '🟡 Short squeeze', oi_liquidation: '🟡 Long liquidation' }
+        s.description = `${labels[sub] || sub} — OI ${m.oiChangePct > 0 ? '+' : ''}${m.oiChangePct}%/1h`
+      }
+    }
+  } catch (err) {
+    console.error('[Signals] DB read error, falling back to memory:', err.message)
+    result = [...liveSignals]
+  }
 
   if (filters.type) result = result.filter(s => s.type === filters.type)
   if (filters.symbol) result = result.filter(s => s.symbol.includes(filters.symbol.toUpperCase()))
   if (filters.direction) result = result.filter(s => s.direction === filters.direction.toUpperCase())
   if (filters.minConfidence) result = result.filter(s => s.confidence >= Number(filters.minConfidence))
 
-  const limit = Math.min(Number(filters.limit) || 50, MAX_LIVE)
+  const limit = Math.min(Number(filters.limit) || 200, 500)
   return result.slice(0, limit)
 }
 
@@ -394,17 +450,22 @@ function getSignalTypes() {
 }
 
 function getSignalSummary() {
-  const now = Date.now()
-  const last1h = liveSignals.filter(s => now - new Date(s.created_at).getTime() < 3600_000)
-  const byType = {}
-  for (const s of last1h) {
-    byType[s.type] = (byType[s.type] || 0) + 1
-  }
-  return {
-    total: liveSignals.length,
-    last_1h: last1h.length,
-    by_type: byType,
-    types: getSignalTypes()
+  try {
+    const all24h = _auth.stmts.getSignalsSince.all(24)
+    const now = Date.now()
+    const last1h = all24h.filter(s => now - new Date(s.created_at).getTime() < 3600_000)
+    const byType = {}
+    for (const s of last1h) {
+      byType[s.type] = (byType[s.type] || 0) + 1
+    }
+    return {
+      total: all24h.length,
+      last_1h: last1h.length,
+      by_type: byType,
+      types: getSignalTypes()
+    }
+  } catch {
+    return { total: 0, last_1h: 0, by_type: {}, types: getSignalTypes() }
   }
 }
 

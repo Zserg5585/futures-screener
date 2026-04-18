@@ -569,8 +569,8 @@ fastify.get('/api/signals/stats', async () => {
 
 // Live signals (in-memory, real-time)
 fastify.get('/api/signals/live', async (req) => {
-  const { type, symbol, direction, minConfidence, limit } = req.query
-  const data = signals.getLiveSignals({ type, symbol, direction, minConfidence, limit })
+  const { type, symbol, direction, minConfidence, limit, hours } = req.query
+  const data = signals.getLiveSignals({ type, symbol, direction, minConfidence, limit, hours })
   return { success: true, count: data.length, data }
 })
 

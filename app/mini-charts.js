@@ -6,7 +6,7 @@ const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a8
 const mc = {
     sortBy: 'change',
     sortDir: 'asc',
-    globalTF: '15m',
+    globalTF: '5m',
     loaded: false,
     allPairs: [],        // all fetched pairs (unfiltered)
     filteredPairs: [],   // after filters applied
@@ -869,7 +869,7 @@ function wsConnect() {
             const k = msg.data.k;
             const sym = k.s;
             const candle = {
-                time: Math.floor(k.t / 1000),
+                time: Math.floor(k.t / 1000) + TZ_OFFSET_SEC,
                 open: parseFloat(k.o),
                 high: parseFloat(k.h),
                 low: parseFloat(k.l),
@@ -897,12 +897,19 @@ function wsConnect() {
                     const slotStream = `${sym.toLowerCase()}@kline_${slot.tf}`;
                     const incomingStream = msg.stream || '';
                     if (incomingStream === slotStream) {
+                        // Prevent auto-scroll if user has panned away from right edge
+                        const slotTs = slot.chart.timeScale();
+                        const slotRange = slotTs.getVisibleLogicalRange();
+                        const slotScroll = slotTs.scrollPosition();
                         slot.series.update(candle);
                         if (slot.volSeries) slot.volSeries.update({
                             time: candle.time,
                             value: vol,
                             color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                         });
+                        if (slotRange && slotScroll < 5) {
+                            slotTs.setVisibleLogicalRange(slotRange);
+                        }
                         // Update header price/change
                         const pair = mc.allPairs.find(p => p.symbol === sym);
                         if (pair) {
@@ -919,12 +926,20 @@ function wsConnect() {
                 const modalStream = `${sym.toLowerCase()}@kline_${modal.currentTF}`;
                 const incomingStream = msg.stream || '';
                 if (incomingStream === modalStream || modal.wsStream === `${sym.toLowerCase()}@kline_${k.i}`) {
+                    // Prevent auto-scroll if user has panned away from right edge
+                    const ts = modal.chart.timeScale();
+                    const rangeBefore = ts.getVisibleLogicalRange();
+                    const scrollPos = ts.scrollPosition();
                     modal.series.update(candle);
                     if (modal.volSeries) modal.volSeries.update({
                         time: candle.time,
                         value: vol,
                         color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                     });
+                    // If user was scrolled left (scrollPos < rightOffset threshold), restore position
+                    if (rangeBefore && scrollPos < 5) {
+                        ts.setVisibleLogicalRange(rangeBefore);
+                    }
                 }
             }
         } catch (e) { /* ignore parse errors */ }
@@ -1210,6 +1225,36 @@ function openCoinModal(sym) {
     updateModalCursor();
 
     loadModalChart(sym, modal.currentTF);
+    startCountdown();
+}
+
+// ---- Candle Countdown Timer ----
+const TF_MS = { '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000, '8h': 28800000, '12h': 43200000, '1d': 86400000 };
+
+function startCountdown() {
+    if (modal._countdownTimer) clearInterval(modal._countdownTimer);
+    updateCountdown();
+    modal._countdownTimer = setInterval(updateCountdown, 1000);
+}
+
+function updateCountdown() {
+    const cdEl = document.getElementById('cmChartCountdown');
+    if (!cdEl || !modal.currentTF) return;
+    const ms = TF_MS[modal.currentTF];
+    if (!ms) { cdEl.textContent = ''; return; }
+    const now = Date.now();
+    const remaining = ms - (now % ms);
+    const totalSec = Math.floor(remaining / 1000);
+    if (ms <= 3600000) {
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        cdEl.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+    } else {
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        cdEl.textContent = `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
 }
 
 async function loadModalChart(sym, tf) {
@@ -1231,6 +1276,7 @@ async function loadModalChart(sym, tf) {
         const data1 = parseKlines(json1);
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
+
         // Show last ~100 candles in viewport (user can scroll back to see all 1000)
         const visFrom = Math.max(0, data1.length - 100);
         modal.chart.timeScale().setVisibleLogicalRange({ from: visFrom, to: data1.length - 1 + 10 });
@@ -1263,18 +1309,6 @@ async function loadModalChart(sym, tf) {
             shape: isLong ? 'arrowUp' : 'arrowDown',
             text: `${m.type === 'oi_cvd' ? '🔮 OI+CVD' : m.type === 'volume_spike' ? '📊 Vol' : m.type === 'big_mover' ? '🚀 Mover' : '⚡ NATR'} ${m.direction}`,
           }]);
-          // Price line at signal price
-          if (m.price) {
-            const sigLine = modal.series.createPriceLine({
-              price: m.price,
-              color: isLong ? '#22c55e' : '#ef4444',
-              lineWidth: 1,
-              lineStyle: 2, // dashed
-              axisLabelVisible: true,
-              title: `Signal ${m.direction}`,
-            });
-            modal._signalLine = sigLine;
-          }
         }
 
         // Apply density walls to modal
@@ -1300,7 +1334,8 @@ async function loadModalChart(sym, tf) {
                 if (!Array.isArray(json2) || !modal.chart) return;
 
                 let fullData = parseKlines(json2);
-                const visRange = modal.chart.timeScale().getVisibleLogicalRange();
+                // Save visible TIME range (not logical) — stable across setData
+                const visTimeRange = modal.chart.timeScale().getVisibleRange();
                 const TARGET = 20000;
 
                 // Paginate backwards until we hit target or run out of data
@@ -1322,12 +1357,9 @@ async function loadModalChart(sym, tf) {
                 if (!modal.chart || modal.currentSym !== sym) return;
                 modal.series.setData(fullData);
                 if (modal.volSeries) modal.volSeries.setData(extractVolume(fullData));
-                const added = fullData.length - data1.length;
-                if (visRange) {
-                    modal.chart.timeScale().setVisibleLogicalRange({
-                        from: visRange.from + added,
-                        to: visRange.to + added
-                    });
+                // Restore by time range (absolute, no offset math needed)
+                if (visTimeRange) {
+                    modal.chart.timeScale().setVisibleRange(visTimeRange);
                 }
                 console.log(`[Modal] ${sym} loaded ${fullData.length} candles`);
             } catch (e) { /* background load failed */ }
@@ -2670,12 +2702,10 @@ function drawFibonacci(p1, p2, color, customLevels) {
 function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
+    // Stop countdown timer
+    if (modal._countdownTimer) { clearInterval(modal._countdownTimer); modal._countdownTimer = null; }
     // Clear signal markers
     if (modal.series) modal.series.setMarkers([]);
-    if (modal._signalLine && modal.series) {
-      try { modal.series.removePriceLine(modal._signalLine); } catch {}
-      modal._signalLine = null;
-    }
     window._pendingSignalMarker = null;
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
@@ -2732,6 +2762,7 @@ function initModalEvents() {
         draw.drawings.forEach(d => removeDrawingFromChart(d));
         draw.drawings = [];
         loadModalChart(modal.currentSym, modal.currentTF);
+        startCountdown();
     });
 }
 

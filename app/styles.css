@@ -1463,6 +1463,15 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+.mc-chart-countdown {
+    font-size: 12px;
+    color: #f59e0b;
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+    padding: 2px 8px;
+    margin-left: 8px;
+}
+
 .mc-modal-change {
     font-size: 13px;
     font-weight: 700;
@@ -1504,6 +1513,7 @@ body {
 .mc-modal-tf {
     display: flex;
     gap: 2px;
+    align-items: center;
 }
 
 .dt-tools {

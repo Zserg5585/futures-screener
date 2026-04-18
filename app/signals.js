@@ -59,7 +59,7 @@ function stopSignals() {
 // ---- Fetch ----
 async function loadSignals() {
   try {
-    const params = new URLSearchParams({ limit: '100' })
+    const params = new URLSearchParams({ limit: '500', hours: '24' })
     if (sigState.typeFilter) params.set('type', sigState.typeFilter)
     if (sigState.dirFilter) params.set('direction', sigState.dirFilter)
 
@@ -167,8 +167,8 @@ function renderSignals() {
       <td><span class="sig-dir ${s.direction}">${s.direction === 'LONG' ? '▲ L' : '▼ S'}</span></td>
       <td style="font-variant-numeric:tabular-nums;">${formatPrice(s.price)}</td>
       <td>
-        <span class="sig-conf-text" style="color:${confColor}">${s.confidence}%</span>
-        <span class="sig-conf-bar" style="width:${s.confidence * 0.5}px; background:${confColor};"></span>
+        <span class="sig-conf-text" style="color:${confColor}">${Math.round(s.confidence)}%</span>
+        <span class="sig-conf-bar" style="width:${Math.round(s.confidence) * 0.5}px; background:${confColor};"></span>
       </td>
       <td class="sig-desc-col" style="color:var(--text-muted); font-size:11px;">${s.description || ''}</td>
     </tr>`
@@ -222,9 +222,9 @@ function selectSignal(id) {
       <div class="sig-detail-label">Confidence</div>
       <div style="display:flex; align-items:center; gap:8px;">
         <div style="flex:1; height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
-          <div style="width:${s.confidence}%; height:100%; background:${confColor}; border-radius:3px;"></div>
+          <div style="width:${Math.round(s.confidence)}%; height:100%; background:${confColor}; border-radius:3px;"></div>
         </div>
-        <span style="font-size:14px; font-weight:600; color:${confColor}">${s.confidence}%</span>
+        <span style="font-size:14px; font-weight:600; color:${confColor}">${Math.round(s.confidence)}%</span>
       </div>
     </div>
 
@@ -247,7 +247,7 @@ function selectSignal(id) {
 
     <div class="sig-detail-section">
       <div class="sig-detail-label">Signal Time</div>
-      <div class="sig-detail-value">${new Date(s.created_at).toLocaleString()}</div>
+      <div class="sig-detail-value">${new Date(ensureUTC(s.created_at)).toLocaleString()}</div>
     </div>
 
     <button class="sig-detail-btn" onclick="openSignalChart('${s.symbol}')">Open Chart</button>
@@ -312,7 +312,7 @@ function openSignalChart(symbol) {
   const sig = sigState.selected
   if (sig && sig.symbol === symbol) {
     window._pendingSignalMarker = {
-      time: Math.floor(new Date(sig.created_at).getTime() / 1000),
+      time: Math.floor(new Date(ensureUTC(sig.created_at)).getTime() / 1000),
       price: sig.price,
       direction: sig.direction,
       type: sig.type,
@@ -336,10 +336,19 @@ function formatTypeShort(type) {
   return map[type] || type
 }
 
+function ensureUTC(iso) {
+  if (!iso) return iso
+  // DB stores "2026-04-18 07:20:00" (UTC, no T, no Z) — normalize to ISO
+  let s = iso.includes('T') ? iso : iso.replace(' ', 'T')
+  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z'
+  return s
+}
+
 function formatTime(iso) {
-  const d = new Date(iso)
+  const d = new Date(ensureUTC(iso))
   const now = new Date()
   const diffMs = now - d
+  if (diffMs < 0) return 'just now'
   if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)}s ago`
   if (diffMs < 3600_000) return `${Math.floor(diffMs / 60_000)}m ago`
   if (diffMs < 86400_000) return `${Math.floor(diffMs / 3600_000)}h ago`
