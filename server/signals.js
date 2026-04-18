@@ -299,8 +299,16 @@ async function scanOiCvd() {
           subType = 'oi_liquidation'
         }
 
-        const confBase = 55 + Math.min(30, Math.abs(oiChangePct) * 3)
-        const confRatio = Math.abs(buySellRatio - 1) * 10
+        // Confidence: bell-curve on OI change — sweet spot 4-8%, extreme >10% = lagging signal
+        const absOi = Math.abs(oiChangePct)
+        let confOi
+        if (absOi <= 8) {
+          confOi = Math.min(20, absOi * 3)       // 3%→9, 5%→15, 8%→20
+        } else {
+          confOi = 20 - (absOi - 8) * 3           // 10%→14, 13%→5, 15%→-1
+        }
+        const confBase = 55 + Math.max(0, confOi)  // floor at 55
+        const confRatio = Math.min(10, Math.abs(buySellRatio - 1) * 10)
         // Use OI candle timestamp (not scan time)
         const oiCandleMs = parseInt(oiHist[1].timestamp)
 
