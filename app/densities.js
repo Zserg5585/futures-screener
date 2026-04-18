@@ -61,68 +61,10 @@ function init() {
 }
 
 function setupEventListeners() {
-    // Controls
-    el('blacklist').addEventListener('input', (e) => {
-        state.blacklist = e.target.value.toUpperCase()
-        if (state.cache.data) renderDensities(state.cache.data)
-    })
+    // Old sidebar filters removed — density filters use defaults (xFilter=4, no blacklist)
+    // State defaults still apply for API calls
 
-    el('hideSqueezes').addEventListener('change', (e) => {
-        state.hideSqueezes = e.target.checked
-        if (state.cache.data) renderDensities(state.cache.data)
-    })
-
-    el('interval').addEventListener('change', (e) => {
-        state.interval = Number(e.target.value)
-        if (state.autoRefresh) {
-            clearInterval(state.refreshTimer)
-            startAutoRefresh()
-        }
-    })
-
-    // Auto refresh checkbox
-    el('auto').addEventListener('change', (e) => {
-        state.autoRefresh = e.target.checked
-        if (state.autoRefresh) {
-            startAutoRefresh()
-        } else {
-            stopAutoRefresh()
-        }
-    })
-
-    // x Filter selector
-    el('xFilter').addEventListener('change', (e) => {
-        state.xFilter = Number(e.target.value)
-        loadDensities()
-    })
-
-    // NATR Filter selector
-    el('natrFilter').addEventListener('change', (e) => {
-        state.natrFilter = Number(e.target.value)
-        loadDensities()
-    })
-
-    // Refresh button
-    if (el('refreshBtn')) {
-        el('refreshBtn').addEventListener('click', () => {
-            loadDensities(true) // force refresh
-            if (el('sidebar').classList.contains('open')) {
-                el('sidebar').classList.remove('open')
-            }
-        })
-    }
-
-    // Sidebar overlay toggle
-    if (el('toggleFiltersBtn') && el('sidebar')) {
-        el('toggleFiltersBtn').addEventListener('click', () => {
-            el('sidebar').classList.add('open')
-        })
-        if (el('closeFiltersBtn')) {
-            el('closeFiltersBtn').addEventListener('click', () => {
-                el('sidebar').classList.remove('open')
-            })
-        }
-    }
+    // Old sidebar removed — settings now via right slide-out panel (settings.js)
 
     // Вкладки (tabs)
     document.querySelectorAll('.tab').forEach(tab => {
@@ -186,12 +128,7 @@ function setupEventListeners() {
 }
 
 function updateControlsFromState() {
-    if (el('blacklist')) el('blacklist').value = state.blacklist
-    if (el('hideSqueezes')) el('hideSqueezes').checked = state.hideSqueezes
-    el('interval').value = state.interval
-    el('auto').checked = state.autoRefresh
-    el('xFilter').value = state.xFilter || 0
-    el('natrFilter').value = state.natrFilter || 0
+    // Old sidebar controls removed — state defaults used directly
 }
 
 function getCacheKey() {

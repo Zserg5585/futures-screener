@@ -35,13 +35,20 @@ function initSignals() {
   if (searchF) searchF.oninput = () => { sigState.search = searchF.value; renderSignals() }
   if (settingsBtn) settingsBtn.onclick = () => toggleSignalSettings()
 
-  // Load saved settings from localStorage
-  const saved = localStorage.getItem('sig_settings')
-  if (saved) {
-    try {
-      const s = JSON.parse(saved)
-      if (s.minRatio) sigState.minRatio = s.minRatio
-    } catch {}
+  // Load signal settings from settings panel (unified)
+  if (typeof settingsPanel !== 'undefined') {
+    sigState.minRatio = settingsPanel.get('signalMinRatio') || 3
+    settingsPanel.onChange((key, val) => {
+      if (key === 'signalMinRatio') {
+        sigState.minRatio = val
+        renderSignals()
+      } else if (key === 'signalWatchlistOnly' || key === '__watchlist') {
+        renderSignals()
+      }
+    })
+  } else {
+    const saved = localStorage.getItem('sig_settings')
+    if (saved) { try { const s = JSON.parse(saved); if (s.minRatio) sigState.minRatio = s.minRatio } catch {} }
   }
 
   loadSignals()
@@ -143,6 +150,11 @@ function renderSignals() {
       const ratio = s.metadata?.ratio || 0
       return ratio >= sigState.minRatio
     })
+  }
+
+  // Filter by watchlist if enabled
+  if (typeof settingsPanel !== 'undefined' && settingsPanel.get('signalWatchlistOnly')) {
+    list = list.filter(s => settingsPanel.wlHas(s.symbol))
   }
 
   if (sigState.search) {

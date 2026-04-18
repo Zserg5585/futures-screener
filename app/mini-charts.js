@@ -26,17 +26,235 @@ const mc = {
 // Load flags from localStorage
 try { mc.flags = JSON.parse(localStorage.getItem('mc_flags') || '{}'); } catch(e) { mc.flags = {}; }
 
+// --- Settings helpers ---
+const _sp = () => typeof settingsPanel !== 'undefined' ? settingsPanel : null
+function spGet(key, fallback) { const sp = _sp(); return sp ? sp.get(key) : fallback }
+function getGridOpts() {
+  const show = spGet('showGrid', true)
+  const c = show ? 'rgba(255,255,255,0.03)' : 'transparent'
+  return { vertLines: { color: c }, horzLines: { color: c } }
+}
+function getVolScaleTop() { return 1 - (spGet('volumeHeight', 15) / 100) }
+function getPriceScaleMode() { return spGet('logScale', false) ? 1 : 0 }
+function addMainSeries(chart, prec, minMove) {
+  const type = spGet('candleType', 'Candlestick')
+  const up = spGet('candleUp', '#22c55e')
+  const down = spGet('candleDown', '#ef4444')
+  const pf = { type: 'price', precision: prec, minMove }
+  if (type === 'Line') return chart.addLineSeries({ color: up, lineWidth: 2, priceFormat: pf })
+  if (type === 'Area') return chart.addAreaSeries({ topColor: up + '66', bottomColor: up + '0d', lineColor: up, lineWidth: 2, priceFormat: pf })
+  if (type === 'Bar') return chart.addBarSeries({ upColor: up, downColor: down, priceFormat: pf })
+  return chart.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceFormat: pf })
+}
+
 function saveFlags() {
     localStorage.setItem('mc_flags', JSON.stringify(mc.flags));
+}
+
+// --- Sidebar & Grid settings ---
+const CARD_HEIGHTS = { compact: 200, normal: 270, large: 360 }
+
+function applyGridColumns(n) {
+    const grid = document.querySelector('.mc-grid')
+    if (grid) grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`
+}
+
+function applyCardSize(size) {
+    const grid = document.querySelector('.mc-grid')
+    if (grid) grid.style.gridAutoRows = (CARD_HEIGHTS[size] || 270) + 'px'
+    // Resize existing charts
+    Object.values(mc.charts).forEach(c => { try { c.chart.resize() } catch(e) {} })
+    setTimeout(() => Object.values(mc.charts).forEach(c => { try { c.chart.applyOptions({ autoSize: true }) } catch(e) {} }), 100)
+}
+
+function applySidebarColumns() {
+    const showChg = spGet('colChg', true)
+    const showNatr = spGet('colNatr', true)
+    const showVol = spGet('colVol', true)
+
+    // Build grid-template-columns: flag(20px) name(1fr) ★(18px) copy(16px) [chg 50px] [natr 34px] [vol 40px]
+    let cols = '20px 1fr 18px 16px'
+    if (showChg) cols += ' 50px'
+    if (showNatr) cols += ' 34px'
+    if (showVol) cols += ' 40px'
+
+    // Apply to header
+    const hdr = document.getElementById('mcColHeaders')
+    if (hdr) {
+        hdr.style.gridTemplateColumns = cols
+        // Show/hide header spans
+        const spans = hdr.querySelectorAll('.mc-col-hdr')
+        spans.forEach(s => {
+            if (s.dataset.sort === 'change') s.style.display = showChg ? '' : 'none'
+            if (s.dataset.sort === 'natr') s.style.display = showNatr ? '' : 'none'
+            if (s.dataset.sort === 'volume') s.style.display = showVol ? '' : 'none'
+        })
+    }
+
+    // Apply to all coin items
+    document.querySelectorAll('.mc-coin-item').forEach(item => {
+        item.style.gridTemplateColumns = cols
+        const chgEl = item.querySelector('.mc-coin-change')
+        const natrEl = item.querySelector('.mc-coin-natr')
+        const volEl = item.querySelector('.mc-coin-vol')
+        if (chgEl) chgEl.style.display = showChg ? '' : 'none'
+        if (natrEl) natrEl.style.display = showNatr ? '' : 'none'
+        if (volEl) volEl.style.display = showVol ? '' : 'none'
+    })
+}
+
+function applyAllLayoutSettings() {
+    applyGridColumns(spGet('cardsPerRow', 4))
+    applyCardSize(spGet('cardSize', 'normal'))
+    applySidebarColumns()
+}
+
+// Rebuild all visible charts (called when chart settings change)
+function rebuildAllCharts() {
+    // Destroy all mini-chart instances, remember which were loaded
+    const syms = Object.keys(mc.charts)
+    syms.forEach(sym => {
+        try { mc.charts[sym].chart.remove() } catch(e) {}
+    })
+    mc.charts = {}
+    mc.loadedData = {}
+
+    // Re-create them
+    syms.forEach(sym => {
+        createChartInstance(sym)
+        mc.loadQueue.push(sym)
+    })
+    processLoadQueue()
+
+    // Rebuild modal if open
+    if (modal.chart && modal.currentSym) {
+        loadModalChart(modal.currentSym, modal.currentTF)
+    }
+
+    // Rebuild multi-chart slots
+    if (typeof mch !== 'undefined' && mch.slots) {
+        mch.slots.forEach((slot, i) => {
+            if (slot.chart && slot.sym) {
+                try { slot.chart.remove() } catch(e) {}
+                slot.chart = null
+                slot.series = null
+                slot.volSeries = null
+                createSlotChart(i)
+                loadSlotChart(i)
+            }
+        })
+    }
+
+    showSettingsToast('Settings applied ✓')
+}
+
+function showSettingsToast(msg) {
+    const sp = _sp()
+    if (sp) sp.showToast(msg)
 }
 
 async function initMiniCharts() {
     if (!mc.loaded) {
         mc.loaded = true;
 
-        // Global TF buttons
+        // Apply saved theme
+        const savedTheme = spGet('theme', 'dark')
+        if (savedTheme !== 'dark') document.body.classList.add('theme-' + savedTheme)
+
+        // Apply saved data settings
+        mc.sortBy = spGet('defaultSort', 'change')
+        mc.sortDir = spGet('defaultSortDir', 'asc')
+        mc.filters.minVol = spGet('minVolume', 50)
+
+        // Sync sort headers with settings
+        const colHeaders = document.getElementById('mcColHeaders')
+        if (colHeaders) {
+            colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => {
+                h.classList.remove('active', 'asc', 'desc')
+                if (h.dataset.sort === mc.sortBy) h.classList.add('active', mc.sortDir)
+            })
+        }
+        // Sync volume dropdown
+        const volSel = el('mcFilterVol')
+        if (volSel) volSel.value = mc.filters.minVol
+
+        // Apply saved layout settings
+        applyAllLayoutSettings()
+
+        // Apply default TF from settings
+        const savedTF = spGet('defaultTF', '5m')
+        if (savedTF) mc.globalTF = savedTF
+
+        // Listen for settings changes
+        const sp = _sp()
+        if (sp) {
+            sp.onChange((key, val) => {
+                const chartKeys = ['candleType', 'logScale', 'volumeHeight', 'showGrid', 'showWatermark', 'candleUp', 'candleDown']
+                if (chartKeys.includes(key)) {
+                    rebuildAllCharts()
+                } else if (key === 'defaultTF') {
+                    mc.globalTF = val
+                    // Update active TF button
+                    const tfGroup = el('mcGlobalTF')
+                    if (tfGroup) {
+                        tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === val))
+                    }
+                    mc.loadedData = {}
+                    Object.keys(mc.charts).forEach(sym => mc.loadQueue.push(sym))
+                    processLoadQueue()
+                    showSettingsToast('Timeframe → ' + val)
+                } else if (key === 'densityEnabled') {
+                    if (!val) {
+                        // Remove density lines from all charts
+                        Object.values(mc.charts).forEach(c => {
+                            if (c.densityLines) { c.densityLines.forEach(pl => { try { c.series.removePriceLine(pl) } catch(e){} }); c.densityLines = [] }
+                        })
+                        if (modal.chart && modal.densityLines) { modal.densityLines.forEach(pl => { try { modal.series.removePriceLine(pl) } catch(e){} }); modal.densityLines = [] }
+                    }
+                    showSettingsToast(val ? 'Densities enabled' : 'Densities disabled')
+                } else if (key === 'signalMinRatio') {
+                    showSettingsToast('Signal ratio → ' + val + 'x')
+                } else if (key === 'cardsPerRow') {
+                    applyGridColumns(val)
+                    showSettingsToast('Cards per row → ' + val)
+                } else if (key === 'cardSize') {
+                    applyCardSize(val)
+                    showSettingsToast('Card size → ' + val)
+                } else if (key === 'colChg' || key === 'colNatr' || key === 'colVol') {
+                    applySidebarColumns()
+                    renderSidebar()
+                    showSettingsToast('Sidebar updated')
+                } else if (key === 'defaultSort') {
+                    mc.sortBy = val
+                    renderSidebar()
+                    showSettingsToast('Sort → ' + val)
+                } else if (key === 'defaultSortDir') {
+                    mc.sortDir = val
+                    renderSidebar()
+                    showSettingsToast('Sort direction → ' + val)
+                } else if (key === 'minVolume') {
+                    mc.filters.minVol = val
+                    // Sync the toolbar dropdown if exists
+                    const volSel = el('mcFilterVol')
+                    if (volSel) volSel.value = val
+                    applyFiltersAndRebuild()
+                    showSettingsToast(val > 0 ? 'Min volume → $' + val + 'M' : 'Volume filter OFF')
+                } else if (key === 'theme') {
+                    document.body.className = document.body.className.replace(/theme-\w+/g, '')
+                    if (val !== 'dark') document.body.classList.add('theme-' + val)
+                    showSettingsToast('Theme → ' + val)
+                } else if (key === 'watchlistOnly') {
+                    renderSidebar()
+                } else if (key === '__watchlist') {
+                    renderSidebar()
+                }
+            })
+        }
+
+        // Global TF buttons — sync active with settings default
         const tfGroup = el('mcGlobalTF');
         if (tfGroup) {
+            tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === mc.globalTF));
             tfGroup.addEventListener('click', (e) => {
                 const btn = e.target.closest('.mc-tf-btn');
                 if (!btn) return;
@@ -363,9 +581,19 @@ function renderSidebar() {
         pairs = pairs.filter(p => p.symbol.replace('USDT', '').includes(mc.searchQuery));
     }
 
-    // Sort: flagged coins first, then by current sort column
+    // Watchlist-only filter
+    const sp = _sp()
+    if (sp && spGet('watchlistOnly', false)) {
+        pairs = pairs.filter(p => sp.wlHas(p.symbol));
+    }
+
+    // Sort: watchlist first, then flagged, then by current sort column
     const dir = mc.sortDir === 'asc' ? 1 : -1;
     pairs = [...pairs].sort((a, b) => {
+        // Watchlist coins first
+        const wa = sp && sp.wlHas(a.symbol) ? 1 : 0;
+        const wb = sp && sp.wlHas(b.symbol) ? 1 : 0;
+        if (wb !== wa) return wb - wa;
         const fa = mc.flags[a.symbol] ? 1 : 0;
         const fb = mc.flags[b.symbol] ? 1 : 0;
         if (fb !== fa) return fb - fa;
@@ -389,15 +617,21 @@ function renderSidebar() {
         const flagStyle = flagColor ? `background:${flagColor}; border-color:transparent;` : '';
         const flagClass = flagColor ? 'mc-flag-btn flagged' : 'mc-flag-btn';
 
-        return `<div class="mc-coin-item" data-symbol="${sym}">
+        const showChg = spGet('colChg', true)
+        const showNatr = spGet('colNatr', true)
+        const showVol = spGet('colVol', true)
+        const isWl = sp && sp.wlHas(sym)
+
+        return `<div class="mc-coin-item${isWl ? ' mc-wl' : ''}" data-symbol="${sym}">
             <button class="${flagClass}" style="${flagStyle}" data-flag="${sym}" title="Set color flag"></button>
             <span class="mc-coin-name">${ticker}</span>
+            <button class="mc-wl-btn${isWl ? ' active' : ''}" data-wl="${sym}" title="${isWl ? 'Remove from watchlist' : 'Add to watchlist'}">★</button>
             <button class="mc-copy-btn" data-ticker="${ticker.toLowerCase()}usdt" title="Copy ${ticker.toLowerCase()}usdt">
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             </button>
-            <span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(1)}%</span>
-            <span class="mc-coin-natr">${natr}</span>
-            <span class="mc-coin-vol">${vol}</span>
+            ${showChg ? `<span class="mc-coin-change ${chgClass}">${chgSign}${chg.toFixed(1)}%</span>` : ''}
+            ${showNatr ? `<span class="mc-coin-natr">${natr}</span>` : ''}
+            ${showVol ? `<span class="mc-coin-vol">${vol}</span>` : ''}
         </div>`;
     }).join('');
 
@@ -433,6 +667,20 @@ function renderSidebar() {
         });
     });
 
+    // Watchlist ★ button
+    list.querySelectorAll('.mc-wl-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const sym = btn.dataset.wl;
+            if (sp) {
+                sp.wlToggle(sym);
+                btn.classList.toggle('active');
+                const item = btn.closest('.mc-coin-item');
+                if (item) item.classList.toggle('mc-wl');
+            }
+        });
+    });
+
     // Copy ticker button
     list.querySelectorAll('.mc-copy-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -448,10 +696,13 @@ function renderSidebar() {
     // Click handler — open coin modal or assign to multi-chart slot
     list.querySelectorAll('.mc-coin-item').forEach(item => {
         item.addEventListener('click', (e) => {
-            if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup') || e.target.closest('.mc-copy-btn')) return;
+            if (e.target.closest('.mc-flag-btn') || e.target.closest('.mc-flag-popup') || e.target.closest('.mc-copy-btn') || e.target.closest('.mc-wl-btn')) return;
             handleSidebarCoinClick(item.dataset.symbol);
         });
     });
+
+    // Apply column visibility from settings
+    applySidebarColumns()
 }
 
 
@@ -477,20 +728,15 @@ function createChartInstance(sym) {
     const chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b', fontSize: 9 },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.02)' }, horzLines: { color: 'rgba(255,255,255,0.02)' } },
+        grid: getGridOpts(),
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
 
-    const series = chart.addCandlestickSeries({
-        upColor: '#22c55e', downColor: '#ef4444',
-        borderVisible: false,
-        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
-        priceFormat: { type: 'price', precision: prec, minMove: minMove }
-    });
+    const series = addMainSeries(chart, prec, minMove);
 
     // Volume histogram
     const volSeries = chart.addHistogramSeries({
@@ -499,7 +745,7 @@ function createChartInstance(sym) {
         color: 'rgba(100,116,139,0.3)',
     });
     chart.priceScale('vol').applyOptions({
-        scaleMargins: { top: 0.85, bottom: 0 },
+        scaleMargins: { top: getVolScaleTop(), bottom: 0 },
         drawTicks: false,
         borderVisible: false,
     });
@@ -1161,20 +1407,15 @@ function openCoinModal(sym) {
     modal.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        grid: getGridOpts(),
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
 
-    modal.series = modal.chart.addCandlestickSeries({
-        upColor: '#22c55e', downColor: '#ef4444',
-        borderVisible: false,
-        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
-        priceFormat: { type: 'price', precision: prec, minMove: minMove }
-    });
+    modal.series = addMainSeries(modal.chart, prec, minMove);
 
     modal.volSeries = modal.chart.addHistogramSeries({
         priceFormat: { type: 'volume' },
@@ -1182,7 +1423,7 @@ function openCoinModal(sym) {
         color: 'rgba(100,116,139,0.3)',
     });
     modal.chart.priceScale('vol').applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
+        scaleMargins: { top: getVolScaleTop(), bottom: 0 },
         drawTicks: false,
         borderVisible: false,
     });
@@ -3035,20 +3276,15 @@ function createSlotChart(slotIndex) {
     slot.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8', fontSize: 10 },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        grid: getGridOpts(),
         crosshair: { mode: 0 },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45 },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
 
-    slot.series = slot.chart.addCandlestickSeries({
-        upColor: '#22c55e', downColor: '#ef4444',
-        borderVisible: false,
-        wickUpColor: '#22c55e', wickDownColor: '#ef4444',
-        priceFormat: { type: 'price', precision: prec, minMove: minMove }
-    });
+    slot.series = addMainSeries(slot.chart, prec, minMove);
 
     slot.volSeries = slot.chart.addHistogramSeries({
         priceFormat: { type: 'volume' },
@@ -3056,7 +3292,7 @@ function createSlotChart(slotIndex) {
         color: 'rgba(100,116,139,0.3)',
     });
     slot.chart.priceScale('vol').applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
+        scaleMargins: { top: getVolScaleTop(), bottom: 0 },
         drawTicks: false,
         borderVisible: false,
     });
@@ -3112,6 +3348,7 @@ async function loadSlotChart(slotIndex) {
 }
 
 async function applyDensityToSlot(slotIndex) {
+    if (!spGet('densityEnabled', true)) return;
     const slot = mch.slots[slotIndex];
     if (!slot || !slot.sym || !slot.chart || !slot.series) return;
 
@@ -3153,6 +3390,7 @@ async function applyDensityToSlot(slotIndex) {
 // Apply density walls to mini-chart card (grid view)
 // Batch density load — one request for all visible symbols
 async function applyDensityToBatch(symbols) {
+    if (!spGet('densityEnabled', true)) return;
     try {
         const res = await fetch(`/densities/simple?symbols=${symbols.join(',')}&xFilter=4`);
         const json = await res.json();
@@ -3192,6 +3430,7 @@ async function applyDensityToBatch(symbols) {
 }
 
 async function applyDensityToMiniChart(sym) {
+    if (!spGet('densityEnabled', true)) return;
     const chartObj = mc.charts[sym];
     if (!chartObj || !chartObj.series) return;
 
@@ -3227,6 +3466,7 @@ async function applyDensityToMiniChart(sym) {
 
 // Apply density walls to modal chart
 async function applyDensityToModal() {
+    if (!spGet('densityEnabled', true)) return;
     if (!modal.chart || !modal.series || !modal.currentSym) return;
 
     // Clear old density lines
