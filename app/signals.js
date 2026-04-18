@@ -206,6 +206,14 @@ function selectSignal(id) {
   if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
   if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation' }[meta.subType] || meta.subType })
 
+  // Market context metadata (new enriched fields)
+  if (meta.volume24h !== undefined) metaItems.push({ key: 'Volume 24h', val: '$' + fmtVol(meta.volume24h) })
+  if (meta.natr !== undefined && meta.natr !== null) metaItems.push({ key: 'NATR', val: `${meta.natr}%`, color: meta.natr >= 2 ? '#f59e0b' : meta.natr >= 1 ? '#22c55e' : '#94a3b8' })
+  if (meta.trades24h !== undefined && meta.trades24h > 0) metaItems.push({ key: 'Trades 24h', val: meta.trades24h >= 1e6 ? (meta.trades24h / 1e6).toFixed(1) + 'M' : meta.trades24h >= 1e3 ? (meta.trades24h / 1e3).toFixed(0) + 'K' : meta.trades24h.toString() })
+  if (meta.fundingRate !== undefined && meta.fundingRate !== null) metaItems.push({ key: 'Funding', val: `${meta.fundingRate > 0 ? '+' : ''}${meta.fundingRate}%`, color: meta.fundingRate > 0.01 ? '#22c55e' : meta.fundingRate < -0.01 ? '#ef4444' : '#94a3b8' })
+  if (meta.pricePosition !== undefined) metaItems.push({ key: '24h Range', val: `${meta.pricePosition}%`, color: meta.pricePosition >= 80 ? '#22c55e' : meta.pricePosition <= 20 ? '#ef4444' : '#94a3b8' })
+  if (meta.marketRank !== undefined) metaItems.push({ key: 'Vol Rank', val: `#${meta.marketRank}` })
+
   panel.innerHTML = `
     <div class="sig-detail-header">
       <span class="sig-type-badge ${s.type}" style="font-size:13px;">${formatType(s.type)}</span>

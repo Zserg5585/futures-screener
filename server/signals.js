@@ -29,14 +29,16 @@ const COOLDOWN_MS = 15 * 60_000
 const mfeTracker = new Map()
 
 let _getProxyCached = null
+let _setProxyCached = null
 let _bgetWithRetry = null
 let _auth = null
 let _scanTimer = null
 let _oiCvdTimer = null
 let _outcomeTimer = null
 
-function init({ getProxyCached, bgetWithRetry, auth }) {
+function init({ getProxyCached, setProxyCached, bgetWithRetry, auth }) {
   _getProxyCached = getProxyCached
+  _setProxyCached = setProxyCached
   _bgetWithRetry = bgetWithRetry
   _auth = auth
 
@@ -52,6 +54,65 @@ function stop() {
   if (_scanTimer) clearInterval(_scanTimer)
   if (_oiCvdTimer) clearInterval(_oiCvdTimer)
   if (_outcomeTimer) clearInterval(_outcomeTimer)
+}
+
+// ======================== MARKET CONTEXT HELPERS ========================
+
+/** Build a map of funding rates (cached 5min) */
+async function getFundingMap() {
+  const cached = _getProxyCached('funding_rates', 300_000)
+  if (cached) return cached
+  try {
+    const data = await _bgetWithRetry('/fapi/v1/premiumIndex')
+    if (!Array.isArray(data)) return {}
+    const map = {}
+    for (const d of data) {
+      map[d.symbol] = parseFloat(d.lastFundingRate) || 0
+    }
+    _setProxyCached('funding_rates', map)
+    return map
+  } catch { return {} }
+}
+
+/** Get NATR map from cache (computed by /api/natr endpoint, 5min TTL) */
+function getNatrMap() {
+  return _getProxyCached('natr:15m', 300_000) || {}
+}
+
+/** Compute NATR(14) from klines array (any TF). Returns number or null */
+function calcNatrFromKlines(klines) {
+  if (!Array.isArray(klines) || klines.length < 15) return null
+  const candles = klines.map(k => ({
+    high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4])
+  }))
+  let trSum = 0
+  for (let j = candles.length - 14; j < candles.length; j++) {
+    const h = candles[j].high, l = candles[j].low, pc = candles[j - 1].close
+    trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))
+  }
+  const atr = trSum / 14
+  const lastClose = candles[candles.length - 1].close
+  return lastClose > 0 ? parseFloat(((atr / lastClose) * 100).toFixed(2)) : null
+}
+
+/** Build enriched market context for a symbol at signal time */
+function buildMarketContext(t, { natrMap, fundingMap, rank }) {
+  const volume24h = parseFloat(t.quoteVolume) || 0
+  const high24h = parseFloat(t.highPrice) || 0
+  const low24h = parseFloat(t.lowPrice) || 0
+  const price = parseFloat(t.lastPrice) || 0
+  const range24h = high24h - low24h
+  // 0% = at 24h low, 100% = at 24h high
+  const pricePosition = range24h > 0 ? parseFloat(((price - low24h) / range24h * 100).toFixed(1)) : 50
+
+  return {
+    volume24h: Math.round(volume24h),
+    natr: natrMap[t.symbol] || null,
+    trades24h: parseInt(t.count) || 0,
+    fundingRate: fundingMap[t.symbol] != null ? parseFloat((fundingMap[t.symbol] * 100).toFixed(4)) : null,
+    pricePosition,
+    marketRank: rank,
+  }
 }
 
 // ======================== VOLUME SPIKE SCANNER (60s) ========================
@@ -72,10 +133,15 @@ async function scan() {
       .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_24H_USD)
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
 
+    // Pre-load market context data
+    const natrMap = getNatrMap()
+    const fundingMap = await getFundingMap()
+
     const now = Date.now()
     let signalCount = 0
 
-    for (const t of liquid) {
+    for (let idx = 0; idx < liquid.length; idx++) {
+      const t = liquid[idx]
       const symbol = t.symbol
       const price = parseFloat(t.lastPrice)
       const change = parseFloat(t.priceChangePercent)
@@ -110,6 +176,14 @@ async function scan() {
 
           // Use candle openTime as signal time (not scan time)
           const candleOpenMs = parseInt(lastCandle[0])
+
+          // Compute NATR from 5m klines as fallback if not in cache
+          let natrVal = natrMap[symbol] || null
+          if (!natrVal) natrVal = calcNatrFromKlines(klines)
+
+          // Market context
+          const ctx = buildMarketContext(t, { natrMap: { ...natrMap, [symbol]: natrVal }, fundingMap, rank: idx + 1 })
+
           emitSignal({
             type: 'volume_spike',
             symbol, price,
@@ -123,6 +197,7 @@ async function scan() {
               avgVol: Math.round(sma),
               candleChange: parseFloat(candleChange.toFixed(2)),
               change24h: parseFloat(change),
+              ...ctx,
             }
           })
           signalCount++
@@ -156,16 +231,21 @@ async function scanOiCvd() {
       if (!Array.isArray(ticker)) return
     }
 
-    const top = ticker
+    const allLiquid = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
       .filter(t => parseFloat(t.quoteVolume) >= MIN_VOLUME_24H_USD)
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-      .slice(0, OI_CVD_TOP_N)
+    const top = allLiquid.slice(0, OI_CVD_TOP_N)
+
+    // Pre-load market context data
+    const natrMap = getNatrMap()
+    const fundingMap = await getFundingMap()
 
     const now = Date.now()
     let signalCount = 0
 
-    for (const t of top) {
+    for (let idx = 0; idx < top.length; idx++) {
+      const t = top[idx]
       const symbol = t.symbol
       const price = parseFloat(t.lastPrice)
       const change = parseFloat(t.priceChangePercent)
@@ -223,6 +303,10 @@ async function scanOiCvd() {
         const confRatio = Math.abs(buySellRatio - 1) * 10
         // Use OI candle timestamp (not scan time)
         const oiCandleMs = parseInt(oiHist[1].timestamp)
+
+        // Market context
+        const ctx = buildMarketContext(t, { natrMap, fundingMap, rank: idx + 1 })
+
         emitSignal({
           type: 'oi_cvd',
           symbol, price,
@@ -235,12 +319,13 @@ async function scanOiCvd() {
             oiValue: oiValueUsd,
             buySellRatio: buySellRatio ? parseFloat(buySellRatio.toFixed(3)) : null,
             cvdDirection, subType, change,
+            ...ctx,
           }
         })
         signalCount++
 
       } catch (e) {
-        if (signalCount === 0 && top.indexOf(t) < 3) console.log(`[Signals] OI+CVD ${symbol} error: ${e.message}`)
+        if (signalCount === 0 && idx < 3) console.log(`[Signals] OI+CVD ${symbol} error: ${e.message}`)
       }
 
       await new Promise(r => setTimeout(r, OI_CVD_DELAY_MS))

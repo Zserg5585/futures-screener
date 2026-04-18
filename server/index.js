@@ -943,7 +943,7 @@ const start = async () => {
     await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
     // Init signals scanner (after server up so proxyCache is available)
-    signals.init({ getProxyCached, bgetWithRetry, auth })
+    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth })
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {
