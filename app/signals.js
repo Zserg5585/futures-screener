@@ -28,12 +28,10 @@ function initSignals() {
   const typeF = sigEl('sigTypeFilter')
   const dirF = sigEl('sigDirFilter')
   const searchF = sigEl('sigSearch')
-  const settingsBtn = sigEl('sigSettingsBtn')
 
   if (typeF) typeF.onchange = () => { sigState.typeFilter = typeF.value; loadSignals() }
   if (dirF) dirF.onchange = () => { sigState.dirFilter = dirF.value; loadSignals() }
   if (searchF) searchF.oninput = () => { sigState.search = searchF.value; renderSignals() }
-  if (settingsBtn) settingsBtn.onclick = () => toggleSignalSettings()
 
   // Load signal settings from settings panel (unified)
   if (typeof settingsPanel !== 'undefined') {
@@ -272,53 +270,6 @@ function selectSignal(id) {
 
     <button class="sig-detail-btn" onclick="openSignalChart('${s.symbol}')">Open Chart</button>
   `
-}
-
-// ---- Settings Panel ----
-function toggleSignalSettings() {
-  let panel = sigEl('sigSettingsPanel')
-  if (panel) { panel.remove(); return }
-
-  const btn = sigEl('sigSettingsBtn')
-  panel = document.createElement('div')
-  panel.id = 'sigSettingsPanel'
-  panel.className = 'sig-settings-panel'
-  panel.innerHTML = `
-    <div class="sig-settings-title">Signal Settings</div>
-    <div class="sig-settings-row">
-      <label>Min Volume Ratio</label>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <input type="range" id="sigRatioSlider" min="2" max="20" step="1" value="${sigState.minRatio}"
-               style="flex:1; accent-color:#3b82f6;" />
-        <span id="sigRatioLabel" style="font-weight:600; color:#3b82f6; min-width:32px;">${sigState.minRatio}x</span>
-      </div>
-      <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">
-        Current 5m candle volume vs average of last 20 candles
-      </div>
-    </div>
-  `
-  btn.parentElement.appendChild(panel)
-
-  const slider = sigEl('sigRatioSlider')
-  const label = sigEl('sigRatioLabel')
-  slider.oninput = () => {
-    const v = parseInt(slider.value)
-    label.textContent = v + 'x'
-    sigState.minRatio = v
-    localStorage.setItem('sig_settings', JSON.stringify({ minRatio: v }))
-    renderSignals()
-  }
-
-  // Close on click outside
-  setTimeout(() => {
-    const closeHandler = (e) => {
-      if (!panel.contains(e.target) && e.target !== btn) {
-        panel.remove()
-        document.removeEventListener('click', closeHandler)
-      }
-    }
-    document.addEventListener('click', closeHandler)
-  }, 10)
 }
 
 // ---- Open Chart (modal overlay, stays on Signals tab) ----

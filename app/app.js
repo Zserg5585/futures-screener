@@ -49,7 +49,6 @@ let state = {
 function init() {
     console.log('Futures Screener init')
     setupEventListeners()
-    updateControlsFromState()
     // Load directly (no initial empty render)
     loadWatchlist() // Загрузить watchlist из localStorage
     // Default tab is mini-charts, init it on load
@@ -117,9 +116,7 @@ function setupEventListeners() {
     })
 }
 
-function updateControlsFromState() {
-    // Old sidebar controls removed — state defaults used directly
-}
+
 
 function getCacheKey() {
     return JSON.stringify({
@@ -346,7 +343,7 @@ function renderDensities(entries) {
         if (!cardsContainer) {
             console.error('cardsContent element not found!')
             // Fallback: show error on page
-            document.body.innerHTML += `< div style = "color:red;padding:20px;" > ERROR: cardsContent element not found</div > `
+            document.body.innerHTML += `<div style="color:red;padding:20px;">ERROR: cardsContent element not found</div>`
             return
         }
         renderCards(entries)
@@ -360,21 +357,6 @@ function renderDensities(entries) {
     }
 }
 
-function renderSide(entry, side) {
-    const sideData = entry[side]
-    if (!sideData) {
-        return `
-        < td class="muted" >—</td >
-            <td class="muted">—</td>
-            <td class="muted">—</td>
-    `
-    }
-
-    return `
-        < td > ${formatNumber(sideData.levelPrice, 2)}</td >
-        <td>${formatPercent(sideData.distancePct)}</td>
-        <td>${formatNotional(sideData.notional)}</td>
-    `
 }
 
 // Format helpers
@@ -639,27 +621,6 @@ async function initMiniCharts() {
             });
         }
 
-        // Sort select
-        const sortSel = el('mcSortBy');
-        if (sortSel) {
-            sortSel.addEventListener('change', (e) => {
-                mc.sortBy = e.target.value;
-                applyFiltersAndRebuild();
-            });
-        }
-
-        // Filters
-        ['mcFilterVol', 'mcFilterNatr', 'mcFilterTrades'].forEach(id => {
-            const sel = el(id);
-            if (sel) {
-                sel.addEventListener('change', () => {
-                    mc.filters.minVol = parseFloat(el('mcFilterVol').value);
-                    mc.filters.minNatr = parseFloat(el('mcFilterNatr').value);
-                    mc.filters.minTrades = parseFloat(el('mcFilterTrades').value);
-                    applyFiltersAndRebuild();
-                });
-            }
-        });
 
         // Refresh button
         const refreshBtn = el('mcRefreshBtn');
@@ -1152,12 +1113,6 @@ function openCoinModal(sym) {
         <div class="mc-stat"><span class="mc-stat-label">Low:</span><span class="mc-stat-value">${parseFloat(pair.lowPrice).toFixed(prec)}</span></div>
     `;
 
-    // Links
-    el('cmLinks').innerHTML = `
-        <a href="https://www.binance.com/en/futures/${sym}" target="_blank">Binance</a>
-        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P" target="_blank">TradingView</a>
-        <a href="https://www.coinglass.com/tv/${ticker}USDT" target="_blank">CoinGlass</a>
-    `;
 
     // TF buttons — set active
     const tfBtns = el('cmTFButtons');
