@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v15'
+const CACHE_NAME = 'fs-v16'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -23,6 +23,27 @@ self.addEventListener('activate', (e) => {
     )
   )
   self.clients.claim()
+})
+
+// Notification click — open PWA and navigate to coin modal
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close()
+  const symbol = e.notification.data?.symbol
+  const url = symbol ? `/?signal=${symbol}` : '/'
+
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cls => {
+      // Focus existing window if open
+      for (const client of cls) {
+        if (client.url.includes(self.registration.scope) || client.url.includes(self.location.origin)) {
+          client.postMessage({ type: 'OPEN_SIGNAL', symbol })
+          return client.focus()
+        }
+      }
+      // No window open — open new one
+      return clients.openWindow(url)
+    })
+  )
 })
 
 self.addEventListener('fetch', (e) => {

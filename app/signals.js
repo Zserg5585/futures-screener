@@ -16,6 +16,8 @@ const sigState = {
   minRatio: 3,  // user-configurable: show volume spikes >= Nx
   refreshTimer: null,
   active: false,
+  seenIds: new Set(), // track notified signal IDs
+  firstLoad: true,    // skip notifications on first load
 }
 
 const sigEl = (id) => document.getElementById(id)
@@ -76,7 +78,11 @@ async function loadSignals() {
       fetch(`${SIG_API}/api/signals/outcomes`).then(r => r.json()),
     ])
 
-    if (liveRes.success) sigState.signals = liveRes.data || []
+    if (liveRes.success) {
+      const newSignals = liveRes.data || []
+      notifyNewSignals(newSignals)
+      sigState.signals = newSignals
+    }
     if (outcomesRes.success) sigState.outcomes = outcomesRes.stats || []
     if (summaryRes.success) renderSummary(summaryRes)
     renderSignals()
@@ -356,3 +362,133 @@ function fmtVol(v) {
   if (v >= 1e3) return '$' + (v / 1e3).toFixed(0) + 'K'
   return '$' + v.toFixed(0)
 }
+
+// ---- Browser Notifications for new signals ----
+function notifyNewSignals(newList) {
+  const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
+  const enabled = sp ? sp.get('signalNotifications') : false
+  if (!enabled) return
+
+  // On first load, just mark all as seen (no spam)
+  if (sigState.firstLoad) {
+    sigState.firstLoad = false
+    newList.forEach(s => sigState.seenIds.add(s.id))
+    return
+  }
+
+  // Find signals we haven't seen yet
+  const fresh = newList.filter(s => !sigState.seenIds.has(s.id))
+  if (fresh.length === 0) return
+
+  // Mark as seen
+  fresh.forEach(s => sigState.seenIds.add(s.id))
+
+  // Cap seenIds to last 1000
+  if (sigState.seenIds.size > 1000) {
+    const arr = [...sigState.seenIds]
+    sigState.seenIds = new Set(arr.slice(-500))
+  }
+
+  // Apply same filters as renderSignals
+  const minConf = sp ? (sp.get('signalMinConfidence') || 50) : 50
+  const minRatio = sigState.minRatio || 3
+  const wlOnly = sp ? sp.get('signalWatchlistOnly') : false
+
+  const filtered = fresh.filter(s => {
+    if (s.type === 'volume_spike' && (s.metadata?.ratio || 0) < minRatio) return false
+    if (minConf > 30 && (s.confidence || 0) < minConf) return false
+    if (wlOnly && sp && !sp.wlHas(s.symbol)) return false
+    return true
+  })
+
+  if (filtered.length === 0) return
+
+  // Request permission if needed
+  if (Notification.permission === 'default') {
+    Notification.requestPermission()
+    return
+  }
+  if (Notification.permission !== 'granted') return
+
+  // Send notification for each new signal (max 3 to avoid spam)
+  filtered.slice(0, 3).forEach(s => {
+    const ticker = s.symbol.replace('USDT', '')
+    const icon = s.type === 'volume_spike' ? '📊' : '🔮'
+    const dir = s.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'
+    const title = `${icon} ${ticker} ${dir}`
+    const body = `${formatType(s.type)} • Conf ${Math.round(s.confidence)}%\n${s.description || ''}`
+
+    try {
+      // Use SW registration for persistent notifications (works when tab in background)
+      if (navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.showNotification(title, {
+            body,
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
+            tag: `signal-${s.id}`,
+            data: { symbol: s.symbol, signalId: s.id },
+            vibrate: [200, 100, 200],
+            requireInteraction: false,
+            silent: !sp?.get('signalSound'),
+          })
+        })
+      } else {
+        // Fallback: basic Notification API
+        new Notification(title, {
+          body,
+          tag: `signal-${s.id}`,
+          data: { symbol: s.symbol },
+        })
+      }
+    } catch (e) {
+      console.error('[Signals] Notification error:', e)
+    }
+  })
+
+  // Play sound if enabled
+  if (sp?.get('signalSound') && filtered.length > 0) {
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)()
+      const osc = ac.createOscillator()
+      const gain = ac.createGain()
+      osc.connect(gain)
+      gain.connect(ac.destination)
+      osc.frequency.value = 880
+      gain.gain.value = 0.15
+      osc.start()
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.3)
+      osc.stop(ac.currentTime + 0.3)
+    } catch (e) {}
+  }
+}
+
+// ---- Listen for SW messages (notification click → open modal) ----
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'OPEN_SIGNAL' && e.data.symbol) {
+      if (typeof openCoinModal === 'function') {
+        openCoinModal(e.data.symbol)
+      }
+    }
+  })
+}
+
+// ---- Check URL param on load (from notification click when app was closed) ----
+(function checkSignalParam() {
+  const params = new URLSearchParams(window.location.search)
+  const sym = params.get('signal')
+  if (sym) {
+    // Clean URL
+    window.history.replaceState({}, '', '/')
+    // Wait for app to init, then open modal
+    const tryOpen = () => {
+      if (typeof openCoinModal === 'function' && typeof mc !== 'undefined' && mc.allPairs.length > 0) {
+        openCoinModal(sym)
+      } else {
+        setTimeout(tryOpen, 500)
+      }
+    }
+    setTimeout(tryOpen, 1000)
+  }
+})()
