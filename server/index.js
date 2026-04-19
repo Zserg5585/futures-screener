@@ -850,6 +850,23 @@ fastify.get('/api/klines', async (req) => {
   return data
 })
 
+// Test signal — inject a fake signal for notification testing
+fastify.get('/api/signals/test', async () => {
+  const sig = {
+    id: `test-${Date.now()}`,
+    type: 'volume_spike',
+    symbol: 'BTCUSDT',
+    direction: 'LONG',
+    price: 94500,
+    confidence: 85,
+    description: 'Test signal — Volume 5.2x above SMA20 average',
+    metadata: { ratio: 5.2, currentVol: 12000000, avgVol: 2300000 },
+    created_at: new Date().toISOString(),
+  }
+  signals.liveSignals.unshift(sig)
+  return { success: true, signal: sig }
+})
+
 // OI history — proxied from Binance /futures/data/openInterestHist
 fastify.get('/api/oi-history', async (req) => {
   const symbol = String(req.query.symbol || '').toUpperCase()

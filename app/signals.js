@@ -355,6 +355,27 @@ function formatPrice(p) {
   return p.toFixed(6)
 }
 
+// ---- Background notification checker (runs regardless of active tab) ----
+let _bgNotifyTimer = null
+function startBgNotifyCheck() {
+  if (_bgNotifyTimer) return
+  _bgNotifyTimer = setInterval(async () => {
+    // Skip if signals tab is active (loadSignals already handles it)
+    if (sigState.active) return
+    // Skip if notifications disabled
+    const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
+    if (!sp || !sp.get('signalNotifications')) return
+
+    try {
+      const res = await fetch(`${SIG_API}/api/signals/live?limit=50&hours=1`)
+      const data = await res.json()
+      if (data.success) notifyNewSignals(data.data || [])
+    } catch (e) {}
+  }, SIG_REFRESH_MS)
+}
+// Auto-start bg checker on load
+startBgNotifyCheck()
+
 function fmtVol(v) {
   if (!v) return '—'
   if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'B'
@@ -472,6 +493,28 @@ if (navigator.serviceWorker) {
       }
     }
   })
+}
+
+// ---- Test notification (call from browser console: testNotification()) ----
+window.testNotification = async function() {
+  if (Notification.permission === 'default') await Notification.requestPermission()
+  if (Notification.permission !== 'granted') { console.log('Notifications blocked!'); return }
+  const title = '📊 TEST Signal — BTC ▲ LONG'
+  const body = 'Vol Spike • Conf 85%\nTest notification — click to open modal'
+  try {
+    const reg = await navigator.serviceWorker?.ready
+    if (reg) {
+      await reg.showNotification(title, {
+        body, icon: '/icon-192.png', badge: '/icon-192.png',
+        tag: 'test-signal', data: { symbol: 'BTCUSDT' },
+        vibrate: [200, 100, 200],
+      })
+      console.log('Notification sent via SW!')
+    } else {
+      new Notification(title, { body, tag: 'test-signal' })
+      console.log('Notification sent via API!')
+    }
+  } catch(e) { console.error('Error:', e) }
 }
 
 // ---- Check URL param on load (from notification click when app was closed) ----
