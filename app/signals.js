@@ -201,6 +201,11 @@ function selectSignal(id) {
   const panel = sigEl('sigDetail')
   if (!panel) return
 
+  // Mobile: show detail as overlay
+  if (window.innerWidth <= 900) {
+    panel.classList.add('mobile-open')
+  }
+
   const meta = s.metadata || {}
   const confColor = s.confidence >= 80 ? '#22c55e' : s.confidence >= 60 ? '#f59e0b' : '#ef4444'
 
@@ -225,6 +230,7 @@ function selectSignal(id) {
   if (meta.marketRank !== undefined) metaItems.push({ key: 'Vol Rank', val: `#${meta.marketRank}` })
 
   panel.innerHTML = `
+    <button class="sig-detail-back" onclick="document.getElementById('sigDetail').classList.remove('mobile-open')">← Back</button>
     <div class="sig-detail-header">
       <span class="sig-type-badge ${s.type}" style="font-size:13px;">${formatType(s.type)}</span>
       <span class="sig-detail-symbol">${s.symbol.replace('USDT', '')}</span>

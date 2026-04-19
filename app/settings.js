@@ -461,7 +461,7 @@ const settingsPanel = (() => {
       <div class="sp-section">
         <div class="sp-section-title">Cards per Row</div>
         <div class="sp-layout-grid">
-          ${[3, 4, 5, 6].map(n => `
+          ${[1, 2, 3, 4, 5, 6].map(n => `
             <button class="sp-layout-btn${get('cardsPerRow') === n ? ' active' : ''}" data-key="cardsPerRow" data-value="${n}" title="${n} per row">
               <span class="sp-layout-label">${n}</span>
             </button>

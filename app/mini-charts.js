@@ -273,9 +273,9 @@ async function initMiniCharts() {
         }
 
         // Sort by column headers in sidebar
-        const colHeaders = document.getElementById('mcColHeaders');
-        if (colHeaders) {
-            colHeaders.querySelectorAll('.mc-col-hdr').forEach(hdr => {
+        const colHeaders2 = document.getElementById('mcColHeaders');
+        if (colHeaders2) {
+            colHeaders2.querySelectorAll('.mc-col-hdr').forEach(hdr => {
                 hdr.addEventListener('click', () => {
                     const key = hdr.dataset.sort;
                     // Toggle direction if same column, else set desc
@@ -286,7 +286,7 @@ async function initMiniCharts() {
                         mc.sortDir = 'desc';
                     }
                     // Update header classes
-                    colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
+                    colHeaders2.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
                     hdr.classList.add('active', mc.sortDir);
                     applyFiltersAndRebuild();
                 });
@@ -310,6 +310,33 @@ async function initMiniCharts() {
         const refreshBtn = el('mcRefreshBtn');
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => refreshMiniCharts());
+        }
+
+        // Mobile sidebar toggle (hamburger)
+        const sidebarToggle = el('mcSidebarToggle');
+        const sidebarOverlay = el('mcSidebarOverlay');
+        const sidebar = el('mcSidebar');
+        if (sidebarToggle && sidebar) {
+            const openSidebar = () => {
+                sidebar.classList.add('mobile-open');
+                if (sidebarOverlay) sidebarOverlay.classList.add('active');
+            };
+            const closeSidebar = () => {
+                sidebar.classList.remove('mobile-open');
+                if (sidebarOverlay) sidebarOverlay.classList.remove('active');
+            };
+            sidebarToggle.addEventListener('click', () => {
+                sidebar.classList.contains('mobile-open') ? closeSidebar() : openSidebar();
+            });
+            if (sidebarOverlay) {
+                sidebarOverlay.addEventListener('click', closeSidebar);
+            }
+            // Close sidebar when coin is clicked (mobile)
+            sidebar.addEventListener('click', (e) => {
+                if (e.target.closest('.mc-coin-item') && window.innerWidth <= 768) {
+                    closeSidebar();
+                }
+            });
         }
 
         // Search input
@@ -1673,6 +1700,7 @@ const DRAW_TOOLS = [
     { id: 'trendline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="13" cy="4" r="1.5" fill="currentColor"/><line x1="3" y1="12" x2="13" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>', title: 'Trend Line (T)', key: 't' },
     { id: 'fib', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="2" x2="15" y2="2" stroke="currentColor" stroke-width="1" opacity="0.5"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="10" x2="15" y2="10" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="14" x2="15" y2="14" stroke="currentColor" stroke-width="1" opacity="0.5"/></svg>', title: 'Fibonacci (F)', key: 'f' },
     { id: 'rect', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.1"/></svg>', title: 'Rectangle (B)', key: 'b' },
+    { id: 'ruler', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="2" y1="13" x2="14" y2="3" stroke="currentColor" stroke-width="1.4"/><circle cx="2" cy="13" r="1.5" fill="currentColor"/><circle cx="14" cy="3" r="1.5" fill="currentColor"/><line x1="2" y1="13" x2="2" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 1.5" opacity="0.5"/><line x1="2" y1="3" x2="14" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 1.5" opacity="0.5"/></svg>', title: 'Ruler / Measure (M)', key: 'm' },
     { id: 'trash', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-8 0h10m-9 0v10a1 1 0 001 1h6a1 1 0 001-1V3" stroke="currentColor" stroke-width="1.3"/></svg>', title: 'Clear All', key: 'Delete' },
 ];
 
@@ -1887,6 +1915,7 @@ function renderDrawToolbar() {
             draw.activeTool = tool;
             draw.clickCount = 0;
             removePreviewOverlay();
+            if (tool !== 'ruler') removeRulerMeasurement();
             renderDrawToolbar();
             updateModalCursor();
         });
@@ -1949,6 +1978,7 @@ function clearAllDrawings() {
     draw.selected = null;
     hideDrawingPanel();
     removePreviewOverlay();
+    removeRulerMeasurement();
     persistDrawings();
 }
 
@@ -2439,7 +2469,7 @@ function setupDrawingHandlers() {
     // Unified handler for both click and touch
     function handleDrawClick(clientX, clientY) {
         if (!modal.chart || !modal.series) return;
-        if (draw.activeTool === 'cursor' || draw.activeTool === 'ruler') return;
+        if (draw.activeTool === 'cursor') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
@@ -2497,8 +2527,31 @@ function setupDrawingHandlers() {
                 renderDrawToolbar();
                 updateModalCursor();
             }
+        } else if (draw.activeTool === 'ruler') {
+            if (draw.clickCount === 0) {
+                draw.startPrice = price;
+                draw.startTime = time;
+                draw.clickCount = 1;
+                // Remove old ruler measurement if exists
+                removeRulerMeasurement();
+            } else {
+                showRulerMeasurement(draw.startTime, draw.startPrice, time, price);
+                draw.clickCount = 0;
+                removePreviewOverlay();
+                draw.activeTool = 'cursor';
+                renderDrawToolbar();
+                updateModalCursor();
+            }
         }
     }
+
+    // Clear ruler on any click/tap in cursor mode
+    chartEl.addEventListener('mousedown', () => {
+        if (draw.activeTool === 'cursor' && rulerOverlay) removeRulerMeasurement();
+    }, true);
+    chartEl.addEventListener('touchstart', () => {
+        if (draw.activeTool === 'cursor' && rulerOverlay) removeRulerMeasurement();
+    }, { capture: true, passive: true });
 
     // Desktop click
     chartEl.addEventListener('click', (e) => {
@@ -2689,7 +2742,7 @@ function setupDrawingHandlers() {
     chartEl.addEventListener('mousemove', (e) => {
         if (!modal.chart || !modal.series) return;
         if (draw.clickCount !== 1) return;
-        if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib' && draw.activeTool !== 'rect') return;
+        if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib' && draw.activeTool !== 'rect' && draw.activeTool !== 'ruler') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -2742,6 +2795,93 @@ function setupDrawingHandlers() {
             ctx.strokeRect(startX2, startY2, w, h);
             ctx.fillStyle = 'rgba(91, 156, 246, 0.08)';
             ctx.fillRect(startX2, startY2, w, h);
+        } else if (draw.activeTool === 'ruler') {
+            // Preview ruler measurement
+            const curTime = modal.chart.timeScale().coordinateToTime(x);
+            const priceDiff = price - draw.startPrice;
+            const pctDiff = draw.startPrice !== 0 ? (priceDiff / draw.startPrice * 100) : 0;
+            const isUp = priceDiff >= 0;
+            const color = isUp ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
+            const colorFill = isUp ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)';
+
+            // Dashed lines (L-shape: vertical + horizontal)
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            // Vertical from start
+            ctx.beginPath(); ctx.moveTo(startX2, startY2); ctx.lineTo(startX2, y); ctx.stroke();
+            // Horizontal to end
+            ctx.beginPath(); ctx.moveTo(startX2, y); ctx.lineTo(x, y); ctx.stroke();
+
+            // Main diagonal line
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(startX2, startY2); ctx.lineTo(x, y); ctx.stroke();
+
+            // Fill area
+            ctx.fillStyle = colorFill;
+            ctx.beginPath(); ctx.moveTo(startX2, startY2); ctx.lineTo(startX2, y); ctx.lineTo(x, y); ctx.closePath(); ctx.fill();
+
+            // Dots at start/end
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.arc(startX2, startY2, 3, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+
+            // Label
+            const prec = getPricePrecision(Math.abs(draw.startPrice));
+            const sign = isUp ? '+' : '';
+            let timeStr = '';
+            let barsStr = '';
+            if (draw.startTime && curTime) {
+                const timeDiffSec = Math.abs(curTime - draw.startTime);
+                if (timeDiffSec < 60) timeStr = Math.round(timeDiffSec) + 's';
+                else if (timeDiffSec < 3600) timeStr = Math.round(timeDiffSec / 60) + 'm';
+                else if (timeDiffSec < 86400) timeStr = (timeDiffSec / 3600).toFixed(1) + 'h';
+                else timeStr = (timeDiffSec / 86400).toFixed(1) + 'd';
+                // Bars count based on modal TF
+                const tfSec = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[modal.currentTF] || 300;
+                barsStr = Math.round(timeDiffSec / tfSec) + ' bars';
+            }
+
+            const labelText = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)`;
+            const labelText2 = timeStr ? `${timeStr}  •  ${barsStr}` : '';
+
+            // Background box
+            const midX = (startX2 + x) / 2;
+            const labelY = Math.min(startY2, y) - 12;
+            ctx.font = '600 12px Inter, sans-serif';
+            const w1 = ctx.measureText(labelText).width;
+            ctx.font = '11px Inter, sans-serif';
+            const w2 = labelText2 ? ctx.measureText(labelText2).width : 0;
+            const boxW = Math.max(w1, w2) + 16;
+            const boxH = labelText2 ? 38 : 22;
+            const boxX = midX - boxW / 2;
+            const boxY = Math.max(2, labelY - boxH);
+
+            ctx.fillStyle = isUp ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)';
+            ctx.beginPath();
+            const r = 5;
+            ctx.moveTo(boxX + r, boxY); ctx.lineTo(boxX + boxW - r, boxY);
+            ctx.quadraticCurveTo(boxX + boxW, boxY, boxX + boxW, boxY + r);
+            ctx.lineTo(boxX + boxW, boxY + boxH - r);
+            ctx.quadraticCurveTo(boxX + boxW, boxY + boxH, boxX + boxW - r, boxY + boxH);
+            ctx.lineTo(boxX + r, boxY + boxH);
+            ctx.quadraticCurveTo(boxX, boxY + boxH, boxX, boxY + boxH - r);
+            ctx.lineTo(boxX, boxY + r);
+            ctx.quadraticCurveTo(boxX, boxY, boxX + r, boxY);
+            ctx.fill();
+
+            // Text
+            ctx.fillStyle = '#fff';
+            ctx.font = '600 12px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(labelText, midX, boxY + 15);
+            if (labelText2) {
+                ctx.font = '11px Inter, sans-serif';
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.fillText(labelText2, midX, boxY + 30);
+            }
+            ctx.textAlign = 'start';
         } else {
             // Preview trendline
             ctx.beginPath();
@@ -2907,6 +3047,128 @@ function drawRectangle(t1, p1, t2, p2, color) {
     persistDrawings();
 }
 
+// ---- Ruler Measurement ----
+let rulerOverlay = null;
+
+function removeRulerMeasurement() {
+    if (rulerOverlay) {
+        if (rulerOverlay._unsub) rulerOverlay._unsub();
+        rulerOverlay.remove();
+        rulerOverlay = null;
+    }
+}
+
+function showRulerMeasurement(t1, p1, t2, p2) {
+    if (!modal.chart || !modal.series) return;
+    removeRulerMeasurement();
+
+    const chartEl = el('cmChartBody');
+    if (!chartEl) return;
+
+    // Create persistent overlay
+    const overlay = document.createElement('canvas');
+    overlay.className = 'ruler-overlay';
+    overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99;';
+    chartEl.appendChild(overlay);
+    rulerOverlay = overlay;
+
+    function render() {
+        if (!rulerOverlay || !modal.chart || !modal.series) return;
+        const w = chartEl.clientWidth;
+        const h = chartEl.clientHeight;
+        overlay.width = w;
+        overlay.height = h;
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, w, h);
+
+        const sx = modal.chart.timeScale().timeToCoordinate(t1);
+        const sy = modal.series.priceToCoordinate(p1);
+        const ex = modal.chart.timeScale().timeToCoordinate(t2);
+        const ey = modal.series.priceToCoordinate(p2);
+        if (sx === null || sy === null || ex === null || ey === null) return;
+
+        const priceDiff = p2 - p1;
+        const pctDiff = p1 !== 0 ? (priceDiff / p1 * 100) : 0;
+        const isUp = priceDiff >= 0;
+        const color = isUp ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
+        const colorFill = isUp ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)';
+
+        // Dashed L-shape
+        ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx, ey); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(sx, ey); ctx.lineTo(ex, ey); ctx.stroke();
+
+        // Main line
+        ctx.lineWidth = 1.5; ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+
+        // Fill triangle
+        ctx.fillStyle = colorFill;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx, ey); ctx.lineTo(ex, ey); ctx.closePath(); ctx.fill();
+
+        // Dots
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI * 2); ctx.fill();
+
+        // Label
+        const prec = getPricePrecision(Math.abs(p1));
+        const sign = isUp ? '+' : '';
+        const timeDiffSec = Math.abs(t2 - t1);
+        let timeStr = '';
+        if (timeDiffSec < 60) timeStr = Math.round(timeDiffSec) + 's';
+        else if (timeDiffSec < 3600) timeStr = Math.round(timeDiffSec / 60) + 'm';
+        else if (timeDiffSec < 86400) timeStr = (timeDiffSec / 3600).toFixed(1) + 'h';
+        else timeStr = (timeDiffSec / 86400).toFixed(1) + 'd';
+        const tfSec = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[modal.currentTF] || 300;
+        const bars = Math.round(timeDiffSec / tfSec);
+
+        const line1 = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)`;
+        const line2 = `${timeStr}  •  ${bars} bars`;
+
+        const midX = (sx + ex) / 2;
+        const labelY = Math.min(sy, ey) - 12;
+        ctx.font = '600 12px Inter, sans-serif';
+        const w1 = ctx.measureText(line1).width;
+        ctx.font = '11px Inter, sans-serif';
+        const w2 = ctx.measureText(line2).width;
+        const boxW = Math.max(w1, w2) + 16;
+        const boxH = 38;
+        const boxX = midX - boxW / 2;
+        const boxY = Math.max(2, labelY - boxH);
+
+        ctx.fillStyle = isUp ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)';
+        const r = 5;
+        ctx.beginPath();
+        ctx.moveTo(boxX + r, boxY); ctx.lineTo(boxX + boxW - r, boxY);
+        ctx.quadraticCurveTo(boxX + boxW, boxY, boxX + boxW, boxY + r);
+        ctx.lineTo(boxX + boxW, boxY + boxH - r);
+        ctx.quadraticCurveTo(boxX + boxW, boxY + boxH, boxX + boxW - r, boxY + boxH);
+        ctx.lineTo(boxX + r, boxY + boxH);
+        ctx.quadraticCurveTo(boxX, boxY + boxH, boxX, boxY + boxH - r);
+        ctx.lineTo(boxX, boxY + r);
+        ctx.quadraticCurveTo(boxX, boxY, boxX + r, boxY);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+        ctx.font = '600 12px Inter, sans-serif';
+        ctx.fillText(line1, midX, boxY + 15);
+        ctx.font = '11px Inter, sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.fillText(line2, midX, boxY + 30);
+        ctx.textAlign = 'start';
+    }
+
+    render();
+
+    // Re-render on scroll/zoom so ruler follows the chart
+    const subId = modal.chart.timeScale().subscribeVisibleTimeRangeChange(render);
+    // Store unsubscribe for cleanup
+    overlay._unsub = () => {
+        try { modal.chart.timeScale().unsubscribeVisibleTimeRangeChange(render); } catch(e) {}
+    };
+}
+
 function drawFibonacci(p1, p2, color, customLevels) {
     if (!modal.series) return;
     const rawLevels = customLevels || fibConfig.load();
@@ -2943,6 +3205,7 @@ function drawFibonacci(p1, p2, color, customLevels) {
 function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
+    removeRulerMeasurement();
     // Stop countdown timer
     if (modal._countdownTimer) { clearInterval(modal._countdownTimer); modal._countdownTimer = null; }
     // Clear signal markers

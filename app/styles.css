@@ -555,6 +555,33 @@ body.theme-amoled {
     display: none;
 }
 
+/* ===== MOBILE HEADER ===== */
+@media screen and (max-width: 600px) {
+    .top {
+        padding: 0 10px;
+        height: 44px;
+        gap: 6px;
+    }
+    .brand {
+        display: none;
+    }
+    .tabs {
+        margin-left: 0;
+        gap: 1px;
+        flex: 1;
+    }
+    .tab {
+        padding: 8px 12px;
+        font-size: 12px;
+        flex: 1;
+        text-align: center;
+        min-height: 36px;
+    }
+    .status {
+        gap: 4px;
+    }
+}
+
 @media screen and (max-width: 900px) {
     .btn-filters {
         display: none !important;
@@ -1296,14 +1323,17 @@ body.theme-amoled {
     text-align: right;
 }
 
-/* Column headers */
+/* Column headers — same grid as .mc-coin-item but Coin spans first 4 cols */
 .mc-col-headers {
     display: grid;
-    grid-template-columns: 1fr 50px 34px 40px;
+    grid-template-columns: 20px 1fr 18px 16px 50px 34px 40px;
     align-items: center;
-    padding: 5px 8px 5px 30px;
+    padding: 5px 8px;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     user-select: none;
+}
+.mc-col-hdr:first-child {
+    grid-column: 1 / 5;
 }
 .mc-col-hdr {
     font-size: 9px;
@@ -1954,7 +1984,30 @@ body.theme-amoled {
 /* Grid columns controlled by settings (JS inline style).
    No media overrides — user picks cards per row in Settings. */
 
+/* Hamburger button — hidden on desktop */
+.mc-sidebar-toggle {
+    display: none;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text-muted);
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+.mc-sidebar-toggle:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+
+/* Sidebar overlay — hidden by default */
+.mc-sidebar-overlay {
+    display: none;
+}
+
 @media screen and (max-width: 768px) {
+    .mc-sidebar-toggle {
+        display: flex;
+    }
     .mc-layout {
         flex-direction: column;
         height: auto;
@@ -1962,18 +2015,49 @@ body.theme-amoled {
     }
     .mc-sidebar {
         display: none;
+        position: fixed;
+        top: 0; left: 0;
+        width: 280px;
+        height: 100vh;
+        z-index: 200;
+        background: rgba(8, 12, 21, 0.98);
+        border-right: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 4px 0 24px rgba(0,0,0,0.6);
+        transition: transform 0.25s ease;
+    }
+    .mc-sidebar.mobile-open {
+        display: flex;
+    }
+    .mc-sidebar-overlay {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 199;
+    }
+    .mc-sidebar-overlay.active {
+        display: block;
+    }
+    .mc-hide-mobile {
+        display: none !important;
     }
     .mc-grid {
         grid-template-columns: 1fr;
-        grid-auto-rows: 250px;
+        grid-auto-rows: 220px;
     }
     .mc-charts-area {
         flex: 1;
         overflow-y: auto;
     }
     .mc-toolbar {
-        gap: 8px;
+        gap: 6px;
         padding: 6px 10px;
+    }
+    .mc-chart-header {
+        padding: 6px 10px;
+    }
+    .mc-chart-metrics {
+        gap: 6px;
     }
 }
 
@@ -2649,6 +2733,17 @@ body.theme-amoled {
     cursor: pointer; transition: background 0.15s; width: 100%;
 }
 .sig-detail-btn:hover { background: rgba(59,130,246,0.25); }
+.sig-detail-back {
+    display: none;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text-muted); font-size: 13px; font-weight: 600;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer;
+    margin-bottom: 12px; width: fit-content;
+}
+.sig-detail-back:hover { background: rgba(255,255,255,0.08); }
+@media (max-width: 900px) {
+    .sig-detail-back { display: block; }
+}
 
 /* Signal Settings Panel */
 /* Outcome Stats Bar */
@@ -2668,7 +2763,20 @@ body.theme-amoled {
 }
 
 @media (max-width: 900px) {
-    .sig-detail { display: none; }
+    .sig-detail {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100%; min-width: 100%;
+        z-index: 200;
+        background: rgba(8, 12, 21, 0.98);
+        border: none;
+        padding: 16px;
+        overflow-y: auto;
+    }
+    .sig-detail.mobile-open {
+        display: flex;
+    }
     .sig-table-wrap { flex: 1; }
     .sig-desc-col { display: none; }
 }

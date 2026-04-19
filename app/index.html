@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20260417-v18" />
+    <link rel="stylesheet" href="/styles.css?v=20260418-v7" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -73,6 +73,9 @@
             <div id="tab-mini-charts" class="tab-content">
                 <!-- Global Toolbar -->
                 <div class="mc-toolbar">
+                    <button id="mcSidebarToggle" class="mc-sidebar-toggle" title="Coins list">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    </button>
                     <div class="mc-toolbar-group">
                         <span class="mc-toolbar-label">TF:</span>
                         <div class="mc-tf-buttons" id="mcGlobalTF">
@@ -84,8 +87,8 @@
                             <button class="mc-tf-btn" data-tf="1d">1d</button>
                         </div>
                     </div>
-                    <div class="mc-toolbar-divider"></div>
-                    <div class="mc-toolbar-group">
+                    <div class="mc-toolbar-divider mc-hide-mobile"></div>
+                    <div class="mc-toolbar-group mc-hide-mobile">
                         <span class="mc-toolbar-label">Vol:</span>
                         <select id="mcFilterVol" class="mc-select">
                             <option value="0">All</option>
@@ -95,7 +98,7 @@
                             <option value="500">≥$500M</option>
                         </select>
                     </div>
-                    <div class="mc-toolbar-group">
+                    <div class="mc-toolbar-group mc-hide-mobile">
                         <span class="mc-toolbar-label">NATR:</span>
                         <select id="mcFilterNatr" class="mc-select">
                             <option value="0" selected>All</option>
@@ -105,7 +108,7 @@
                             <option value="5">≥5%</option>
                         </select>
                     </div>
-                    <div class="mc-toolbar-group">
+                    <div class="mc-toolbar-group mc-hide-mobile">
                         <span class="mc-toolbar-label">Trades:</span>
                         <select id="mcFilterTrades" class="mc-select">
                             <option value="0" selected>All</option>
@@ -115,8 +118,8 @@
                             <option value="500000">≥500K</option>
                         </select>
                     </div>
-                    <div class="mc-toolbar-divider"></div>
-                    <div class="mc-toolbar-group mc-layout-picker" id="mcLayoutPicker">
+                    <div class="mc-toolbar-divider mc-hide-mobile"></div>
+                    <div class="mc-toolbar-group mc-layout-picker mc-hide-mobile" id="mcLayoutPicker">
                         <span class="mc-toolbar-label">Layout:</span>
                         <button class="mc-layout-btn" data-layout="grid" title="Mini-Charts Grid">
                             <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="0" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/></svg>
@@ -151,6 +154,8 @@
                         <div id="chartsGrid" class="mc-grid"></div>
                     </div>
 
+                    <!-- Sidebar overlay (mobile) -->
+                    <div class="mc-sidebar-overlay" id="mcSidebarOverlay"></div>
                     <!-- Coins Sidebar -->
                     <aside class="mc-sidebar" id="mcSidebar">
                         <div class="mc-sidebar-header">
@@ -356,9 +361,9 @@
     <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
     <script src="/auth.js?v=20260415-v1"></script>
     <script src="/settings.js?v=20260415-v1"></script>
-    <script src="/signals.js?v=20260417-v1"></script>
+    <script src="/signals.js?v=20260418-v2"></script>
     <script src="/densities.js?v=20260417-v24"></script>
-    <script src="/mini-charts.js?v=20260417-v24"></script>
+    <script src="/mini-charts.js?v=20260418-v8"></script>
 </body>
 
 </html>
