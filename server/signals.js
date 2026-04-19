@@ -18,12 +18,17 @@ const MIN_AVG_5M_VOL = 100_000       // skip if avg 5m vol < $100K (too illiquid
 const OI_CHANGE_PCT = 3.0      // OI 1h change >3% → signal
 const OI_CVD_TOP_N = 50
 const OI_CVD_DELAY_MS = 200
+const CVD_MIN_SKEW = 0.1      // |buySellRatio - 1| must exceed this
+const PRICE_DIVERGENCE_PCT = 0.5  // price move threshold for divergence detection
 
 const liveSignals = []
 const MAX_LIVE = 200
 
 const cooldowns = new Map()
-const COOLDOWN_MS = 15 * 60_000
+const COOLDOWN_MS = 60 * 60_000  // 60 min (OI data is hourly, no point alerting more often)
+
+// Market regime cache
+let _marketRegime = { direction: null, btcPrice: 0, ema20: 0, updatedAt: 0 }
 
 // MFE/MAE in-memory tracker: signalId → { entryPrice, direction, mfe, mae }
 const mfeTracker = new Map()
@@ -113,6 +118,37 @@ function buildMarketContext(t, { natrMap, fundingMap, rank }) {
     pricePosition,
     marketRank: rank,
   }
+}
+
+/** Market Regime — BTC EMA20 on 1h, cached 5min */
+async function getMarketRegime() {
+  const now = Date.now()
+  if (_marketRegime.direction && now - _marketRegime.updatedAt < 300_000) return _marketRegime
+
+  try {
+    const klines = await _bgetWithRetry('/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=25')
+    if (!Array.isArray(klines) || klines.length < 21) return _marketRegime
+
+    // EMA20 calculation
+    const closes = klines.map(k => parseFloat(k[4]))
+    const period = 20
+    const mult = 2 / (period + 1)
+    let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period
+    for (let i = period; i < closes.length; i++) {
+      ema = (closes[i] - ema) * mult + ema
+    }
+
+    const btcPrice = closes[closes.length - 1]
+    _marketRegime = {
+      direction: btcPrice > ema ? 'BULLISH' : 'BEARISH',
+      btcPrice,
+      ema20: parseFloat(ema.toFixed(2)),
+      updatedAt: now,
+    }
+  } catch (e) {
+    console.log('[Signals] Market regime fetch error:', e.message)
+  }
+  return _marketRegime
 }
 
 // ======================== VOLUME SPIKE SCANNER (60s) ========================
@@ -240,9 +276,12 @@ async function scanOiCvd() {
     // Pre-load market context data
     const natrMap = getNatrMap()
     const fundingMap = await getFundingMap()
+    const regime = await getMarketRegime()
 
     const now = Date.now()
     let signalCount = 0
+
+    console.log(`[Signals] OI+CVD scan: ${top.length} symbols, regime=${regime.direction}, BTC=${regime.btcPrice} vs EMA20=${regime.ema20}`)
 
     for (let idx = 0; idx < top.length; idx++) {
       const t = top[idx]
@@ -252,17 +291,18 @@ async function scanOiCvd() {
       if (!price) continue
 
       try {
-        // Fetch OI history (1h candles, last 2) + taker ratio in parallel
+        // Fetch OI history (1h candles, last 3) + taker ratio in parallel
         const [oiHist, takerData] = await Promise.all([
-          _bgetWithRetry(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=2`),
+          _bgetWithRetry(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=3`),
           _bgetWithRetry(`/futures/data/takerlongshortRatio?symbol=${symbol}&period=1h&limit=1`),
         ])
 
-        // OI 1h delta from Binance history (no need for our own snapshots)
+        // OI 1h delta: use last 2 candles (prev-to-last vs last)
         if (!Array.isArray(oiHist) || oiHist.length < 2) continue
-        const oiPrev = parseFloat(oiHist[0].sumOpenInterest)
-        const oiCurr = parseFloat(oiHist[1].sumOpenInterest)
-        const oiValueUsd = parseFloat(oiHist[1].sumOpenInterestValue || 0)
+        const lastIdx = oiHist.length - 1
+        const oiPrev = parseFloat(oiHist[lastIdx - 1].sumOpenInterest)
+        const oiCurr = parseFloat(oiHist[lastIdx].sumOpenInterest)
+        const oiValueUsd = parseFloat(oiHist[lastIdx].sumOpenInterestValue || 0)
         if (!oiPrev || oiPrev === 0) continue
         const oiChangePct = ((oiCurr - oiPrev) / oiPrev) * 100
 
@@ -276,6 +316,10 @@ async function scanOiCvd() {
         }
 
         if (Math.abs(oiChangePct) < OI_CHANGE_PCT || !cvdDirection) continue
+
+        // CVD strength gate — skip weak CVD (ratio near 1.0)
+        const cvdSkew = Math.abs(buySellRatio - 1)
+        if (cvdSkew < CVD_MIN_SKEW) continue
 
         // OI × CVD Matrix
         const oiUp = oiChangePct > 0
@@ -308,9 +352,52 @@ async function scanOiCvd() {
           confOi = 20 - (absOi - 8) * 3           // 10%→14, 13%→5, 15%→-1
         }
         const confBase = 55 + Math.max(0, confOi)  // floor at 55
-        const confRatio = Math.min(10, Math.abs(buySellRatio - 1) * 10)
+        const confRatio = Math.min(10, cvdSkew * 10)
+
+        // --- Market Regime adjustment ---
+        let regimeAdj = 0
+        const regimeTag = []
+        if (regime.direction) {
+          const withTrend = (regime.direction === 'BULLISH' && signalDir === 'LONG') ||
+                            (regime.direction === 'BEARISH' && signalDir === 'SHORT')
+          if (withTrend) {
+            regimeAdj = +5
+            regimeTag.push(`📈 With trend (BTC ${regime.direction})`)
+          } else {
+            regimeAdj = -15
+            regimeTag.push(`⚠️ Against trend (BTC ${regime.direction})`)
+          }
+        }
+
+        // --- Divergence detection: OI direction vs Price direction ---
+        let divAdj = 0
+        const priceChange1h = change // 24h change as proxy; we use 1h ticker change if available
+        // Divergence: OI up but price down, or OI down but price up
+        const priceMoveDir = priceChange1h > PRICE_DIVERGENCE_PCT ? 'UP' : priceChange1h < -PRICE_DIVERGENCE_PCT ? 'DOWN' : 'FLAT'
+        const oiMoveDir = oiUp ? 'UP' : 'DOWN'
+
+        if (priceMoveDir !== 'FLAT' && oiMoveDir !== priceMoveDir) {
+          // Divergence detected!
+          // Bullish div: OI UP + Price DOWN → hidden accumulation → expect UP
+          // Bearish div: OI DOWN + Price UP → hidden distribution → expect DOWN
+          const divExpectedDir = oiUp ? 'LONG' : 'SHORT' // OI UP = accumulation = bullish
+          if (divExpectedDir === signalDir) {
+            divAdj = +10
+            regimeTag.push('🔀 OI Divergence confirms')
+          } else {
+            divAdj = -5
+            regimeTag.push('🔀 OI Divergence conflicts')
+          }
+        }
+
+        const finalConf = Math.max(30, Math.min(95, confBase + confRatio + regimeAdj + divAdj))
+
+        // Enhanced description
+        const tagStr = regimeTag.length > 0 ? ' | ' + regimeTag.join(' ') : ''
+        const enhancedDesc = signalDesc + tagStr
+
         // Use OI candle timestamp (not scan time)
-        const oiCandleMs = parseInt(oiHist[1].timestamp)
+        const oiCandleMs = parseInt(oiHist[lastIdx].timestamp)
 
         // Market context
         const ctx = buildMarketContext(t, { natrMap, fundingMap, rank: idx + 1 })
@@ -320,13 +407,15 @@ async function scanOiCvd() {
           symbol, price,
           signalTime: new Date(oiCandleMs).toISOString(),
           direction: signalDir,
-          confidence: Math.min(95, confBase + confRatio),
-          description: signalDesc,
+          confidence: Math.round(finalConf),
+          description: enhancedDesc,
           metadata: {
             oiChangePct: parseFloat(oiChangePct.toFixed(2)),
             oiValue: oiValueUsd,
             buySellRatio: buySellRatio ? parseFloat(buySellRatio.toFixed(3)) : null,
             cvdDirection, subType, change,
+            marketRegime: regime.direction || 'UNKNOWN',
+            divergence: divAdj !== 0 ? (divAdj > 0 ? 'confirms' : 'conflicts') : null,
             ...ctx,
           }
         })

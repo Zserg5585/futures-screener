@@ -850,6 +850,27 @@ fastify.get('/api/klines', async (req) => {
   return data
 })
 
+// OI history — proxied from Binance /futures/data/openInterestHist
+fastify.get('/api/oi-history', async (req) => {
+  const symbol = String(req.query.symbol || '').toUpperCase()
+  const period = String(req.query.period || '5m')
+  const limit = Math.min(Number(req.query.limit || 500), 500)
+  if (!symbol) return { error: 'symbol required' }
+
+  const key = `oiHist:${symbol}:${period}:${limit}`
+  const cached = getProxyCached(key, 60000) // cache 1 min
+  if (cached) return cached
+
+  try {
+    const url = `/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=${period}&limit=${limit}`
+    const data = await bgetWithRetry(url)
+    setProxyCached(key, data)
+    return data
+  } catch (e) {
+    return { error: 'Failed to fetch OI history', message: e.message }
+  }
+})
+
 // Batch klines — fetch multiple symbols in one request (for mini-charts fast load)
 fastify.post('/api/klines-batch', async (req) => {
   const symbols = req.body?.symbols

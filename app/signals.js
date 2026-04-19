@@ -40,6 +40,8 @@ function initSignals() {
       if (key === 'signalMinRatio') {
         sigState.minRatio = val
         renderSignals()
+      } else if (key === 'signalMinConfidence') {
+        renderSignals()
       } else if (key === 'signalWatchlistOnly' || key === '__watchlist') {
         renderSignals()
       }
@@ -148,6 +150,12 @@ function renderSignals() {
       const ratio = s.metadata?.ratio || 0
       return ratio >= sigState.minRatio
     })
+  }
+
+  // Filter by min confidence
+  const minConf = typeof settingsPanel !== 'undefined' ? (settingsPanel.get('signalMinConfidence') || 50) : 50
+  if (minConf > 30) {
+    list = list.filter(s => (s.confidence || 0) >= minConf)
   }
 
   // Filter by watchlist if enabled
@@ -327,8 +335,7 @@ function formatTime(iso) {
   const diffMs = now - d
   if (diffMs < 0) return 'just now'
   if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)}s ago`
-  if (diffMs < 3600_000) return `${Math.floor(diffMs / 60_000)}m ago`
-  if (diffMs < 86400_000) return `${Math.floor(diffMs / 3600_000)}h ago`
+  if (diffMs < 86400_000) return `${Math.floor(diffMs / 60_000)}m ago`
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 

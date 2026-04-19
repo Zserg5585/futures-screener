@@ -37,15 +37,23 @@ const settingsPanel = (() => {
     densitySeverityLarge: 5.0,    // multiplier for Large
     densitySeverityMedium: 3.5,   // multiplier for Medium
     densitySeveritySmall: 2.0,    // multiplier for Small
-    densityDepthPct: 3.0,         // depth % from price
-    densityTTLMin: 15,            // min lifetime in minutes
+    densityDepthPct: 5.0,         // depth % from price
+    densityTTLMin: 1,             // min lifetime in minutes
+
+    // Density blacklist
+    densityBlacklist: 'USDC,FDUSD,TUSD,USDP,DAI,USDD,EUR',
 
     // Signals
     signalMinRatio: 3,            // volume spike min ratio (2x-20x)
+    signalMinConfidence: 50,      // min confidence to show signal (30-90)
     signalNotifications: false,   // browser notifications
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
+
+    // Indicators
+    indicatorOI: false,           // show OI overlay on charts
+    indicatorOIColor: '#eab308',  // OI line color (yellow)
 
     // Data
     autoRefresh: true,            // auto-refresh data
@@ -86,6 +94,11 @@ const settingsPanel = (() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       settings = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS }
+      // Migration: fix old density defaults that filtered everything
+      if (settings.densityTTLMin === 15) settings.densityTTLMin = DEFAULTS.densityTTLMin
+      if (settings.densityDepthPct === 3.0) settings.densityDepthPct = DEFAULTS.densityDepthPct
+      if (!settings.densityBlacklist) settings.densityBlacklist = DEFAULTS.densityBlacklist
+      save()
     } catch {
       settings = { ...DEFAULTS }
     }
@@ -127,6 +140,7 @@ const settingsPanel = (() => {
     { id: 'watchlist', icon: '⭐', label: 'Watchlist' },
     { id: 'theme',     icon: '🎨', label: 'Theme' },
     { id: 'data',      icon: '📡', label: 'Data' },
+    { id: 'indicators',icon: '📉', label: 'Indicators' },
     { id: 'layout',    icon: '⊞', label: 'Layout' },
     { id: 'reset',     icon: '🗑', label: 'Reset' },
   ]
@@ -205,6 +219,7 @@ const settingsPanel = (() => {
       case 'watchlist': content.innerHTML = renderWatchlistSection(); break
       case 'theme': content.innerHTML = renderThemeSection(); break
       case 'data': content.innerHTML = renderDataSection(); break
+      case 'indicators': content.innerHTML = renderIndicatorsSection(); break
       case 'layout': content.innerHTML = renderLayoutSection(); break
       case 'reset': content.innerHTML = renderResetSection(); break
     }
@@ -381,6 +396,31 @@ const settingsPanel = (() => {
     `
   }
 
+  function renderIndicatorsSection() {
+    return `
+      <div class="sp-section">
+        <div class="sp-section-title">Open Interest</div>
+        <label class="sp-toggle">
+          <input type="checkbox" ${get('indicatorOI') ? 'checked' : ''} data-key="indicatorOI" />
+          <span>Show OI overlay on charts</span>
+        </label>
+        <p class="sp-hint">Displays Open Interest as a line overlay on mini-charts and modal</p>
+      </div>
+      <div class="sp-section">
+        <div class="sp-section-title">OI Line Color</div>
+        <div class="sp-color-row">
+          <label class="sp-color-label">
+            <span>Color</span>
+            <input type="color" value="${get('indicatorOIColor')}" data-key="indicatorOIColor" class="sp-color-input" />
+          </label>
+        </div>
+      </div>
+      <div class="sp-section">
+        <p class="sp-hint">More indicators coming soon: Funding Rate, CVD, Liquidations</p>
+      </div>
+    `
+  }
+
   function renderLayoutSection() {
     const current = get('layout')
     const layouts = [
@@ -410,20 +450,13 @@ const settingsPanel = (() => {
       <div class="sp-section">
         <div class="sp-section-title">Candle Type</div>
         <div class="sp-radio-group">
-          ${['Candlestick', 'Bar', 'Line', 'Area'].map(t => `
+          ${['Candlestick', 'Bar'].map(t => `
             <label class="sp-radio">
               <input type="radio" name="candleType" value="${t}" ${get('candleType') === t ? 'checked' : ''} data-key="candleType" />
               <span>${t}</span>
             </label>
           `).join('')}
         </div>
-      </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Price Scale</div>
-        <label class="sp-toggle">
-          <input type="checkbox" ${get('logScale') ? 'checked' : ''} data-key="logScale" />
-          <span>Logarithmic scale</span>
-        </label>
       </div>
       <div class="sp-section">
         <div class="sp-section-title">Volume Height</div>
@@ -540,6 +573,11 @@ const settingsPanel = (() => {
           <span class="sp-slider-val" data-for="densityTTLMin">${get('densityTTLMin')} min</span>
         </div>
       </div>
+      <div class="sp-section">
+        <div class="sp-section-title">Blacklist</div>
+        <input type="text" class="sp-text-input" id="spDensityBlacklist" value="${get('densityBlacklist')}" placeholder="USDC,FDUSD,TUSD..." />
+        <p class="sp-hint">Comma-separated symbols to exclude from density scan</p>
+      </div>
     `
   }
 
@@ -552,6 +590,14 @@ const settingsPanel = (() => {
           <span class="sp-slider-val" data-for="signalMinRatio">${get('signalMinRatio')}x</span>
         </div>
         <p class="sp-hint">Show volume spikes ≥ this ratio vs SMA(20)</p>
+      </div>
+      <div class="sp-section">
+        <div class="sp-section-title">Min Confidence</div>
+        <div class="sp-slider-row">
+          <input type="range" min="30" max="90" step="5" value="${get('signalMinConfidence')}" data-key="signalMinConfidence" class="sp-slider" />
+          <span class="sp-slider-val" data-for="signalMinConfidence">${get('signalMinConfidence')}%</span>
+        </div>
+        <p class="sp-hint">Hide signals below this confidence level</p>
       </div>
       <div class="sp-section">
         <div class="sp-section-title">Alert Cooldown</div>
@@ -653,6 +699,16 @@ const settingsPanel = (() => {
         set(btn.dataset.key, isNaN(val) ? val : parseInt(val))
       })
     })
+
+    // Density blacklist input
+    const blInput = container.querySelector('#spDensityBlacklist')
+    if (blInput) {
+      let blTimer = null
+      blInput.addEventListener('input', () => {
+        clearTimeout(blTimer)
+        blTimer = setTimeout(() => set('densityBlacklist', blInput.value), 500)
+      })
+    }
 
     // Cleanup buttons
     const clearBtn = container.querySelector('#spClearDrawings')

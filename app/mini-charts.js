@@ -210,8 +210,21 @@ async function initMiniCharts() {
                             if (c.densityLines) { c.densityLines.forEach(pl => { try { c.series.removePriceLine(pl) } catch(e){} }); c.densityLines = [] }
                         })
                         if (modal.chart && modal.densityLines) { modal.densityLines.forEach(pl => { try { modal.series.removePriceLine(pl) } catch(e){} }); modal.densityLines = [] }
+                    } else {
+                        // Re-apply densities to all visible charts
+                        const visibleSyms = Object.keys(mc.charts).filter(s => mc.charts[s] && mc.charts[s].series)
+                        if (visibleSyms.length > 0) applyDensityToBatch(visibleSyms)
+                        if (modal.chart && modal.currentSym) applyDensityToModal()
                     }
                     showSettingsToast(val ? 'Densities enabled' : 'Densities disabled')
+                } else if (['densityDepthPct', 'densityTTLMin', 'densitySeveritySmall', 'densitySeverityMedium', 'densitySeverityLarge', 'densityBlacklist'].includes(key)) {
+                    // Re-apply densities with new filters
+                    if (spGet('densityEnabled', true)) {
+                        const visibleSyms = Object.keys(mc.charts).filter(s => mc.charts[s] && mc.charts[s].series)
+                        if (visibleSyms.length > 0) applyDensityToBatch(visibleSyms)
+                        if (modal.chart && modal.currentSym) applyDensityToModal()
+                    }
+                    showSettingsToast('Density filter updated')
                 } else if (key === 'signalMinRatio') {
                     showSettingsToast('Signal ratio → ' + val + 'x')
                 } else if (key === 'cardsPerRow') {
@@ -239,10 +252,23 @@ async function initMiniCharts() {
                     if (volSel) volSel.value = val
                     applyFiltersAndRebuild()
                     showSettingsToast(val > 0 ? 'Min volume → $' + val + 'M' : 'Volume filter OFF')
+                } else if (key === 'layout') {
+                    // Map settings layout to multi-chart layout
+                    if (val === '1') {
+                        switchLayout('grid')
+                    } else {
+                        switchLayout(val)
+                    }
+                    showSettingsToast('Layout → ' + val)
                 } else if (key === 'theme') {
                     document.body.className = document.body.className.replace(/theme-\w+/g, '')
                     if (val !== 'dark') document.body.classList.add('theme-' + val)
                     showSettingsToast('Theme → ' + val)
+                } else if (key === 'indicatorOI' || key === 'indicatorOIColor') {
+                    if (modal.chart && modal.currentSym) {
+                        applyOIOverlay(modal.chart, modal.currentSym)
+                    }
+                    showSettingsToast(key === 'indicatorOI' ? (val ? 'OI overlay ON' : 'OI overlay OFF') : 'OI color updated')
                 } else if (key === 'watchlistOnly') {
                     renderSidebar()
                 } else if (key === '__watchlist') {
@@ -585,7 +611,7 @@ function rebuildGrid() {
 }
 
 function sortPairs() {
-    const dir = mc.sortDir === 'asc' ? 1 : -1;
+    const dir = mc.sortDir === 'desc' ? 1 : -1;
     const sorter = (a, b) => {
         if (mc.sortBy === 'symbol') return dir * a.symbol.localeCompare(b.symbol);
         if (mc.sortBy === 'natr') return dir * (b.proxyNatr - a.proxyNatr);
@@ -615,7 +641,7 @@ function renderSidebar() {
     }
 
     // Sort: watchlist first, then flagged, then by current sort column
-    const dir = mc.sortDir === 'asc' ? 1 : -1;
+    const dir = mc.sortDir === 'desc' ? 1 : -1;
     pairs = [...pairs].sort((a, b) => {
         // Watchlist coins first
         const wa = sp && sp.wlHas(a.symbol) ? 1 : 0;
@@ -754,11 +780,12 @@ function createChartInstance(sym) {
 
     const chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
+        ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b', fontSize: 9 },
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -847,12 +874,29 @@ async function processLoadQueue() {
     mc.loadingActive = false;
 }
 
-// Timezone offset in seconds (user's local vs UTC)
-const TZ_OFFSET_SEC = -(new Date().getTimezoneOffset()) * 60;
+// NO manual TZ offset — timestamps are pure UTC seconds.
+// All time formatting done via Date() which uses browser's local timezone.
+const TZ_OFFSET_SEC = 0;
+
+// Local time formatters for LightweightCharts
+const localTimeFormatter = (utcSec) => {
+    const d = new Date(utcSec * 1000);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+};
+const localTickFormatter = (utcSec, tickMarkType, locale) => {
+    const d = new Date(utcSec * 1000);
+    // tickMarkType: 0=Year, 1=Month, 2=DayOfMonth, 3=Time, 4=TimeWithSeconds
+    if (tickMarkType <= 1) return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
+    if (tickMarkType === 2) return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+};
+const localChartOptions = {
+    localization: { timeFormatter: localTimeFormatter },
+};
 
 function parseKlines(json) {
     return json.map(k => ({
-        time: k[0] / 1000 + TZ_OFFSET_SEC,
+        time: k[0] / 1000,
         open: parseFloat(k[1]),
         high: parseFloat(k[2]),
         low: parseFloat(k[3]),
@@ -1142,7 +1186,7 @@ function wsConnect() {
             const k = msg.data.k;
             const sym = k.s;
             const candle = {
-                time: Math.floor(k.t / 1000) + TZ_OFFSET_SEC,
+                time: Math.floor(k.t / 1000),
                 open: parseFloat(k.o),
                 high: parseFloat(k.h),
                 low: parseFloat(k.l),
@@ -1431,13 +1475,16 @@ function openCoinModal(sym) {
     const chartEl = el('cmChartBody');
     const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
+    const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
     modal.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
+        ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        watermark: { visible: !!wmText, text: wmText, fontSize: 48, color: 'rgba(255,255,255,0.04)', horzAlign: 'center', vertAlign: 'center' },
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -1542,6 +1589,7 @@ async function loadModalChart(sym, tf) {
         if (!Array.isArray(json1) || !modal.chart) return;
 
         const data1 = parseKlines(json1);
+        modal.candleData = data1;
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
 
@@ -1562,7 +1610,7 @@ async function loadModalChart(sym, tf) {
           const m = window._pendingSignalMarker;
           window._pendingSignalMarker = null;
           // Find nearest candle (apply same TZ offset as klines)
-          const target = m.time + TZ_OFFSET_SEC;
+          const target = m.time; // both marker and candles are now UTC, same space
           let best = data1[data1.length - 1];
           let bestDiff = Infinity;
           for (const c of data1) {
@@ -1581,6 +1629,9 @@ async function loadModalChart(sym, tf) {
 
         // Apply density walls to modal
         applyDensityToModal();
+
+        // Apply OI overlay if enabled
+        applyOIOverlay(modal.chart, sym);
 
         // Subscribe modal to live WS
         const stream = `${sym.toLowerCase()}@kline_${tf}`;
@@ -1623,6 +1674,7 @@ async function loadModalChart(sym, tf) {
                 }
 
                 if (!modal.chart || modal.currentSym !== sym) return;
+                modal.candleData = fullData;
                 modal.series.setData(fullData);
                 if (modal.volSeries) modal.volSeries.setData(extractVolume(fullData));
                 // Restore by time range (absolute, no offset math needed)
@@ -1634,6 +1686,53 @@ async function loadModalChart(sym, tf) {
         }, 400);
     } catch (e) {
         console.error('Modal chart error:', e);
+    }
+}
+
+// ---- OI Overlay Indicator ----
+async function applyOIOverlay(chart, sym) {
+    // Remove existing OI series if any
+    if (modal.oiSeries) {
+        try { chart.removeSeries(modal.oiSeries); } catch(e) {}
+        modal.oiSeries = null;
+    }
+
+    const enabled = spGet('indicatorOI', false);
+    if (!enabled || !chart || !sym) return;
+
+    // Map TF to OI period (Binance only supports 5m,15m,30m,1h,2h,4h,6h,12h,1d)
+    const tfMap = { '1m': '5m', '3m': '5m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '4h', '12h': '1d', '1d': '1d' };
+    const period = tfMap[modal.currentTF] || '5m';
+
+    try {
+        const res = await fetch(`/api/oi-history?symbol=${sym}&period=${period}&limit=500`);
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) return;
+        if (!modal.chart || modal.currentSym !== sym) return; // modal changed
+
+        const color = spGet('indicatorOIColor', '#eab308');
+        modal.oiSeries = chart.addLineSeries({
+            color: color,
+            lineWidth: 2,
+            priceScaleId: 'oi',
+            title: 'OI',
+            lastValueVisible: true,
+            priceLineVisible: false,
+        });
+        chart.priceScale('oi').applyOptions({
+            scaleMargins: { top: 0.05, bottom: 0.25 },
+            drawTicks: false,
+            borderVisible: false,
+        });
+
+        const oiData = data.map(d => ({
+            time: Math.floor(d.timestamp / 1000),
+            value: parseFloat(d.sumOpenInterestValue || d.sumOpenInterest || 0),
+        }));
+
+        modal.oiSeries.setData(oiData);
+    } catch (e) {
+        console.error('[OI Overlay] Error:', e);
     }
 }
 
@@ -1694,14 +1793,14 @@ function drawModalLevels(data) {
 // Drawing Tools — Modal only
 // ==========================================
 const DRAW_TOOLS = [
-    { id: 'cursor', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 1l10 6.5L8 9l-2 5.5L3 1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
-    { id: 'hline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
-    { id: 'ray', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="8" r="1.5" fill="currentColor"/><line x1="3" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M13 5.5L15.5 8 13 10.5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
-    { id: 'trendline', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="13" cy="4" r="1.5" fill="currentColor"/><line x1="3" y1="12" x2="13" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>', title: 'Trend Line (T)', key: 't' },
-    { id: 'fib', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="1" y1="2" x2="15" y2="2" stroke="currentColor" stroke-width="1" opacity="0.5"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="10" x2="15" y2="10" stroke="currentColor" stroke-width="1" opacity="0.7"/><line x1="1" y1="14" x2="15" y2="14" stroke="currentColor" stroke-width="1" opacity="0.5"/></svg>', title: 'Fibonacci (F)', key: 'f' },
-    { id: 'rect', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.1"/></svg>', title: 'Rectangle (B)', key: 'b' },
-    { id: 'ruler', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="2" y1="13" x2="14" y2="3" stroke="currentColor" stroke-width="1.4"/><circle cx="2" cy="13" r="1.5" fill="currentColor"/><circle cx="14" cy="3" r="1.5" fill="currentColor"/><line x1="2" y1="13" x2="2" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 1.5" opacity="0.5"/><line x1="2" y1="3" x2="14" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 1.5" opacity="0.5"/></svg>', title: 'Ruler / Measure (M)', key: 'm' },
-    { id: 'trash', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-8 0h10m-9 0v10a1 1 0 001 1h6a1 1 0 001-1V3" stroke="currentColor" stroke-width="1.3"/></svg>', title: 'Clear All', key: 'Delete' },
+    { id: 'cursor', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4.5 2L4.5 14L8 10.5L11.5 16L13 15L9.5 9.5L14 9.5L4.5 2Z" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
+    { id: 'hline', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="1" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
+    { id: 'ray', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="3" cy="9" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/><line x1="5" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5"/><path d="M14 6.5L17 9L14 11.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
+    { id: 'trendline', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="14" x2="15" y2="4" stroke="currentColor" stroke-width="1.5"/><circle cx="3" cy="14" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/><circle cx="15" cy="4" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/></svg>', title: 'Trend Line (T)', key: 't' },
+    { id: 'fib', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="2" y1="3" x2="16" y2="3" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1" opacity="0.6"/><line x1="2" y1="11" x2="16" y2="11" stroke="currentColor" stroke-width="1" opacity="0.6"/><line x1="2" y1="15" x2="16" y2="15" stroke="currentColor" stroke-width="1.2"/><text x="1" y="6.5" font-size="5" fill="currentColor" opacity="0.5">0</text><text x="1" y="14.5" font-size="5" fill="currentColor" opacity="0.5">1</text></svg>', title: 'Fibonacci (F)', key: 'f' },
+    { id: 'rect', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="4" width="12" height="10" stroke="currentColor" stroke-width="1.3" fill="currentColor" fill-opacity="0.08"/><circle cx="3" cy="4" r="1.5" fill="currentColor" opacity="0.4"/><circle cx="15" cy="14" r="1.5" fill="currentColor" opacity="0.4"/></svg>', title: 'Rectangle (B)', key: 'b' },
+    { id: 'ruler', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="15" x2="15" y2="3" stroke="currentColor" stroke-width="1.4"/><line x1="3" y1="15" x2="3" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.4"/><line x1="3" y1="3" x2="15" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.4"/><path d="M12 5.5h3v-3" stroke="currentColor" stroke-width="1" opacity="0.6" fill="none"/><path d="M6 12.5H3v3" stroke="currentColor" stroke-width="1" opacity="0.6" fill="none"/></svg>', title: 'Ruler / Measure (M)', key: 'm' },
+    { id: 'trash', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 5h10l-1 10.5H5L4 5z" stroke="currentColor" stroke-width="1.2" fill="currentColor" fill-opacity="0.05" stroke-linejoin="round"/><line x1="3" y1="5" x2="15" y2="5" stroke="currentColor" stroke-width="1.3"/><path d="M7 5V3.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V5" stroke="currentColor" stroke-width="1.1"/><line x1="7.5" y1="7.5" x2="7.5" y2="13" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="10.5" y1="7.5" x2="10.5" y2="13" stroke="currentColor" stroke-width="0.8" opacity="0.5"/></svg>', title: 'Clear All', key: 'Delete' },
 ];
 
 const DRAW_COLORS = ['#5b9cf6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ec4899', '#ffffff'];
@@ -1872,6 +1971,8 @@ const fibConfig = (() => {
     return { load, save, levels, colorAt };
 })();
 
+let drawMagnet = localStorage.getItem('fs_magnet') !== 'false'; // default ON
+
 const draw = {
     activeTool: 'cursor',
     clickCount: 0,
@@ -1900,11 +2001,22 @@ function renderDrawToolbar() {
     container.innerHTML = DRAW_TOOLS.map(t => {
         const active = draw.activeTool === t.id ? ' dt-active' : '';
         return `<button class="dt-btn${active}" data-tool="${t.id}" title="${t.title}">${t.icon}</button>`;
-    }).join('');
+    }).join('') + `<div class="dt-divider"></div><button class="dt-btn dt-magnet${drawMagnet ? ' dt-active' : ''}" data-tool="magnet" title="Magnet (snap to OHLC)"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M5 2v5a4 4 0 008 0V2" stroke="currentColor" stroke-width="1.4" fill="none"/><rect x="3.5" y="1" width="3" height="3" rx="0.5" stroke="currentColor" stroke-width="1" fill="currentColor" fill-opacity="0.2"/><rect x="11.5" y="1" width="3" height="3" rx="0.5" stroke="currentColor" stroke-width="1" fill="currentColor" fill-opacity="0.2"/><line x1="7" y1="10" x2="7" y2="12" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="9" y1="11" x2="9" y2="14" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="11" y1="10" x2="11" y2="12" stroke="currentColor" stroke-width="0.8" opacity="0.5"/></svg></button>`;
 
     chartEl.appendChild(container);
 
-    container.querySelectorAll('.dt-btn').forEach(btn => {
+    // Magnet toggle
+    const magnetBtn = container.querySelector('.dt-magnet');
+    if (magnetBtn) {
+        magnetBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            drawMagnet = !drawMagnet;
+            localStorage.setItem('fs_magnet', drawMagnet);
+            magnetBtn.classList.toggle('dt-active', drawMagnet);
+        });
+    }
+
+    container.querySelectorAll('.dt-btn:not(.dt-magnet)').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const tool = btn.dataset.tool;
@@ -2466,6 +2578,41 @@ function setupDrawingHandlers() {
     if (chartEl.dataset.drawInit) return;
     chartEl.dataset.drawInit = '1';
 
+    // Snap price to nearest OHLC of closest candle (magnet mode)
+    function snapToCandle(time, price) {
+        const data = modal.candleData;
+        if (!data || data.length === 0) return { time, price };
+
+        // Binary search for closest candle by time
+        let lo = 0, hi = data.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (data[mid].time < time) lo = mid + 1;
+            else hi = mid;
+        }
+        // Check neighbors for closest (up to 2 in each direction)
+        let bestIdx = lo;
+        let bestDist = Math.abs(data[lo].time - time);
+        for (let i = Math.max(0, lo - 2); i <= Math.min(data.length - 1, lo + 2); i++) {
+            const d = Math.abs(data[i].time - time);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+
+        const c = data[bestIdx];
+        const ohlc = [c.open, c.high, c.low, c.close];
+        // Find nearest OHLC value to cursor price
+        let nearestVal = ohlc[0];
+        let nearestDist = Math.abs(ohlc[0] - price);
+        for (const v of ohlc) {
+            const d = Math.abs(v - price);
+            if (d < nearestDist) { nearestDist = d; nearestVal = v; }
+        }
+        // Snap threshold: within 40% of candle range (tight but usable)
+        const range = c.high - c.low || Math.abs(c.close) * 0.005;
+        if (nearestDist > range * 0.4) return { time: c.time, price };
+        return { time: c.time, price: nearestVal };
+    }
+
     // Unified handler for both click and touch
     function handleDrawClick(clientX, clientY) {
         if (!modal.chart || !modal.series) return;
@@ -2474,9 +2621,16 @@ function setupDrawingHandlers() {
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
-        const price = modal.series.coordinateToPrice(y);
-        const time = modal.chart.timeScale().coordinateToTime(x);
+        let price = modal.series.coordinateToPrice(y);
+        let time = modal.chart.timeScale().coordinateToTime(x);
         if (price === null || time === null) return;
+
+        // Magnet snap to nearest OHLC
+        if (drawMagnet) {
+            const snapped = snapToCandle(time, price);
+            price = snapped.price;
+            time = snapped.time;
+        }
 
         if (draw.activeTool === 'hline') {
             drawHorizontalLine(price);
@@ -2561,6 +2715,25 @@ function setupDrawingHandlers() {
             return;
         }
         if (draw.activeTool === 'cursor') {
+            // Shift+click starts ruler (like TradingView)
+            if (e.shiftKey && modal.series && modal.chart) {
+                const rect = chartEl.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                let price = modal.series.coordinateToPrice(y);
+                let time = modal.chart.timeScale().coordinateToTime(x);
+                if (price !== null && time !== null) {
+                    if (drawMagnet) { const snapped = snapToCandle(time, price); price = snapped.price; time = snapped.time; }
+                    removeRulerMeasurement();
+                    draw.activeTool = 'ruler';
+                    draw.startPrice = price;
+                    draw.startTime = time;
+                    draw.clickCount = 1;
+                    renderDrawToolbar();
+                    updateModalCursor();
+                }
+                return;
+            }
             // Select/deselect drawing
             const rect = chartEl.getBoundingClientRect();
             const y = e.clientY - rect.top;
@@ -2746,9 +2919,20 @@ function setupDrawingHandlers() {
 
         const rect = chartEl.getBoundingClientRect();
         const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const price = modal.series.coordinateToPrice(y);
+        let y = e.clientY - rect.top;
+        let price = modal.series.coordinateToPrice(y);
         if (price === null) return;
+
+        // Snap to nearest candle OHLC (if magnet enabled)
+        if (drawMagnet) {
+            const curTime = modal.chart.timeScale().coordinateToTime(x);
+            if (curTime !== null) {
+                const snapped = snapToCandle(curTime, price);
+                price = snapped.price;
+                const snapY = modal.series.priceToCoordinate(price);
+                if (snapY !== null) y = snapY;
+            }
+        }
 
         const canvas = getPreviewCanvas();
         if (!canvas) return;
@@ -3340,7 +3524,8 @@ function switchLayout(layout) {
 function renderMultiChartSlots(layout) {
     const grid = el('mchGrid');
     grid.dataset.layout = layout;
-    const count = parseInt(layout);
+    const countMap = { '2h': 2, '2v': 2, '4': 4, '1+3': 4 };
+    const count = countMap[layout] || parseInt(layout) || 2;
 
     // Preserve existing slot symbols
     const savedSyms = mch.slots.map(s => s.sym);
@@ -3538,11 +3723,12 @@ function createSlotChart(slotIndex) {
 
     slot.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
+        ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8', fontSize: 10 },
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10 },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -3610,6 +3796,27 @@ async function loadSlotChart(slotIndex) {
     }
 }
 
+// Client-side density wall filter using settings
+function filterDensityWalls(walls) {
+    const depthPct = spGet('densityDepthPct', 5.0);
+    const ttlMin = spGet('densityTTLMin', 1);
+    const xSmall = spGet('densitySeveritySmall', 2.0);
+    const blacklistRaw = spGet('densityBlacklist', 'USDC,FDUSD,TUSD,USDP,DAI,USDD,EUR');
+    const blacklist = blacklistRaw ? blacklistRaw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) : [];
+
+    return walls.filter(w => {
+        // Blacklist filter
+        if (blacklist.length > 0 && blacklist.some(b => w.symbol && w.symbol.includes(b))) return false;
+        // Depth filter — distancePct from current price
+        if (w.distancePct !== undefined && Math.abs(w.distancePct) > depthPct) return false;
+        // TTL filter — minimum lifetime in minutes
+        if (w.lifetimeMins !== undefined && w.lifetimeMins < ttlMin) return false;
+        // Severity filter — xMult must be >= smallest severity setting
+        if (w.xMult !== undefined && w.xMult < xSmall) return false;
+        return true;
+    });
+}
+
 async function applyDensityToSlot(slotIndex) {
     if (!spGet('densityEnabled', true)) return;
     const slot = mch.slots[slotIndex];
@@ -3624,9 +3831,9 @@ async function applyDensityToSlot(slotIndex) {
     slot.densityObjs = [];
 
     try {
-        const res = await fetch(`/densities/simple?symbols=${slot.sym}&limitSymbols=1&xFilter=4`);
+        const res = await fetch(`/densities/simple?symbols=${slot.sym}&limitSymbols=1&xFilter=2`);
         const json = await res.json();
-        const walls = json.data || [];
+        const walls = filterDensityWalls(json.data || []);
         if (walls.length === 0) return;
 
         walls.forEach(w => {
@@ -3639,7 +3846,7 @@ async function applyDensityToSlot(slotIndex) {
                 price: w.price,
                 color: color,
                 lineWidth: 1,
-                lineStyle: 2, // dashed
+                lineStyle: 2,
                 axisLabelVisible: true,
                 title: label,
             });
@@ -3655,9 +3862,9 @@ async function applyDensityToSlot(slotIndex) {
 async function applyDensityToBatch(symbols) {
     if (!spGet('densityEnabled', true)) return;
     try {
-        const res = await fetch(`/densities/simple?symbols=${symbols.join(',')}&xFilter=4`);
+        const res = await fetch(`/densities/simple?symbols=${symbols.join(',')}&xFilter=2`);
         const json = await res.json();
-        const walls = json.data || [];
+        const walls = filterDensityWalls(json.data || []);
         if (walls.length === 0) return;
 
         // Group walls by symbol
@@ -3706,9 +3913,9 @@ async function applyDensityToMiniChart(sym) {
     chartObj.densityLines = [];
 
     try {
-        const res = await fetch(`/densities/simple?symbols=${sym}&limitSymbols=1&xFilter=4`);
+        const res = await fetch(`/densities/simple?symbols=${sym}&limitSymbols=1&xFilter=2`);
         const json = await res.json();
-        const walls = json.data || [];
+        const walls = filterDensityWalls(json.data || []);
         if (walls.length === 0) return;
 
         walls.forEach(w => {
@@ -3741,9 +3948,9 @@ async function applyDensityToModal() {
     modal.densityLines = [];
 
     try {
-        const res = await fetch(`/densities/simple?symbols=${modal.currentSym}&limitSymbols=1&xFilter=4`);
+        const res = await fetch(`/densities/simple?symbols=${modal.currentSym}&limitSymbols=1&xFilter=2`);
         const json = await res.json();
-        const walls = json.data || [];
+        const walls = filterDensityWalls(json.data || []);
         if (walls.length === 0) return;
 
         walls.forEach(w => {

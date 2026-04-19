@@ -61,10 +61,15 @@ function init() {
 }
 
 function setupEventListeners() {
-    // Old sidebar filters removed — density filters use defaults (xFilter=4, no blacklist)
-    // State defaults still apply for API calls
-
-    // Old sidebar removed — settings now via right slide-out panel (settings.js)
+    // Listen to settings panel changes for density filters
+    if (typeof settingsPanel !== 'undefined') {
+        const densityKeys = ['densityDepthPct', 'densityTTLMin', 'densitySeveritySmall', 'densitySeverityMedium', 'densitySeverityLarge', 'densityBlacklist', 'densityEnabled']
+        settingsPanel.onChange((key, val) => {
+            if (densityKeys.includes(key) && state.currentTab === 'densities' && state.cache.data) {
+                renderDensities(state.cache.data)
+            }
+        })
+    }
 
     // Вкладки (tabs)
     document.querySelectorAll('.tab').forEach(tab => {
@@ -322,17 +327,46 @@ function renderTable(entries) {
     tbody.innerHTML = rows
 }
 
+// Read density settings from settingsPanel (shared with mini-charts)
+function getDensitySettings() {
+    const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
+    return {
+        depthPct: sp ? sp.get('densityDepthPct') : 5.0,
+        ttlMin: sp ? sp.get('densityTTLMin') : 1,
+        xSmall: sp ? sp.get('densitySeveritySmall') : 2.0,
+        blacklist: sp ? (sp.get('densityBlacklist') || '') : (state.blacklist || ''),
+    }
+}
+
 // Render densities (table or cards)
 function renderDensities(entries) {
     if (!entries) return
 
     let finalEntries = entries
+    const ds = getDensitySettings()
 
-    if (state.blacklist && state.blacklist.trim() !== '') {
-        const blacklistArray = state.blacklist.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    // Blacklist filter (from settings panel or state)
+    const blRaw = ds.blacklist || state.blacklist || ''
+    if (blRaw.trim() !== '') {
+        const blacklistArray = blRaw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
         if (blacklistArray.length > 0) {
             finalEntries = finalEntries.filter(e => !blacklistArray.some(b => e.symbol.includes(b)))
         }
+    }
+
+    // Depth filter — hide walls further than N% from price
+    if (ds.depthPct < 10) {
+        finalEntries = finalEntries.filter(e => e.distancePct === undefined || Math.abs(e.distancePct) <= ds.depthPct)
+    }
+
+    // TTL filter — hide walls younger than N minutes
+    if (ds.ttlMin > 0) {
+        finalEntries = finalEntries.filter(e => e.lifetimeMins === undefined || e.lifetimeMins >= ds.ttlMin)
+    }
+
+    // Severity filter — xMult must be >= smallest severity
+    if (ds.xSmall > 0) {
+        finalEntries = finalEntries.filter(e => e.xMult === undefined || e.xMult >= ds.xSmall)
     }
 
     const isMobile = window.innerWidth <= 768
