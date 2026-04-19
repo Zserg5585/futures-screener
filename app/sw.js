@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v16'
+const CACHE_NAME = 'fs-v17'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -29,6 +29,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close()
   const symbol = e.notification.data?.symbol
+  const signalId = e.notification.data?.signalId
   const url = symbol ? `/?signal=${symbol}` : '/'
 
   e.waitUntil(
@@ -36,12 +37,13 @@ self.addEventListener('notificationclick', (e) => {
       // Focus existing window if open
       for (const client of cls) {
         if (client.url.includes(self.registration.scope) || client.url.includes(self.location.origin)) {
-          client.postMessage({ type: 'OPEN_SIGNAL', symbol })
+          client.postMessage({ type: 'OPEN_SIGNAL', symbol, signalId })
           return client.focus()
         }
       }
-      // No window open — open new one
-      return clients.openWindow(url)
+      // No window open — open new one with signalId
+      const openUrl = signalId ? `/?signal=${symbol}&sid=${signalId}` : url
+      return clients.openWindow(openUrl)
     })
   )
 })

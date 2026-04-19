@@ -362,9 +362,6 @@ function startBgNotifyCheck() {
   _bgNotifyTimer = setInterval(async () => {
     // Skip if signals tab is active (loadSignals already handles it)
     if (sigState.active) return
-    // Skip if notifications disabled
-    const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
-    if (!sp || !sp.get('signalNotifications')) return
 
     try {
       const res = await fetch(`${SIG_API}/api/signals/live?limit=50&hours=1`)
@@ -388,21 +385,26 @@ function fmtVol(v) {
 function notifyNewSignals(newList) {
   const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
   const enabled = sp ? sp.get('signalNotifications') : false
-  if (!enabled) return
 
-  // On first load, just mark all as seen (no spam)
+  // Always track seen IDs (even if notifications disabled) to avoid burst when enabled
   if (sigState.firstLoad) {
     sigState.firstLoad = false
     newList.forEach(s => sigState.seenIds.add(s.id))
+    console.log(`[Notify] First load: marked ${newList.length} signals as seen`)
     return
   }
 
   // Find signals we haven't seen yet
   const fresh = newList.filter(s => !sigState.seenIds.has(s.id))
-  if (fresh.length === 0) return
 
-  // Mark as seen
+  // Mark as seen regardless of enabled (so we don't spam when toggled on)
   fresh.forEach(s => sigState.seenIds.add(s.id))
+
+  if (fresh.length > 0) {
+    console.log(`[Notify] ${fresh.length} new signals, enabled=${enabled}, permission=${Notification.permission}, seen=${sigState.seenIds.size}`)
+  }
+
+  if (!enabled || fresh.length === 0) return
 
   // Cap seenIds to last 1000
   if (sigState.seenIds.size > 1000) {
@@ -484,13 +486,41 @@ function notifyNewSignals(newList) {
   }
 }
 
+// ---- Fetch signal by ID and set pending marker ----
+async function setSignalMarkerAndOpen(symbol, signalId) {
+  console.log(`[Signal] Opening ${symbol} with signalId=${signalId}`)
+  try {
+    const res = await fetch(`${SIG_API}/api/signals/live?limit=100&hours=4`)
+    const data = await res.json()
+    if (data.success) {
+      // Try by ID first, then fallback to symbol match
+      let sig = signalId
+        ? (data.data || []).find(s => String(s.id) === String(signalId))
+        : null
+      if (!sig) sig = (data.data || []).find(s => s.symbol === symbol)
+
+      if (sig) {
+        console.log(`[Signal] Marker set for ${sig.symbol} @ ${sig.price}, dir=${sig.direction}`)
+        window._pendingSignalMarker = {
+          time: Math.floor(new Date(ensureUTC(sig.created_at)).getTime() / 1000),
+          price: sig.price,
+          direction: sig.direction,
+          type: sig.type,
+          description: sig.description,
+        }
+      } else {
+        console.log(`[Signal] No signal found for ${symbol} (id=${signalId})`)
+      }
+    }
+  } catch (e) { console.error('[Signal] marker fetch error:', e) }
+  if (typeof openCoinModal === 'function') openCoinModal(symbol)
+}
+
 // ---- Listen for SW messages (notification click → open modal) ----
 if (navigator.serviceWorker) {
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data?.type === 'OPEN_SIGNAL' && e.data.symbol) {
-      if (typeof openCoinModal === 'function') {
-        openCoinModal(e.data.symbol)
-      }
+      setSignalMarkerAndOpen(e.data.symbol, e.data.signalId)
     }
   })
 }
@@ -521,13 +551,14 @@ window.testNotification = async function() {
 (function checkSignalParam() {
   const params = new URLSearchParams(window.location.search)
   const sym = params.get('signal')
+  const sid = params.get('sid')
   if (sym) {
     // Clean URL
     window.history.replaceState({}, '', '/')
-    // Wait for app to init, then open modal
+    // Wait for app to init, then open modal with signal marker
     const tryOpen = () => {
       if (typeof openCoinModal === 'function' && typeof mc !== 'undefined' && mc.allPairs.length > 0) {
-        openCoinModal(sym)
+        setSignalMarkerAndOpen(sym, sid)
       } else {
         setTimeout(tryOpen, 500)
       }
