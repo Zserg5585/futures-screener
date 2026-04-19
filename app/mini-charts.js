@@ -265,10 +265,14 @@ async function initMiniCharts() {
                     if (val !== 'dark') document.body.classList.add('theme-' + val)
                     showSettingsToast('Theme → ' + val)
                 } else if (key === 'indicatorOI' || key === 'indicatorOIColor') {
-                    if (modal.chart && modal.currentSym) {
-                        applyOIOverlay(modal.chart, modal.currentSym)
-                    }
-                    showSettingsToast(key === 'indicatorOI' ? (val ? 'OI overlay ON' : 'OI overlay OFF') : 'OI color updated')
+                    // Modal
+                    if (modal.chart && modal.currentSym) applyOIOverlay(modal.chart, modal.currentSym)
+                    // Mini-charts
+                    const visSyms = Object.keys(mc.charts).filter(s => mc.charts[s] && mc.charts[s].chart)
+                    if (visSyms.length > 0) applyOIToBatch(visSyms)
+                    // Multi-chart slots
+                    if (typeof mch !== 'undefined') mch.slots.forEach((slot, i) => { if (slot.chart && slot.sym) applyOI(slot, slot.sym, slot.tf) })
+                    showSettingsToast(key === 'indicatorOI' ? (val ? 'OI indicator ON' : 'OI indicator OFF') : 'OI color updated')
                 } else if (key === 'watchlistOnly') {
                     renderSidebar()
                 } else if (key === '__watchlist') {
@@ -804,7 +808,7 @@ function createChartInstance(sym) {
         borderVisible: false,
     });
 
-    mc.charts[sym] = { chart, series, volSeries, lines: [] };
+    mc.charts[sym] = { chart, series, volSeries, lines: [], oiSeries: null };
 
     // Attach shift+drag ruler
     attachRuler(chartEl, chart, series);
@@ -860,6 +864,7 @@ async function processLoadQueue() {
             // Batch density load for all loaded symbols (one request instead of N)
             if (loadedSyms.length > 0) {
                 applyDensityToBatch(loadedSyms);
+                applyOIToBatch(loadedSyms);
             }
         } catch(e) {
             // Fallback: load individually
@@ -1535,6 +1540,7 @@ function openCoinModal(sym) {
         modal.legend.innerHTML = `<span style="color:${color}">O <b>${o}</b></span><span style="color:${color}">H <b>${h}</b></span><span style="color:${color}">L <b>${l}</b></span><span style="color:${color}">C <b>${c}</b></span><span style="color:var(--text-muted)">V <b>${v}</b></span>`;
     });
 
+    setDrawCtxModal();
     renderDrawToolbar();
     setupDrawingHandlers();
     updateModalCursor();
@@ -1590,6 +1596,7 @@ async function loadModalChart(sym, tf) {
 
         const data1 = parseKlines(json1);
         modal.candleData = data1;
+        if (drawCtx.source === 'modal') drawCtx.candleData = data1;
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
 
@@ -1675,6 +1682,7 @@ async function loadModalChart(sym, tf) {
 
                 if (!modal.chart || modal.currentSym !== sym) return;
                 modal.candleData = fullData;
+                if (drawCtx.source === 'modal') drawCtx.candleData = fullData;
                 modal.series.setData(fullData);
                 if (modal.volSeries) modal.volSeries.setData(extractVolume(fullData));
                 // Restore by time range (absolute, no offset math needed)
@@ -1689,50 +1697,103 @@ async function loadModalChart(sym, tf) {
     }
 }
 
-// ---- OI Overlay Indicator ----
-async function applyOIOverlay(chart, sym) {
-    // Remove existing OI series if any
-    if (modal.oiSeries) {
-        try { chart.removeSeries(modal.oiSeries); } catch(e) {}
-        modal.oiSeries = null;
+// ---- OI Indicator (bottom pane, like TradingView) ----
+const OI_PANE_HEIGHT = 0.10; // 10% of chart height for OI pane
+const OI_TF_MAP = { '1m': '5m', '3m': '5m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '4h', '12h': '1d', '1d': '1d' };
+const OI_FMT = (v) => v >= 1e9 ? (v/1e9).toFixed(1) + 'B' : v >= 1e6 ? (v/1e6).toFixed(0) + 'M' : v.toFixed(0);
+
+// Adjust candle + volume margins when OI pane is toggled
+function adjustChartMargins(chartObj, hasOI) {
+    // chartObj = { chart, series, volSeries } — works for modal, mc.charts[sym], mch.slots[i]
+    if (!chartObj || !chartObj.chart) return;
+    const bot = hasOI ? OI_PANE_HEIGHT + 0.02 : 0.05;
+    chartObj.chart.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.05, bottom: bot },
+    });
+    if (chartObj.volSeries) {
+        const volH = spGet('volumeHeight', 15) / 100;
+        const volTop = hasOI ? (1 - OI_PANE_HEIGHT - 0.02 - volH) : (1 - volH);
+        const volBot = hasOI ? (OI_PANE_HEIGHT + 0.02) : 0;
+        try {
+            chartObj.chart.priceScale('vol').applyOptions({
+                scaleMargins: { top: volTop, bottom: volBot },
+            });
+        } catch(e) {}
+    }
+}
+
+// Generic: add OI line to any chart object. chartObj must have { chart, oiSeries? }
+async function applyOI(chartObj, sym, tf) {
+    if (!chartObj || !chartObj.chart) return;
+
+    // Remove existing
+    if (chartObj.oiSeries) {
+        try { chartObj.chart.removeSeries(chartObj.oiSeries); } catch(e) {}
+        chartObj.oiSeries = null;
     }
 
     const enabled = spGet('indicatorOI', false);
-    if (!enabled || !chart || !sym) return;
+    if (!enabled || !sym) {
+        adjustChartMargins(chartObj, false);
+        return;
+    }
 
-    // Map TF to OI period (Binance only supports 5m,15m,30m,1h,2h,4h,6h,12h,1d)
-    const tfMap = { '1m': '5m', '3m': '5m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '4h', '12h': '1d', '1d': '1d' };
-    const period = tfMap[modal.currentTF] || '5m';
+    const period = OI_TF_MAP[tf || '5m'] || '5m';
 
     try {
         const res = await fetch(`/api/oi-history?symbol=${sym}&period=${period}&limit=500`);
         const data = await res.json();
-        if (!Array.isArray(data) || data.length === 0) return;
-        if (!modal.chart || modal.currentSym !== sym) return; // modal changed
+        if (!Array.isArray(data) || data.length === 0) {
+            adjustChartMargins(chartObj, false);
+            return;
+        }
 
         const color = spGet('indicatorOIColor', '#eab308');
-        modal.oiSeries = chart.addLineSeries({
+
+        chartObj.oiSeries = chartObj.chart.addLineSeries({
             color: color,
-            lineWidth: 2,
+            lineWidth: 1.5,
             priceScaleId: 'oi',
+            priceFormat: { type: 'custom', formatter: OI_FMT },
             title: 'OI',
             lastValueVisible: true,
             priceLineVisible: false,
+            crosshairMarkerVisible: true,
+            crosshairMarkerRadius: 3,
         });
-        chart.priceScale('oi').applyOptions({
-            scaleMargins: { top: 0.05, bottom: 0.25 },
+        chartObj.chart.priceScale('oi').applyOptions({
+            scaleMargins: { top: 1 - OI_PANE_HEIGHT, bottom: 0 },
             drawTicks: false,
             borderVisible: false,
+            entireTextOnly: true,
         });
 
         const oiData = data.map(d => ({
             time: Math.floor(d.timestamp / 1000),
             value: parseFloat(d.sumOpenInterestValue || d.sumOpenInterest || 0),
         }));
+        chartObj.oiSeries.setData(oiData);
+        adjustChartMargins(chartObj, true);
 
-        modal.oiSeries.setData(oiData);
     } catch (e) {
-        console.error('[OI Overlay] Error:', e);
+        console.error('[OI] Error:', sym, e);
+        adjustChartMargins(chartObj, false);
+    }
+}
+
+// Wrapper for modal (backward compat)
+async function applyOIOverlay(chart, sym) {
+    await applyOI(modal, sym, modal.currentTF);
+}
+
+// Batch OI for mini-charts (throttled, non-blocking)
+async function applyOIToBatch(symbols) {
+    if (!spGet('indicatorOI', false)) return;
+    for (const sym of symbols) {
+        const c = mc.charts[sym];
+        if (!c || !c.chart) continue;
+        applyOI(c, sym, mc.globalTF); // fire-and-forget, no await to avoid blocking
+        await new Promise(r => setTimeout(r, 50)); // 50ms throttle between fetches
     }
 }
 
@@ -1988,8 +2049,42 @@ const draw = {
     dragStartPrice: 0,
 };
 
-function renderDrawToolbar() {
-    const chartEl = el('cmChartBody');
+// Drawing Context — points to the active chart for drawing tools
+// All drawing functions use drawCtx instead of hardcoded modal.*
+// Switched when user activates a multi-chart slot or opens modal
+const drawCtx = {
+    chart: null,     // LightweightCharts instance
+    series: null,    // main candle series
+    candleData: null,// array of OHLCV
+    chartEl: null,   // DOM element containing the chart
+    sym: null,       // current symbol
+    tf: null,        // current timeframe
+    source: 'modal', // 'modal' | 'slot:0' | 'slot:1' etc
+};
+
+function setDrawCtx(source, chart, series, candleData, chartEl, sym, tf) {
+    drawCtx.chart = chart;
+    drawCtx.series = series;
+    drawCtx.candleData = candleData;
+    drawCtx.chartEl = chartEl;
+    drawCtx.sym = sym;
+    drawCtx.tf = tf;
+    drawCtx.source = source;
+}
+
+function setDrawCtxModal() {
+    setDrawCtx('modal', modal.chart, modal.series, modal.candleData, el('cmChartBody'), modal.currentSym, modal.currentTF);
+}
+
+function setDrawCtxSlot(slotIndex) {
+    const slot = mch.slots[slotIndex];
+    if (!slot || !slot.chart) return;
+    const chartEl = el('mch-chart-' + slotIndex);
+    setDrawCtx('slot:' + slotIndex, slot.chart, slot.series, slot.candleData || null, chartEl, slot.sym, slot.tf);
+}
+
+function renderDrawToolbar(targetEl) {
+    const chartEl = targetEl || drawCtx.chartEl || el('cmChartBody');
     if (!chartEl) return;
 
     // Remove old toolbar if exists
@@ -2035,22 +2130,21 @@ function renderDrawToolbar() {
 }
 
 function updateModalCursor() {
-    const chartEl = el('cmChartBody');
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
     if (!chartEl) return;
+    const chart = drawCtx.chart || modal.chart;
     if (draw.activeTool === 'cursor') {
         chartEl.style.cursor = '';
-        // Re-enable chart interaction
-        if (modal.chart) {
-            modal.chart.applyOptions({
+        if (chart) {
+            chart.applyOptions({
                 handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                 handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
             });
         }
     } else {
         chartEl.style.cursor = 'crosshair';
-        // Disable chart interaction so touches go to our handler
-        if (modal.chart) {
-            modal.chart.applyOptions({
+        if (chart) {
+            chart.applyOptions({
                 handleScroll: false,
                 handleScale: false,
             });
@@ -2060,7 +2154,7 @@ function updateModalCursor() {
 
 // Keyboard shortcuts for tools
 document.addEventListener('keydown', (e) => {
-    if (!modal.chart) return;
+    if (!drawCtx.chart && !modal.chart) return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     const tool = DRAW_TOOLS.find(t => t.key && t.key.toLowerCase() === e.key.toLowerCase());
     if (tool) {
@@ -2074,7 +2168,7 @@ document.addEventListener('keydown', (e) => {
         renderDrawToolbar();
         updateModalCursor();
     }
-    if (e.key === 'Delete' && modal.chart) {
+    if (e.key === 'Delete' && (drawCtx.chart || modal.chart)) {
         if (draw.selected !== null) {
             deleteDrawing(draw.selected);
         } else {
@@ -2108,27 +2202,29 @@ function deleteDrawing(id) {
 }
 
 function removeDrawingFromChart(d) {
-    if (d.priceLine && modal.series) {
-        try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (d.priceLine && _s) {
+        try { _s.removePriceLine(d.priceLine); } catch(e) {}
     }
-    if (d.lineSeries && modal.chart) {
-        try { modal.chart.removeSeries(d.lineSeries); } catch(e) {}
+    if (d.lineSeries && _c) {
+        try { _c.removeSeries(d.lineSeries); } catch(e) {}
     }
-    if (d.fibLines && modal.series) {
+    if (d.fibLines && _s) {
         d.fibLines.forEach(fl => {
-            try { modal.series.removePriceLine(fl); } catch(e) {}
+            try { _s.removePriceLine(fl); } catch(e) {}
         });
     }
-    if (d.rectLines && modal.chart) {
+    if (d.rectLines && _c) {
         d.rectLines.forEach(ls => {
-            try { modal.chart.removeSeries(ls); } catch(e) {}
+            try { _c.removeSeries(ls); } catch(e) {}
         });
     }
-    if (d.fillSeries && modal.chart) {
-        try { modal.chart.removeSeries(d.fillSeries); } catch(e) {}
+    if (d.fillSeries && _c) {
+        try { _c.removeSeries(d.fillSeries); } catch(e) {}
     }
-    if (d.bottomPriceLine && modal.series) {
-        try { modal.series.removePriceLine(d.bottomPriceLine); } catch(e) {}
+    if (d.bottomPriceLine && _s) {
+        try { _s.removePriceLine(d.bottomPriceLine); } catch(e) {}
     }
 }
 
@@ -2146,7 +2242,7 @@ function deselectDrawing() {
 
 function showDrawingPanel(d) {
     hideDrawingPanel();
-    const chartEl = el('cmChartBody');
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
     if (!chartEl) return;
 
     const panel = document.createElement('div');
@@ -2396,16 +2492,17 @@ function showFibLevelsPopup(d) {
         fibConfig.save(newLevels);
 
         // Update this drawing
-        if (d.fibLines && modal.series) {
+        const _s2 = drawCtx.series || modal.series;
+        if (d.fibLines && _s2) {
             d.fibLines.forEach(fl => {
-                try { modal.series.removePriceLine(fl); } catch(ex) {}
+                try { _s2.removePriceLine(fl); } catch(ex) {}
             });
         }
         d.data.levels = newLevels;
         const diff = d.data.p2 - d.data.p1;
         d.fibLines = newLevels.map((item, i) => {
             const price = d.data.p1 + diff * item.level;
-            return modal.series.createPriceLine({
+            return _s2.createPriceLine({
                 price,
                 color: item.color,
                 lineWidth: 1.5,
@@ -2431,40 +2528,40 @@ function changeDrawingColor(id, color) {
     const d = draw.drawings.find(dd => dd.id === id);
     if (!d) return;
     d.color = color;
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
 
     // Recreate with new color
-    if (d.type === 'hline' && d.priceLine && modal.series) {
+    if (d.type === 'hline' && d.priceLine && _s) {
         const price = d.data.price;
-        try { modal.series.removePriceLine(d.priceLine); } catch(e) {}
-        d.priceLine = modal.series.createPriceLine({
+        try { _s.removePriceLine(d.priceLine); } catch(e) {}
+        d.priceLine = _s.createPriceLine({
             price, color, lineWidth: 2, lineStyle: 0,
             axisLabelVisible: true, title: '',
         });
     } else if ((d.type === 'ray' || d.type === 'trendline') && d.lineSeries) {
         d.lineSeries.applyOptions({ color });
-    } else if (d.type === 'fib' && d.fibLines && modal.series) {
+    } else if (d.type === 'fib' && d.fibLines && _s) {
         d.fibLines.forEach(fl => {
-            try { modal.series.removePriceLine(fl); } catch(e) {}
+            try { _s.removePriceLine(fl); } catch(e) {}
         });
         const rawLevels = d.data.levels || fibConfig.load();
         const diff = d.data.p2 - d.data.p1;
-        // When user changes color via panel, apply to ALL levels (override per-level)
         d.fibLines = rawLevels.map((item, i) => {
             const lvl = typeof item === 'number' ? item : item.level;
             const price = d.data.p1 + diff * lvl;
-            return modal.series.createPriceLine({
+            return _s.createPriceLine({
                 price, color, lineWidth: 1, lineStyle: 0,
                 axisLabelVisible: true, title: `${(lvl * 100).toFixed(1)}%`,
             });
         });
-        // Update per-level colors in data
         if (Array.isArray(d.data.levels)) {
             d.data.levels = d.data.levels.map(item => {
                 if (typeof item === 'number') return { level: item, color };
                 return { ...item, color };
             });
         }
-    } else if (d.type === 'rect' && d.rectLines && modal.chart) {
+    } else if (d.type === 'rect' && d.rectLines && _c) {
         d.rectLines.forEach(ls => ls.applyOptions({ color }));
         if (d.fillSeries) {
             const r = parseInt(color.slice(1, 3), 16);
@@ -2482,7 +2579,7 @@ function changeDrawingColor(id, color) {
 
 // Find drawing near a price (for click-to-select)
 function findDrawingNearPrice(price) {
-    if (!modal.series) return null;
+    if (!(drawCtx.series || modal.series)) return null;
     const threshold = Math.abs(price) * 0.005; // 0.5% tolerance
 
     for (const d of draw.drawings) {
@@ -2513,15 +2610,19 @@ function findDrawingNearPrice(price) {
 
 // Save current drawings to localStorage
 function persistDrawings() {
-    if (modal.currentSym) {
-        drawStore.save(modal.currentSym, draw.drawings);
+    const sym = drawCtx.sym || modal.currentSym;
+    if (sym) {
+        drawStore.save(sym, draw.drawings);
     }
 }
 
 // Restore drawings from localStorage for current symbol
 function restoreDrawings() {
-    if (!modal.currentSym || !modal.series || !modal.chart) return;
-    const saved = drawStore.load(modal.currentSym);
+    const _sym = drawCtx.sym || modal.currentSym;
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_sym || !_s || !_c) return;
+    const saved = drawStore.load(_sym);
     saved.forEach(s => {
         if (s.type === 'hline') {
             drawHorizontalLine(s.data.price, s.color);
@@ -2556,7 +2657,7 @@ function removePreviewOverlay() {
 
 function getPreviewCanvas() {
     if (draw.overlay) return draw.overlay;
-    const chartEl = el('cmChartBody');
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
     if (!chartEl) return null;
     const canvas = document.createElement('canvas');
     canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;';
@@ -2568,19 +2669,25 @@ function getPreviewCanvas() {
 }
 
 // ============================================
-// Drawing — click handlers on modal chart
+// Drawing — click handlers (works on any chart via drawCtx)
 // ============================================
-function setupDrawingHandlers() {
-    const chartEl = el('cmChartBody');
+function setupDrawingHandlers(targetEl) {
+    const chartEl = targetEl || el('cmChartBody');
     if (!chartEl) return;
 
     // Remove old listeners by replacing element reference approach — use data attribute
     if (chartEl.dataset.drawInit) return;
     chartEl.dataset.drawInit = '1';
 
+    // Getter helpers — always resolve to active drawCtx (or modal fallback)
+    const DC = () => drawCtx.chart || modal.chart;
+    const DS = () => drawCtx.series || modal.series;
+    const DD = () => drawCtx.candleData || modal.candleData;
+    const DTF = () => drawCtx.tf || modal.currentTF;
+
     // Snap price to nearest OHLC of closest candle (magnet mode)
     function snapToCandle(time, price) {
-        const data = modal.candleData;
+        const data = DD();
         if (!data || data.length === 0) return { time, price };
 
         // Binary search for closest candle by time
@@ -2615,14 +2722,16 @@ function setupDrawingHandlers() {
 
     // Unified handler for both click and touch
     function handleDrawClick(clientX, clientY) {
-        if (!modal.chart || !modal.series) return;
+        const _c = drawCtx.chart || modal.chart;
+        const _s = drawCtx.series || modal.series;
+        if (!_c || !_s) return;
         if (draw.activeTool === 'cursor') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
-        let price = modal.series.coordinateToPrice(y);
-        let time = modal.chart.timeScale().coordinateToTime(x);
+        let price = _s.coordinateToPrice(y);
+        let time = _c.timeScale().coordinateToTime(x);
         if (price === null || time === null) return;
 
         // Magnet snap to nearest OHLC
@@ -2716,12 +2825,14 @@ function setupDrawingHandlers() {
         }
         if (draw.activeTool === 'cursor') {
             // Shift+click starts ruler (like TradingView)
-            if (e.shiftKey && modal.series && modal.chart) {
+            const _sc = drawCtx.series || modal.series;
+            const _cc = drawCtx.chart || modal.chart;
+            if (e.shiftKey && _sc && _cc) {
                 const rect = chartEl.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
-                let price = modal.series.coordinateToPrice(y);
-                let time = modal.chart.timeScale().coordinateToTime(x);
+                let price = _sc.coordinateToPrice(y);
+                let time = _cc.timeScale().coordinateToTime(x);
                 if (price !== null && time !== null) {
                     if (drawMagnet) { const snapped = snapToCandle(time, price); price = snapped.price; time = snapped.time; }
                     removeRulerMeasurement();
@@ -2735,11 +2846,11 @@ function setupDrawingHandlers() {
                 return;
             }
             // Select/deselect drawing
-            const rect = chartEl.getBoundingClientRect();
-            const y = e.clientY - rect.top;
-            const price = modal.series ? modal.series.coordinateToPrice(y) : null;
-            if (price !== null) {
-                const found = findDrawingNearPrice(price);
+            const rect2 = chartEl.getBoundingClientRect();
+            const y2 = e.clientY - rect2.top;
+            const price2 = _sc ? _sc.coordinateToPrice(y2) : null;
+            if (price2 !== null) {
+                const found = findDrawingNearPrice(price2);
                 if (found) {
                     selectDrawing(found.id);
                 } else {
@@ -2764,11 +2875,11 @@ function setupDrawingHandlers() {
             // Select drawing on tap
             const touch = e.changedTouches[0];
             if (!touch) return;
-            const rect = chartEl.getBoundingClientRect();
-            const y = touch.clientY - rect.top;
-            const price = modal.series ? modal.series.coordinateToPrice(y) : null;
-            if (price !== null) {
-                const found = findDrawingNearPrice(price);
+            const tRect = chartEl.getBoundingClientRect();
+            const tY = touch.clientY - tRect.top;
+            const tPrice = (drawCtx.series || modal.series)?.coordinateToPrice(tY) ?? null;
+            if (tPrice !== null) {
+                const found = findDrawingNearPrice(tPrice);
                 if (found) {
                     selectDrawing(found.id);
                 } else {
@@ -2791,9 +2902,9 @@ function setupDrawingHandlers() {
 
         const rect = chartEl.getBoundingClientRect();
         const y = e.clientY - rect.top;
-        const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+        const price = DS() ? DS().coordinateToPrice(y) : null;
         if (price === null) return;
-        const dragPrice = d.type === 'ray' ? d.data.price : d.data.price;
+        const dragPrice = d.data.price;
         const threshold = Math.abs(dragPrice) * 0.005;
         if (Math.abs(price - dragPrice) > threshold) return;
 
@@ -2801,7 +2912,7 @@ function setupDrawingHandlers() {
         draw.dragging = true;
         draw.dragStartY = e.clientY;
         draw.dragStartPrice = dragPrice;
-        if (modal.chart) modal.chart.applyOptions({ handleScroll: false, handleScale: false });
+        if (DC()) DC().applyOptions({ handleScroll: false, handleScale: false });
     });
 
     // Drag — mousemove
@@ -2811,25 +2922,23 @@ function setupDrawingHandlers() {
             if (!d || (d.type !== 'hline' && d.type !== 'ray')) return;
             const rect = chartEl.getBoundingClientRect();
             const y = e.clientY - rect.top;
-            const newPrice = modal.series ? modal.series.coordinateToPrice(y) : null;
+            const newPrice = DS() ? DS().coordinateToPrice(y) : null;
             if (newPrice === null) return;
 
             if (d.type === 'hline') {
-                try { modal.series.removePriceLine(d.priceLine); } catch(ex) {}
-                d.priceLine = modal.series.createPriceLine({
+                try { DS().removePriceLine(d.priceLine); } catch(ex) {}
+                d.priceLine = DS().createPriceLine({
                     price: newPrice, color: d.color, lineWidth: 2, lineStyle: 0,
                     axisLabelVisible: true, title: '',
                 });
                 d.data.price = newPrice;
             } else if (d.type === 'ray') {
-                // Update ray line — recreate with new price
                 if (d.lineSeries) {
-                    const points = d.lineSeries.data || [];
-                    try { modal.chart.removeSeries(d.lineSeries); } catch(ex) {}
+                    try { DC().removeSeries(d.lineSeries); } catch(ex) {}
                 }
                 const startTime = d.data.startTime;
                 const farTime = startTime + 365 * 24 * 3600;
-                const ls = modal.chart.addLineSeries({
+                const ls = DC().addLineSeries({
                     color: d.color, lineWidth: 2,
                     crosshairMarkerVisible: false, lastValueVisible: false,
                     priceLineVisible: false, pointMarkersVisible: false,
@@ -2863,15 +2972,15 @@ function setupDrawingHandlers() {
         const touch = e.touches[0];
         const rect = chartEl.getBoundingClientRect();
         const y = touch.clientY - rect.top;
-        const price = modal.series ? modal.series.coordinateToPrice(y) : null;
+        const price = DS() ? DS().coordinateToPrice(y) : null;
         if (price === null) return;
-        const dragPrice = d.type === 'ray' ? d.data.price : d.data.price;
+        const dragPrice = d.data.price;
         const threshold = Math.abs(dragPrice) * 0.008;
         if (Math.abs(price - dragPrice) > threshold) return;
 
         e.preventDefault();
         draw.dragging = true;
-        if (modal.chart) modal.chart.applyOptions({ handleScroll: false, handleScale: false });
+        if (DC()) DC().applyOptions({ handleScroll: false, handleScale: false });
     }, { passive: false });
 
     chartEl.addEventListener('touchmove', (e) => {
@@ -2882,21 +2991,21 @@ function setupDrawingHandlers() {
             const touch = e.touches[0];
             const rect = chartEl.getBoundingClientRect();
             const y = touch.clientY - rect.top;
-            const newPrice = modal.series ? modal.series.coordinateToPrice(y) : null;
+            const newPrice = DS() ? DS().coordinateToPrice(y) : null;
             if (newPrice === null) return;
 
             if (d.type === 'hline') {
-                try { modal.series.removePriceLine(d.priceLine); } catch(ex) {}
-                d.priceLine = modal.series.createPriceLine({
+                try { DS().removePriceLine(d.priceLine); } catch(ex) {}
+                d.priceLine = DS().createPriceLine({
                     price: newPrice, color: d.color, lineWidth: 2, lineStyle: 0,
                     axisLabelVisible: true, title: '',
                 });
                 d.data.price = newPrice;
             } else if (d.type === 'ray') {
-                if (d.lineSeries) try { modal.chart.removeSeries(d.lineSeries); } catch(ex) {}
+                if (d.lineSeries) try { DC().removeSeries(d.lineSeries); } catch(ex) {}
                 const startTime = d.data.startTime;
                 const farTime = startTime + 365 * 24 * 3600;
-                const ls = modal.chart.addLineSeries({
+                const ls = DC().addLineSeries({
                     color: d.color, lineWidth: 2,
                     crosshairMarkerVisible: false, lastValueVisible: false,
                     priceLineVisible: false, pointMarkersVisible: false,
@@ -2913,23 +3022,23 @@ function setupDrawingHandlers() {
 
     // Live preview for 2-click tools
     chartEl.addEventListener('mousemove', (e) => {
-        if (!modal.chart || !modal.series) return;
+        if (!DC() || !DS()) return;
         if (draw.clickCount !== 1) return;
         if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib' && draw.activeTool !== 'rect' && draw.activeTool !== 'ruler') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = e.clientX - rect.left;
         let y = e.clientY - rect.top;
-        let price = modal.series.coordinateToPrice(y);
+        let price = DS().coordinateToPrice(y);
         if (price === null) return;
 
         // Snap to nearest candle OHLC (if magnet enabled)
         if (drawMagnet) {
-            const curTime = modal.chart.timeScale().coordinateToTime(x);
+            const curTime = DC().timeScale().coordinateToTime(x);
             if (curTime !== null) {
                 const snapped = snapToCandle(curTime, price);
                 price = snapped.price;
-                const snapY = modal.series.priceToCoordinate(price);
+                const snapY = DS().priceToCoordinate(price);
                 if (snapY !== null) y = snapY;
             }
         }
@@ -2941,8 +3050,8 @@ function setupDrawingHandlers() {
         canvas.height = chartEl.clientHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        const startY2 = modal.series.priceToCoordinate(draw.startPrice);
-        const startX2 = modal.chart.timeScale().timeToCoordinate(draw.startTime);
+        const startY2 = DS().priceToCoordinate(draw.startPrice);
+        const startX2 = DC().timeScale().timeToCoordinate(draw.startTime);
         if (startY2 === null || startX2 === null) return;
 
         ctx.strokeStyle = '#5b9cf6';
@@ -2957,7 +3066,7 @@ function setupDrawingHandlers() {
                 const lvl = typeof item === 'number' ? item : item.level;
                 const clr = (typeof item === 'object' && item.color) ? item.color : FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length];
                 const fibPrice = draw.startPrice + diff * lvl;
-                const fibY = modal.series.priceToCoordinate(fibPrice);
+                const fibY = DS().priceToCoordinate(fibPrice);
                 if (fibY === null) return;
                 ctx.strokeStyle = clr;
                 ctx.setLineDash([3, 3]);
@@ -2981,7 +3090,7 @@ function setupDrawingHandlers() {
             ctx.fillRect(startX2, startY2, w, h);
         } else if (draw.activeTool === 'ruler') {
             // Preview ruler measurement
-            const curTime = modal.chart.timeScale().coordinateToTime(x);
+            const curTime = DC().timeScale().coordinateToTime(x);
             const priceDiff = price - draw.startPrice;
             const pctDiff = draw.startPrice !== 0 ? (priceDiff / draw.startPrice * 100) : 0;
             const isUp = priceDiff >= 0;
@@ -3023,7 +3132,7 @@ function setupDrawingHandlers() {
                 else if (timeDiffSec < 86400) timeStr = (timeDiffSec / 3600).toFixed(1) + 'h';
                 else timeStr = (timeDiffSec / 86400).toFixed(1) + 'd';
                 // Bars count based on modal TF
-                const tfSec = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[modal.currentTF] || 300;
+                const tfSec = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[DTF()] || 300;
                 barsStr = Math.round(timeDiffSec / tfSec) + ' bars';
             }
 
@@ -3080,9 +3189,10 @@ function setupDrawingHandlers() {
 // Drawing implementations
 // ============================================
 function drawHorizontalLine(price, color) {
-    if (!modal.series) return;
+    const _s = drawCtx.series || modal.series;
+    if (!_s) return;
     const c = color || '#5b9cf6';
-    const priceLine = modal.series.createPriceLine({
+    const priceLine = _s.createPriceLine({
         price: price,
         color: c,
         lineWidth: 2,
@@ -3095,11 +3205,12 @@ function drawHorizontalLine(price, color) {
 }
 
 function drawHorizontalRay(price, startTime, color) {
-    if (!modal.chart) return;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_c) return;
     const c = color || '#5b9cf6';
     const farTime = startTime + 365 * 24 * 3600; // 1 year forward
 
-    const lineSeries = modal.chart.addLineSeries({
+    const lineSeries = _c.addLineSeries({
         color: c, lineWidth: 2,
         crosshairMarkerVisible: false, lastValueVisible: false,
         priceLineVisible: false, pointMarkersVisible: false,
@@ -3116,15 +3227,14 @@ function drawHorizontalRay(price, startTime, color) {
 }
 
 function drawTwoPointLine(type, t1, p1, t2, p2, color) {
-    if (!modal.chart) return;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_c) return;
     const c = color || '#5b9cf6';
     const points = [];
 
-    // Trendline: just 2 points
     points.push({ time: t1, value: p1 });
     points.push({ time: t2, value: p2 });
 
-    // Deduplicate by time (LightweightCharts requires unique times)
     const seen = new Set();
     const uniquePoints = points.filter(p => {
         if (seen.has(p.time)) return false;
@@ -3132,7 +3242,7 @@ function drawTwoPointLine(type, t1, p1, t2, p2, color) {
         return true;
     }).sort((a, b) => a.time - b.time);
 
-    const lineSeries = modal.chart.addLineSeries({
+    const lineSeries = _c.addLineSeries({
         color: c,
         lineWidth: 2,
         lineStyle: type === 'ray' ? 0 : 0,
@@ -3147,38 +3257,35 @@ function drawTwoPointLine(type, t1, p1, t2, p2, color) {
 }
 
 function drawRectangle(t1, p1, t2, p2, color) {
-    if (!modal.chart || !modal.series) return;
+    const _c = drawCtx.chart || modal.chart;
+    const _s = drawCtx.series || modal.series;
+    if (!_c || !_s) return;
     const c = color || '#5b9cf6';
 
-    // Sort times so t1 < t2
     const tMin = Math.min(t1, t2);
     const tMax = Math.max(t1, t2);
     const pMin = Math.min(p1, p2);
     const pMax = Math.max(p1, p2);
 
-    // Top border
-    const topLine = modal.chart.addLineSeries({
+    const topLine = _c.addLineSeries({
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     topLine.setData([{ time: tMin, value: pMax }, { time: tMax, value: pMax }]);
 
-    // Bottom border
-    const bottomLine = modal.chart.addLineSeries({
+    const bottomLine = _c.addLineSeries({
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     bottomLine.setData([{ time: tMin, value: pMin }, { time: tMax, value: pMin }]);
 
-    // Left border
-    const leftLine = modal.chart.addLineSeries({
+    const leftLine = _c.addLineSeries({
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     leftLine.setData([{ time: tMin, value: pMin }, { time: tMin + 1, value: pMax }]);
 
-    // Right border
-    const rightLine = modal.chart.addLineSeries({
+    const rightLine = _c.addLineSeries({
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
@@ -3191,7 +3298,7 @@ function drawRectangle(t1, p1, t2, p2, color) {
         const b = parseInt(hex.slice(5, 7), 16);
         return `rgba(${r}, ${g}, ${b}, 0.08)`;
     };
-    const fillSeries = modal.chart.addAreaSeries({
+    const fillSeries = _c.addAreaSeries({
         topColor: hexToFill(c),
         bottomColor: 'transparent',
         lineColor: 'transparent',
@@ -3217,7 +3324,7 @@ function drawRectangle(t1, p1, t2, p2, color) {
     fillSeries.setData(uniqueFill);
 
     // Bottom price line for visual boundary
-    const bottomPriceLine = modal.series.createPriceLine({
+    const bottomPriceLine = _s.createPriceLine({
         price: pMin, color: 'transparent', lineWidth: 0, lineStyle: 2,
         axisLabelVisible: false, title: '',
     });
@@ -3243,10 +3350,12 @@ function removeRulerMeasurement() {
 }
 
 function showRulerMeasurement(t1, p1, t2, p2) {
-    if (!modal.chart || !modal.series) return;
+    const _c = drawCtx.chart || modal.chart;
+    const _s = drawCtx.series || modal.series;
+    if (!_c || !_s) return;
     removeRulerMeasurement();
 
-    const chartEl = el('cmChartBody');
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
     if (!chartEl) return;
 
     // Create persistent overlay
@@ -3257,7 +3366,7 @@ function showRulerMeasurement(t1, p1, t2, p2) {
     rulerOverlay = overlay;
 
     function render() {
-        if (!rulerOverlay || !modal.chart || !modal.series) return;
+        if (!rulerOverlay || !_c || !_s) return;
         const w = chartEl.clientWidth;
         const h = chartEl.clientHeight;
         overlay.width = w;
@@ -3265,10 +3374,10 @@ function showRulerMeasurement(t1, p1, t2, p2) {
         const ctx = overlay.getContext('2d');
         ctx.clearRect(0, 0, w, h);
 
-        const sx = modal.chart.timeScale().timeToCoordinate(t1);
-        const sy = modal.series.priceToCoordinate(p1);
-        const ex = modal.chart.timeScale().timeToCoordinate(t2);
-        const ey = modal.series.priceToCoordinate(p2);
+        const sx = _c.timeScale().timeToCoordinate(t1);
+        const sy = _s.priceToCoordinate(p1);
+        const ex = _c.timeScale().timeToCoordinate(t2);
+        const ey = _s.priceToCoordinate(p2);
         if (sx === null || sy === null || ex === null || ey === null) return;
 
         const priceDiff = p2 - p1;
@@ -3346,17 +3455,16 @@ function showRulerMeasurement(t1, p1, t2, p2) {
     render();
 
     // Re-render on scroll/zoom so ruler follows the chart
-    const subId = modal.chart.timeScale().subscribeVisibleTimeRangeChange(render);
-    // Store unsubscribe for cleanup
+    const subId = _c.timeScale().subscribeVisibleTimeRangeChange(render);
     overlay._unsub = () => {
-        try { modal.chart.timeScale().unsubscribeVisibleTimeRangeChange(render); } catch(e) {}
+        try { _c.timeScale().unsubscribeVisibleTimeRangeChange(render); } catch(e) {}
     };
 }
 
 function drawFibonacci(p1, p2, color, customLevels) {
-    if (!modal.series) return;
+    const _s = drawCtx.series || modal.series;
+    if (!_s) return;
     const rawLevels = customLevels || fibConfig.load();
-    // Normalize to {level, color} format
     const levels = rawLevels.map((item, i) => {
         if (typeof item === 'number') return { level: item, color: color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
         return { level: item.level, color: color || item.color || FIB_DEFAULT_COLORS[i % FIB_DEFAULT_COLORS.length] };
@@ -3367,7 +3475,7 @@ function drawFibonacci(p1, p2, color, customLevels) {
     levels.forEach((item, i) => {
         const price = p1 + diff * item.level;
         const label = `${(item.level * 100).toFixed(1)}%`;
-        const priceLine = modal.series.createPriceLine({
+        const priceLine = _s.createPriceLine({
             price: price,
             color: item.color,
             lineWidth: 1.5,
@@ -3633,6 +3741,25 @@ function setActiveSlot(index) {
     document.querySelectorAll('.mch-slot').forEach((s, i) => {
         s.classList.toggle('active', i === index);
     });
+    // Switch drawing context to active slot
+    const slot = mch.slots[index];
+    if (slot && slot.chart && slot.sym) {
+        // Save current drawings before switching
+        persistDrawings();
+        // Clear current drawings from chart
+        draw.drawings.forEach(d => removeDrawingFromChart(d));
+        draw.drawings = [];
+        draw.selected = null;
+        draw.activeTool = 'cursor';
+        draw.clickCount = 0;
+        hideDrawingPanel();
+        removePreviewOverlay();
+
+        setDrawCtxSlot(index);
+        // Restore drawings for new symbol
+        restoreDrawings();
+        updateModalCursor();
+    }
 }
 
 function assignSymbolToSlot(sym, slotIndex) {
@@ -3768,6 +3895,31 @@ function createSlotChart(slotIndex) {
         slot.legend.style.display = 'flex';
         slot.legend.innerHTML = `<span style="color:${color}">O <b>${o}</b></span><span style="color:${color}">H <b>${h}</b></span><span style="color:${color}">L <b>${l}</b></span><span style="color:${color}">C <b>${c}</b></span><span style="color:var(--text-muted)">V <b>${v}</b></span>`;
     });
+
+    // Drawing tools on slot — switch context on any interaction
+    chartEl.addEventListener('mousedown', () => {
+        if (drawCtx.source !== 'slot:' + slotIndex) {
+            setDrawCtxSlot(slotIndex);
+            // Move toolbar to this slot
+            renderDrawToolbar(chartEl);
+        }
+    }, true);
+    chartEl.addEventListener('touchstart', () => {
+        if (drawCtx.source !== 'slot:' + slotIndex) {
+            setDrawCtxSlot(slotIndex);
+            renderDrawToolbar(chartEl);
+        }
+    }, { capture: true, passive: true });
+
+    // Attach ruler + drawing handlers
+    attachRuler(chartEl, slot.chart, slot.series);
+    setupDrawingHandlers(chartEl);
+
+    // Render compact toolbar
+    setDrawCtxSlot(slotIndex);
+    renderDrawToolbar(chartEl);
+    // Reset ctx back to modal if modal is open
+    if (modal.chart) setDrawCtxModal();
 }
 
 async function loadSlotChart(slotIndex) {
@@ -3780,8 +3932,12 @@ async function loadSlotChart(slotIndex) {
         if (!Array.isArray(raw) || raw.length === 0) return;
 
         const parsed = parseKlines(raw);
+        slot.candleData = parsed;
         slot.series.setData(parsed);
         slot.volSeries?.setData(extractVolume(parsed));
+
+        // Update drawCtx if this slot is active
+        if (drawCtx.source === 'slot:' + slotIndex) drawCtx.candleData = parsed;
 
         // Scroll to end respecting rightOffset
         slot.chart.timeScale().scrollToRealTime();
@@ -3791,6 +3947,9 @@ async function loadSlotChart(slotIndex) {
 
         // Fetch and render density walls
         applyDensityToSlot(slotIndex);
+
+        // OI indicator
+        applyOI(slot, slot.sym, slot.tf);
     } catch(e) {
         console.error('[MCH] Load error slot', slotIndex, e);
     }

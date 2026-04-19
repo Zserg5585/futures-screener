@@ -1571,6 +1571,39 @@ body.theme-amoled {
     color: #ef4444;
 }
 
+/* Compact drawing toolbar inside multi-chart slots */
+.mch-slot-chart .dt-tools {
+    left: 4px;
+    top: 8px;
+    transform: none;
+    padding: 2px;
+    gap: 1px;
+    border-radius: 6px;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+}
+.mch-slot-chart:hover .dt-tools,
+.mch-slot-chart .dt-tools:hover {
+    opacity: 1;
+}
+.mch-slot-chart .dt-btn {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+}
+.mch-slot-chart .dt-btn svg {
+    width: 14px;
+    height: 14px;
+}
+.mch-slot-chart .dt-divider {
+    margin: 2px 0;
+}
+.mch-slot-chart .dt-btn[data-tool="trash"] {
+    height: 26px;
+    margin-top: 2px;
+    padding-top: 2px;
+}
+
 .dt-separator {
     display: none;
 }
