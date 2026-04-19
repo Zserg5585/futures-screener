@@ -808,10 +808,25 @@ function createChartInstance(sym) {
         borderVisible: false,
     });
 
-    mc.charts[sym] = { chart, series, volSeries, lines: [], oiSeries: null };
+    mc.charts[sym] = { chart, series, volSeries, lines: [], oiSeries: null, candleData: null };
 
-    // Attach shift+drag ruler
+    // Drawing tools on mini-chart — switch context on interaction
+    chartEl.addEventListener('mousedown', () => {
+        if (drawCtx.source !== 'mini:' + sym) {
+            setDrawCtxMini(sym);
+            renderDrawToolbar(chartEl);
+        }
+    }, true);
+    chartEl.addEventListener('touchstart', () => {
+        if (drawCtx.source !== 'mini:' + sym) {
+            setDrawCtxMini(sym);
+            renderDrawToolbar(chartEl);
+        }
+    }, { capture: true, passive: true });
+
+    // Attach ruler + drawing handlers
     attachRuler(chartEl, chart, series);
+    setupDrawingHandlers(chartEl);
 }
 
 // Batch load queue — fetches multiple symbols at once via server batch endpoint
@@ -845,6 +860,7 @@ async function processLoadQueue() {
                 if (allData[sym] && Array.isArray(allData[sym])) {
                     const parsed = parseKlines(allData[sym]);
                     if (parsed.length > 0) {
+                        mc.charts[sym].candleData = parsed;
                         mc.charts[sym].series.setData(parsed);
                         mc.charts[sym].volSeries?.setData(extractVolume(parsed));
                         const visibleCount = Math.min(100, parsed.length);
@@ -2081,6 +2097,13 @@ function setDrawCtxSlot(slotIndex) {
     if (!slot || !slot.chart) return;
     const chartEl = el('mch-chart-' + slotIndex);
     setDrawCtx('slot:' + slotIndex, slot.chart, slot.series, slot.candleData || null, chartEl, slot.sym, slot.tf);
+}
+
+function setDrawCtxMini(sym) {
+    const c = mc.charts[sym];
+    if (!c || !c.chart) return;
+    const chartEl = el('mc-body-' + sym);
+    setDrawCtx('mini:' + sym, c.chart, c.series, c.candleData || null, chartEl, sym, mc.globalTF);
 }
 
 function renderDrawToolbar(targetEl) {

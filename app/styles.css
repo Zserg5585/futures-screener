@@ -1604,6 +1604,44 @@ body.theme-amoled {
     padding-top: 2px;
 }
 
+/* Mini-chart drawing toolbar — ultra-compact, hidden until hover */
+.mc-chart-body .dt-tools {
+    left: 2px;
+    top: 4px;
+    transform: none;
+    padding: 2px;
+    gap: 0px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+.mc-chart-body:hover .dt-tools {
+    opacity: 0.7;
+    pointer-events: auto;
+}
+.mc-chart-body .dt-tools:hover {
+    opacity: 1;
+}
+.mc-chart-body .dt-btn {
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+    border-radius: 3px;
+}
+.mc-chart-body .dt-btn svg {
+    width: 12px;
+    height: 12px;
+}
+.mc-chart-body .dt-divider {
+    margin: 1px 0;
+}
+.mc-chart-body .dt-btn[data-tool="trash"] {
+    height: 22px;
+    margin-top: 1px;
+    padding-top: 1px;
+}
+
 .dt-separator {
     display: none;
 }
