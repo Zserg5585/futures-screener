@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20260419-v21" />
+    <link rel="stylesheet" href="/styles.css?v=20260420-v22" />
     <meta name="description" content="Futures Screener - Binance Futures Trading Densities" />
     <meta name="theme-color" content="#0b0f14" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -46,28 +46,67 @@
             <div id="error" class="error hidden"></div>
             
             <div id="tab-densities" class="tab-content" style="display:none;">
-                <div class="table-container" id="table-container">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th class="sortable" data-sort="symbol">Symbol</th>
-                            <th class="sortable" data-sort="side">Side</th>
-                            <th class="sortable" data-sort="score">Sev</th>
-                            <th class="sortable" data-sort="xMult">x Mult</th>
-                            <th class="sortable" data-sort="distance">Price / Dist</th>
-                            <th class="sortable" data-sort="notional">Wall $</th>
-                            <th>Vol 5×5m</th>
-                            <th class="sortable" data-sort="natr">NATR</th>
-                            <th class="sortable" data-sort="age">Age</th>
-                            <th>Tags</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody"></tbody>
-                </table>
-            </div>
+                <!-- V2 Density Toolbar -->
+                <div class="dv2-toolbar">
+                    <div class="dv2-toolbar-left">
+                        <span class="dv2-label">Window</span>
+                        <select id="dv2Window" class="dv2-select">
+                            <option value="1">±1%</option>
+                            <option value="2" selected>±2%</option>
+                            <option value="3">±3%</option>
+                            <option value="5">±5%</option>
+                        </select>
+                        <span class="dv2-label">Min Vol</span>
+                        <select id="dv2MinVol" class="dv2-select">
+                            <option value="10000000">$10M</option>
+                            <option value="50000000" selected>$50M</option>
+                            <option value="100000000">$100M</option>
+                            <option value="500000000">$500M</option>
+                        </select>
+                        <span class="dv2-label">σ</span>
+                        <select id="dv2Sigma" class="dv2-select">
+                            <option value="1.5">1.5</option>
+                            <option value="2" selected>2.0</option>
+                            <option value="2.5">2.5</option>
+                            <option value="3">3.0</option>
+                        </select>
+                        <button id="dv2BlacklistBtn" class="dv2-btn dv2-bl-btn" title="Blacklist">
+                            🚫<span id="dv2BlBadge" class="dv2-bl-badge" style="display:none">0</span>
+                        </button>
+                    </div>
+                    <div class="dv2-toolbar-right">
+                        <span id="dv2Status" class="dv2-status">—</span>
+                        <button id="dv2Refresh" class="dv2-btn" title="Refresh">⟳</button>
+                        <label class="dv2-auto-label">
+                            <input type="checkbox" id="dv2Auto" /> Auto 15s
+                        </label>
+                    </div>
+                </div>
 
-            <!-- Mobile Cards View -->
-            <div class="cards-container" id="cardsContent" style="display:none;"></div>
+                <!-- V2 Table -->
+                <div class="table-container" id="table-container">
+                    <table class="table dv2-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort="symbol">Coin</th>
+                                <th class="sortable" data-sort="imbalance">Imbalance</th>
+                                <th class="sortable" data-sort="supportScore">Support</th>
+                                <th>Dist</th>
+                                <th>Size</th>
+                                <th>Age</th>
+                                <th class="sortable" data-sort="resistScore">Resistance</th>
+                                <th>Dist</th>
+                                <th>Size</th>
+                                <th>Age</th>
+                                <th class="sortable" data-sort="volume24h">Vol 24h</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody"></tbody>
+                    </table>
+                </div>
+
+                <!-- Mobile Cards View -->
+                <div class="cards-container" id="cardsContent" style="display:none;"></div>
             </div> <!-- End Tab Densities -->
 
             <div id="tab-mini-charts" class="tab-content">
@@ -133,6 +172,12 @@
                         <button class="mc-layout-btn" data-layout="4" title="4 Charts">
                             <svg width="14" height="14" viewBox="0 0 14 14"><rect x="0" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="0" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="0" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/><rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.6"/></svg>
                         </button>
+                    </div>
+                    <div class="mc-toolbar-group">
+                        <label class="mc-density-toggle" title="Show density walls on charts">
+                            <input type="checkbox" id="mcDensityToggle" checked />
+                            <span>Density</span>
+                        </label>
                     </div>
                     <div class="mc-toolbar-group" style="margin-left:auto;">
                         <span id="mcStatus" class="mc-status"></span>
@@ -362,8 +407,8 @@
     <script src="/auth.js?v=20260415-v1"></script>
     <script src="/settings.js?v=20260419-v21"></script>
     <script src="/signals.js?v=20260420-v27"></script>
-    <script src="/densities.js?v=20260419-v21"></script>
-    <script src="/mini-charts.js?v=20260420-v27"></script>
+    <script src="/densities.js?v=20260420-v15"></script>
+    <script src="/mini-charts.js?v=20260420-v29"></script>
 </body>
 
 </html>

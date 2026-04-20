@@ -15,6 +15,7 @@ const wsManager = require('./ws');
 const stateManager = require('./state');
 const { binLevels } = require('./logic');
 const { analyzeBehavior } = require('./scorer');
+const densityV2 = require('./densityV2');
 const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
@@ -792,6 +793,119 @@ fastify.get('/densities/simple', async (req) => {
   }
 
   return result
+})
+
+// ---- Density V2: Statistical Walls + Imbalance ----
+const densityV2PersistenceMap = new Map()
+let densityV2Cache = { data: null, ts: 0 }
+const DENSITY_V2_CACHE_TTL = 15000 // 15 seconds
+
+// Cleanup persistence every 60s
+setInterval(() => densityV2.cleanupPersistence(densityV2PersistenceMap), 60000)
+
+fastify.get('/densities/v2', async (req) => {
+  const windowPct = Number(req.query.windowPct || 2)
+  const nSigma = Number(req.query.nSigma || 2)
+  const minVolume24h = Number(req.query.minVolume24h || 50000000) // $50M default
+  const minImbalance = Number(req.query.minImbalance || 0) // 0 = show all
+  const isSpecific = !!req.query.symbols
+  const forceRefresh = req.query.force === 'true'
+
+  // Return cached data if fresh enough (full scan only)
+  if (!isSpecific && !forceRefresh && densityV2Cache.data && (Date.now() - densityV2Cache.ts) < DENSITY_V2_CACHE_TTL) {
+    let filtered = [...densityV2Cache.data]
+    if (minImbalance > 0) filtered = filtered.filter(d => Math.abs(d.imbalance) >= minImbalance)
+    return { count: filtered.length, data: filtered, cached: true, cacheAgeSec: Math.round((Date.now() - densityV2Cache.ts) / 1000) }
+  }
+
+  // Get 24h ticker for volume filter
+  let ticker24h
+  try {
+    ticker24h = await bgetWithRetry('/fapi/v1/ticker/24hr')
+  } catch (err) {
+    return { count: 0, data: [], error: 'Failed to fetch ticker data' }
+  }
+  const volumeMap = new Map(ticker24h.map(t => [t.symbol, Number(t.quoteVolume)]))
+
+  // Get mark prices
+  const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
+  const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
+
+  // Determine symbols to analyze
+  let symbols
+  if (isSpecific) {
+    symbols = String(req.query.symbols).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+  } else {
+    // All subscribed symbols filtered by volume
+    symbols = [...wsManager.callbacks.keys()].filter(sym => {
+      const vol = volumeMap.get(sym) || 0
+      return vol >= minVolume24h && markMap.has(sym)
+    })
+  }
+
+  const results = []
+
+  for (const sym of symbols) {
+    const price = markMap.get(sym)
+    if (!price) continue
+
+    // If not yet WS-subscribed and specific symbol requested: fetch depth on demand
+    if (!wsManager.callbacks.has(sym)) {
+      if (!isSpecific) continue // Full scan: skip unsubscribed
+      try {
+        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
+        stateManager.initBook(sym, ob.bids, ob.asks)
+        wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
+      } catch (err) {
+        continue
+      }
+    }
+
+    // Get raw levels from WS state (wider window for analysis, windowPct for filtering)
+    const bidLevels = stateManager.getTopLevels(sym, 'bid', price, 0, 500, windowPct + 1)
+    const askLevels = stateManager.getTopLevels(sym, 'ask', price, 0, 500, windowPct + 1)
+
+    if (bidLevels.length < 3 && askLevels.length < 3) continue // not enough data
+
+    try {
+      const analysis = densityV2.analyzeSymbol({
+        symbol: sym,
+        markPrice: price,
+        bidLevels,
+        askLevels,
+        persistenceMap: densityV2PersistenceMap,
+        windowPct,
+        nSigma
+      })
+
+      // Only include if has at least one wall
+      if (analysis.wallCount > 0) {
+        // Add volume info
+        analysis.volume24h = volumeMap.get(sym) || 0
+        results.push(analysis)
+      }
+    } catch (err) {
+      // Skip problematic symbols silently
+      continue
+    }
+  }
+
+  // Sort by strongest wall score (support or resistance, whichever is bigger)
+  results.sort((a, b) => {
+    const scoreA = Math.max(a.support?.score || 0, a.resistance?.score || 0)
+    const scoreB = Math.max(b.support?.score || 0, b.resistance?.score || 0)
+    return scoreB - scoreA
+  })
+
+  // Cache for full scans
+  if (!isSpecific) {
+    densityV2Cache = { data: results, ts: Date.now() }
+  }
+
+  let finalData = results
+  if (minImbalance > 0) finalData = finalData.filter(d => Math.abs(d.imbalance) >= minImbalance)
+
+  return { count: finalData.length, data: finalData, cached: false }
 })
 
 // Cache stats endpoint

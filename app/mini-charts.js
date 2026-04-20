@@ -342,6 +342,30 @@ async function initMiniCharts() {
             refreshBtn.addEventListener('click', () => refreshMiniCharts());
         }
 
+        // Density toggle checkbox
+        const densityToggle = el('mcDensityToggle');
+        if (densityToggle) {
+            densityToggle.checked = spGet('densityEnabled', true);
+            densityToggle.addEventListener('change', () => {
+                const enabled = densityToggle.checked;
+                const sp = _sp();
+                if (sp) sp.set('densityEnabled', enabled);
+                if (!enabled) {
+                    // Remove density lines from all mini-charts
+                    Object.values(mc.charts).forEach(c => {
+                        if (c.densityLines) { c.densityLines.forEach(pl => { try { c.series.removePriceLine(pl) } catch(e){} }); c.densityLines = [] }
+                    });
+                    // Remove from modal
+                    if (modal.densityLines) { modal.densityLines.forEach(pl => { try { modal.series.removePriceLine(pl) } catch(e){} }); modal.densityLines = [] }
+                } else {
+                    // Re-apply densities
+                    const visibleSyms = Object.keys(mc.charts).filter(s => mc.charts[s].series);
+                    if (visibleSyms.length > 0) applyDensityToBatch(visibleSyms);
+                    if (modal.chart && modal.currentSym) applyDensityToModal();
+                }
+            });
+        }
+
         // Mobile sidebar toggle (hamburger)
         const sidebarToggle = el('mcSidebarToggle');
         const sidebarOverlay = el('mcSidebarOverlay');
@@ -4013,16 +4037,24 @@ async function applyDensityToSlot(slotIndex) {
     slot.densityObjs = [];
 
     try {
-        const res = await fetch(`/densities/simple?symbols=${slot.sym}&limitSymbols=1&xFilter=2`);
+        const res = await fetch(`/densities/v2?symbols=${slot.sym}`);
         const json = await res.json();
-        const walls = filterDensityWalls(json.data || []);
-        if (walls.length === 0) return;
+        const items = json.data || [];
+        if (items.length === 0) return;
+
+        const entry = items[0];
+        const walls = [];
+        if (entry.support) walls.push({ ...entry.support, side: 'bid' });
+        if (entry.resistance) walls.push({ ...entry.resistance, side: 'ask' });
+        // Add extra bid/ask walls if available
+        (entry.bidWalls || []).slice(1, 3).forEach(w => walls.push({ ...w, side: 'bid' }));
+        (entry.askWalls || []).slice(1, 3).forEach(w => walls.push({ ...w, side: 'ask' }));
 
         walls.forEach(w => {
-            const isBid = w.sideKey === 'bid';
+            const isBid = w.side === 'bid';
             const color = isBid ? '#22c55e' : '#ef4444';
             const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
-            const label = `$${notionalStr} x${w.xMult}`;
+            const label = `$${notionalStr} ${w.sizeVsMedian}x`;
 
             const priceLine = slot.series.createPriceLine({
                 price: w.price,
@@ -4044,16 +4076,20 @@ async function applyDensityToSlot(slotIndex) {
 async function applyDensityToBatch(symbols) {
     if (!spGet('densityEnabled', true)) return;
     try {
-        const res = await fetch(`/densities/simple?symbols=${symbols.join(',')}&xFilter=2`);
+        const res = await fetch(`/densities/v2?symbols=${symbols.join(',')}`);
         const json = await res.json();
-        const walls = filterDensityWalls(json.data || []);
-        if (walls.length === 0) return;
+        const items = json.data || [];
+        if (items.length === 0) return;
 
-        // Group walls by symbol
+        // Build map: symbol → flat wall list
         const bySymbol = {};
-        walls.forEach(w => {
-            if (!bySymbol[w.symbol]) bySymbol[w.symbol] = [];
-            bySymbol[w.symbol].push(w);
+        items.forEach(entry => {
+            const walls = [];
+            if (entry.support) walls.push({ ...entry.support, side: 'bid' });
+            if (entry.resistance) walls.push({ ...entry.resistance, side: 'ask' });
+            (entry.bidWalls || []).slice(1, 2).forEach(w => walls.push({ ...w, side: 'bid' }));
+            (entry.askWalls || []).slice(1, 2).forEach(w => walls.push({ ...w, side: 'ask' }));
+            if (walls.length > 0) bySymbol[entry.symbol] = walls;
         });
 
         // Apply to each chart
@@ -4061,7 +4097,6 @@ async function applyDensityToBatch(symbols) {
             const chartObj = mc.charts[sym];
             if (!chartObj || !chartObj.series) continue;
 
-            // Clear old
             if (chartObj.densityLines) {
                 chartObj.densityLines.forEach(pl => { try { chartObj.series.removePriceLine(pl); } catch(e) {} });
             }
@@ -4069,11 +4104,11 @@ async function applyDensityToBatch(symbols) {
 
             const symWalls = bySymbol[sym] || [];
             symWalls.forEach(w => {
-                const color = w.sideKey === 'bid' ? '#22c55e' : '#ef4444';
+                const color = w.side === 'bid' ? '#22c55e' : '#ef4444';
                 const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
                 const priceLine = chartObj.series.createPriceLine({
                     price: w.price, color, lineWidth: 1, lineStyle: 2,
-                    axisLabelVisible: false, title: `$${notionalStr} x${w.xMult}`,
+                    axisLabelVisible: false, title: `$${notionalStr} ${w.sizeVsMedian}x`,
                 });
                 chartObj.densityLines.push(priceLine);
             });
@@ -4130,21 +4165,31 @@ async function applyDensityToModal() {
     modal.densityLines = [];
 
     try {
-        const res = await fetch(`/densities/simple?symbols=${modal.currentSym}&limitSymbols=1&xFilter=2`);
+        const res = await fetch(`/densities/v2?symbols=${modal.currentSym}`);
         const json = await res.json();
-        const walls = filterDensityWalls(json.data || []);
-        if (walls.length === 0) return;
+        const items = json.data || [];
+        if (items.length === 0) return;
+
+        const entry = items[0];
+        const walls = [];
+        if (entry.support) walls.push({ ...entry.support, side: 'bid' });
+        if (entry.resistance) walls.push({ ...entry.resistance, side: 'ask' });
+        // Add extra walls (up to 5 per side)
+        (entry.bidWalls || []).slice(1, 5).forEach(w => walls.push({ ...w, side: 'bid' }));
+        (entry.askWalls || []).slice(1, 5).forEach(w => walls.push({ ...w, side: 'ask' }));
 
         walls.forEach(w => {
-            const color = w.sideKey === 'bid' ? '#22c55e' : '#ef4444';
+            const isBid = w.side === 'bid';
+            const color = isBid ? '#22c55e' : '#ef4444';
             const notionalStr = w.notional >= 1e6 ? (w.notional / 1e6).toFixed(1) + 'M' : Math.round(w.notional / 1e3) + 'K';
+            const statusTag = w.status === 'strong' ? ' 🧱' : w.status === 'confirmed' ? ' ✓' : '';
             const priceLine = modal.series.createPriceLine({
                 price: w.price,
                 color,
-                lineWidth: 1,
+                lineWidth: w.sizeVsMedian >= 10 ? 2 : 1,
                 lineStyle: 2,
                 axisLabelVisible: true,
-                title: `$${notionalStr} x${w.xMult}`,
+                title: `$${notionalStr} ${w.sizeVsMedian}x${statusTag}`,
             });
             modal.densityLines.push(priceLine);
         });
