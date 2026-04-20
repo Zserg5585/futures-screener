@@ -628,7 +628,7 @@ const settingsPanel = (() => {
           <input type="checkbox" ${get('signalSound') ? 'checked' : ''} data-key="signalSound" />
           <span>Sound alert</span>
         </label>
-        <p class="sp-hint">Telegram alerts coming soon</p>
+        <p class="sp-hint">Push notifications work even when browser is closed</p>
       </div>
     `
   }
@@ -668,7 +668,17 @@ const settingsPanel = (() => {
 
     // Checkboxes
     container.querySelectorAll('input[type="checkbox"][data-key]').forEach(el => {
-      el.addEventListener('change', () => set(el.dataset.key, el.checked))
+      el.addEventListener('change', () => {
+        set(el.dataset.key, el.checked)
+        // Web Push: subscribe/unsubscribe when notifications toggled
+        if (el.dataset.key === 'signalNotifications') {
+          if (el.checked) {
+            if (typeof subscribeToPush === 'function') subscribeToPush()
+          } else {
+            if (typeof unsubscribeFromPush === 'function') unsubscribeFromPush()
+          }
+        }
+      })
     })
 
     // Sliders
@@ -680,6 +690,10 @@ const settingsPanel = (() => {
         if (label) {
           const suffix = el.dataset.key.includes('Ratio') ? 'x' : el.dataset.key.includes('Pct') ? '%' : el.dataset.key.includes('TTL') ? ' min' : '%'
           label.textContent = val + suffix
+        }
+        // Re-sync push filters when signal settings change
+        if (['signalMinRatio', 'signalMinConfidence'].includes(el.dataset.key)) {
+          if (typeof subscribeToPush === 'function' && get('signalNotifications')) subscribeToPush()
         }
       })
     })

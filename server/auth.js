@@ -124,6 +124,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_signal_log_type ON signal_log(type);
   CREATE INDEX IF NOT EXISTS idx_signal_log_symbol ON signal_log(symbol);
   CREATE INDEX IF NOT EXISTS idx_signal_log_created ON signal_log(created_at);
+
+  -- Push notification subscriptions (Web Push API)
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint TEXT UNIQUE NOT NULL,
+    keys_p256dh TEXT NOT NULL,
+    keys_auth TEXT NOT NULL,
+    filters TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    last_success TEXT,
+    fail_count INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint);
 `)
 
 // Migration: add new columns if missing (mfe_pct, mae_pct, spot_after_1d)
@@ -207,6 +220,22 @@ const stmts = {
   getRecentSignals: db.prepare('SELECT * FROM signal_log ORDER BY created_at DESC LIMIT ?'),
   getSignalsSince: db.prepare("SELECT * FROM signal_log WHERE created_at > datetime('now', '-' || ? || ' hours') ORDER BY created_at DESC"),
   cleanupSignals: db.prepare("DELETE FROM signal_log WHERE created_at < datetime('now', '-30 days')"),
+
+  // Push subscriptions
+  upsertPushSub: db.prepare(`
+    INSERT INTO push_subscriptions (endpoint, keys_p256dh, keys_auth, filters)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET
+      keys_p256dh = excluded.keys_p256dh,
+      keys_auth = excluded.keys_auth,
+      filters = excluded.filters,
+      fail_count = 0
+  `),
+  deletePushSub: db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?'),
+  getAllPushSubs: db.prepare('SELECT * FROM push_subscriptions WHERE fail_count < 3'),
+  countPushSubs: db.prepare('SELECT COUNT(*) as count FROM push_subscriptions'),
+  incrementPushFail: db.prepare('UPDATE push_subscriptions SET fail_count = fail_count + 1 WHERE endpoint = ?'),
+  resetPushFail: db.prepare(`UPDATE push_subscriptions SET fail_count = 0, last_success = datetime('now') WHERE endpoint = ?`),
 }
 
 // --- Helpers ---

@@ -37,15 +37,17 @@ let _getProxyCached = null
 let _setProxyCached = null
 let _bgetWithRetry = null
 let _auth = null
+let _push = null
 let _scanTimer = null
 let _oiCvdTimer = null
 let _outcomeTimer = null
 
-function init({ getProxyCached, setProxyCached, bgetWithRetry, auth }) {
+function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push }) {
   _getProxyCached = getProxyCached
   _setProxyCached = setProxyCached
   _bgetWithRetry = bgetWithRetry
   _auth = auth
+  _push = push || null
 
   _scanTimer = setInterval(scan, SCAN_INTERVAL_MS)
   _oiCvdTimer = setInterval(scanOiCvd, OI_CVD_INTERVAL_MS)
@@ -558,6 +560,13 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
     _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata), dbTs)
   } catch (err) {
     console.error('[Signals] DB log error:', err.message)
+  }
+
+  // Send Web Push immediately (fire-and-forget, never blocks)
+  if (_push) {
+    try { _push.sendPushForSignal(signal) } catch (e) {
+      console.error('[Signals] Push error:', e.message)
+    }
   }
 }
 

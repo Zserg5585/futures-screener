@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v19'
+const CACHE_NAME = 'fs-v20'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -49,6 +49,28 @@ self.addEventListener('notificationclick', (e) => {
       const openUrl = signalId ? `/?signal=${symbol}&sid=${signalId}` : url
       return clients.openWindow(openUrl)
     })
+  )
+})
+
+// Web Push — receive server-sent push and show notification (works even when browser closed)
+self.addEventListener('push', (e) => {
+  if (!e.data) return
+
+  let payload
+  try { payload = e.data.json() } catch { return }
+
+  const options = {
+    body: payload.body || '',
+    icon: payload.icon || '/icon-192.png',
+    badge: payload.badge || '/icon-192.png',
+    tag: payload.tag || 'signal',
+    data: payload.data || {},
+    vibrate: payload.vibrate || [200, 100, 200],
+    requireInteraction: false,
+  }
+
+  e.waitUntil(
+    self.registration.showNotification(payload.title || 'Signal', options)
   )
 })
 

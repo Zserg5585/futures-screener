@@ -292,7 +292,7 @@ function selectSignal(id) {
 
     <div class="sig-detail-section">
       <div class="sig-detail-label">Signal Time</div>
-      <div class="sig-detail-value">${new Date(ensureUTC(s.created_at)).toLocaleString()}</div>
+      <div class="sig-detail-value">${new Date(ensureUTC(s.created_at)).toLocaleString([], { timeZone: 'America/Vancouver' })}</div>
     </div>
 
     <button class="sig-detail-btn" onclick="openSignalChart('${s.symbol}')">Open Chart</button>
@@ -344,12 +344,7 @@ function ensureUTC(iso) {
 
 function formatTime(iso) {
   const d = new Date(ensureUTC(iso))
-  const now = new Date()
-  const diffMs = now - d
-  if (diffMs < 0) return 'just now'
-  if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)}s ago`
-  if (diffMs < 86400_000) return `${Math.floor(diffMs / 60_000)}m ago`
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Vancouver' })
 }
 
 function formatPrice(p) {
@@ -362,23 +357,97 @@ function formatPrice(p) {
   return p.toFixed(6)
 }
 
-// ---- Background notification checker (runs regardless of active tab) ----
-let _bgNotifyTimer = null
-function startBgNotifyCheck() {
-  if (_bgNotifyTimer) return
-  _bgNotifyTimer = setInterval(async () => {
-    // Skip if signals tab is active (loadSignals already handles it)
-    if (sigState.active) return
-
-    try {
-      const res = await fetch(`${SIG_API}/api/signals/live?limit=50&hours=1`)
-      const data = await res.json()
-      if (data.success) notifyNewSignals(data.data || [])
-    } catch (e) {}
-  }, SIG_REFRESH_MS)
+// ---- Web Push subscription (server-sent, works even when browser closed) ----
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = atob(base64)
+  const outputArray = new Uint8Array(rawData.length)
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i)
+  return outputArray
 }
-// Auto-start bg checker on load
-startBgNotifyCheck()
+
+async function subscribeToPush() {
+  if (!('PushManager' in window)) {
+    console.warn('[Push] PushManager not supported')
+    return false
+  }
+
+  try {
+    // Get VAPID public key from server
+    const res = await fetch(`${SIG_API}/api/push/vapid-key`)
+    const data = await res.json()
+    if (!data.success || !data.key) {
+      console.warn('[Push] Server push not configured')
+      return false
+    }
+
+    const reg = await navigator.serviceWorker.ready
+
+    // Check existing subscription
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') {
+        console.warn('[Push] Permission denied')
+        return false
+      }
+
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(data.key)
+      })
+      console.log('[Push] New push subscription created')
+    }
+
+    // Send subscription + current filter preferences to server
+    const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
+    const filters = {
+      minConfidence: sp ? (sp.get('signalMinConfidence') || 50) : 50,
+      minRatio: sp ? (sp.get('signalMinRatio') || 3) : 3,
+      watchlistOnly: sp ? sp.get('signalWatchlistOnly') : false,
+      watchlist: sp?.watchlist ? [...sp.watchlist] : [],
+    }
+
+    await fetch(`${SIG_API}/api/push/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscription: sub.toJSON(), filters })
+    })
+
+    console.log('[Push] Subscribed to server push notifications')
+    return true
+  } catch (e) {
+    console.error('[Push] Subscribe error:', e)
+    return false
+  }
+}
+
+async function unsubscribeFromPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready
+    const sub = await reg.pushManager.getSubscription()
+    if (sub) {
+      await fetch(`${SIG_API}/api/push/unsubscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: sub.endpoint })
+      })
+      await sub.unsubscribe()
+      console.log('[Push] Unsubscribed from push notifications')
+    }
+  } catch (e) {
+    console.error('[Push] Unsubscribe error:', e)
+  }
+}
+
+// Auto-subscribe on load if notifications are enabled
+;(async () => {
+  const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
+  if (sp?.get('signalNotifications')) {
+    await subscribeToPush()
+  }
+})()
 
 function fmtVol(v) {
   if (!v) return '—'
@@ -388,30 +457,19 @@ function fmtVol(v) {
   return '$' + v.toFixed(0)
 }
 
-// ---- Browser Notifications for new signals ----
+// ---- In-tab signal tracking + sound (push notifications are now server-sent) ----
 function notifyNewSignals(newList) {
   const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
-  const enabled = sp ? sp.get('signalNotifications') : false
 
-  // Always track seen IDs (even if notifications disabled) to avoid burst when enabled
+  // Always track seen IDs to keep UI in sync
   if (sigState.firstLoad) {
     sigState.firstLoad = false
     newList.forEach(s => sigState.seenIds.add(s.id))
-    console.log(`[Notify] First load: marked ${newList.length} signals as seen`)
     return
   }
 
-  // Find signals we haven't seen yet
   const fresh = newList.filter(s => !sigState.seenIds.has(s.id))
-
-  // Mark as seen regardless of enabled (so we don't spam when toggled on)
   fresh.forEach(s => sigState.seenIds.add(s.id))
-
-  if (fresh.length > 0) {
-    console.log(`[Notify] ${fresh.length} new signals, enabled=${enabled}, permission=${Notification.permission}, seen=${sigState.seenIds.size}`)
-  }
-
-  if (!enabled || fresh.length === 0) return
 
   // Cap seenIds to last 1000
   if (sigState.seenIds.size > 1000) {
@@ -419,65 +477,10 @@ function notifyNewSignals(newList) {
     sigState.seenIds = new Set(arr.slice(-500))
   }
 
-  // Apply same filters as renderSignals
-  const minConf = sp ? (sp.get('signalMinConfidence') || 50) : 50
-  const minRatio = sigState.minRatio || 3
-  const wlOnly = sp ? sp.get('signalWatchlistOnly') : false
+  if (fresh.length === 0) return
 
-  const filtered = fresh.filter(s => {
-    if (s.type === 'volume_spike' && (s.metadata?.ratio || 0) < minRatio) return false
-    if (minConf > 30 && (s.confidence || 0) < minConf) return false
-    if (wlOnly && sp && !sp.wlHas(s.symbol)) return false
-    return true
-  })
-
-  if (filtered.length === 0) return
-
-  // Request permission if needed
-  if (Notification.permission === 'default') {
-    Notification.requestPermission()
-    return
-  }
-  if (Notification.permission !== 'granted') return
-
-  // Send notification for each new signal (max 3 to avoid spam)
-  filtered.slice(0, 3).forEach(s => {
-    const ticker = s.symbol.replace('USDT', '')
-    const icon = s.type === 'volume_spike' ? '📊' : '🔮'
-    const dir = s.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'
-    const title = `${icon} ${ticker} ${dir}`
-    const body = `${formatType(s.type)} • Conf ${Math.round(s.confidence)}%\n${s.description || ''}`
-
-    try {
-      // Use SW registration for persistent notifications (works when tab in background)
-      if (navigator.serviceWorker?.controller) {
-        navigator.serviceWorker.ready.then(reg => {
-          reg.showNotification(title, {
-            body,
-            icon: '/icon-192.png',
-            badge: '/icon-192.png',
-            tag: `signal-${s.id}`,
-            data: { symbol: s.symbol, signalId: s.id },
-            vibrate: [200, 100, 200],
-            requireInteraction: false,
-            silent: !sp?.get('signalSound'),
-          })
-        })
-      } else {
-        // Fallback: basic Notification API
-        new Notification(title, {
-          body,
-          tag: `signal-${s.id}`,
-          data: { symbol: s.symbol },
-        })
-      }
-    } catch (e) {
-      console.error('[Signals] Notification error:', e)
-    }
-  })
-
-  // Play sound if enabled
-  if (sp?.get('signalSound') && filtered.length > 0) {
+  // Play sound if enabled (push notification is handled by SW from server push)
+  if (sp?.get('signalSound') && sp?.get('signalNotifications')) {
     try {
       const ac = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ac.createOscillator()
@@ -530,28 +533,6 @@ if (navigator.serviceWorker) {
       setSignalMarkerAndOpen(e.data.symbol, e.data.signalId)
     }
   })
-}
-
-// ---- Test notification (call from browser console: testNotification()) ----
-window.testNotification = async function() {
-  if (Notification.permission === 'default') await Notification.requestPermission()
-  if (Notification.permission !== 'granted') { console.log('Notifications blocked!'); return }
-  const title = '📊 TEST Signal — BTC ▲ LONG'
-  const body = 'Vol Spike • Conf 85%\nTest notification — click to open modal'
-  try {
-    const reg = await navigator.serviceWorker?.ready
-    if (reg) {
-      await reg.showNotification(title, {
-        body, icon: '/icon-192.png', badge: '/icon-192.png',
-        tag: 'test-signal', data: { symbol: 'BTCUSDT' },
-        vibrate: [200, 100, 200],
-      })
-      console.log('Notification sent via SW!')
-    } else {
-      new Notification(title, { body, tag: 'test-signal' })
-      console.log('Notification sent via API!')
-    }
-  } catch(e) { console.error('Error:', e) }
 }
 
 // ---- Check URL param on load (from notification click when app was closed) ----

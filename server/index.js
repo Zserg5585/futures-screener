@@ -17,6 +17,7 @@ const { binLevels } = require('./logic');
 const { analyzeBehavior } = require('./scorer');
 const auth = require('./auth');
 const signals = require('./signals');
+const push = require('./push');
 
 // Connect WebSockets on Start
 wsManager.connect();
@@ -851,6 +852,41 @@ fastify.get('/api/klines', async (req) => {
 })
 
 // Test signal — inject a fake signal for notification testing (auto-expires in 60s)
+// ---- Web Push API ----
+
+// Get VAPID public key (client needs this to subscribe)
+fastify.get('/api/push/vapid-key', async () => {
+  const key = push.getVapidPublicKey()
+  if (!key) return { success: false, error: 'Push not configured' }
+  return { success: true, key }
+})
+
+// Subscribe to push notifications
+fastify.post('/api/push/subscribe', async (req) => {
+  const { subscription, filters } = req.body || {}
+  if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+    return { success: false, error: 'Invalid subscription' }
+  }
+  auth.stmts.upsertPushSub.run(
+    subscription.endpoint,
+    subscription.keys.p256dh,
+    subscription.keys.auth,
+    JSON.stringify(filters || {})
+  )
+  const count = auth.stmts.countPushSubs.get()?.count || 0
+  console.log(`[Push] New subscription registered (total: ${count})`)
+  return { success: true, total: count }
+})
+
+// Unsubscribe from push notifications
+fastify.post('/api/push/unsubscribe', async (req) => {
+  const { endpoint } = req.body || {}
+  if (!endpoint) return { success: false, error: 'Missing endpoint' }
+  auth.stmts.deletePushSub.run(endpoint)
+  return { success: true }
+})
+
+// ---- Test Signal ----
 fastify.get('/api/signals/test', async () => {
   const sig = {
     id: `test-${Date.now()}`,
@@ -870,7 +906,8 @@ fastify.get('/api/signals/test', async () => {
   setTimeout(() => {
     signals.liveSignals = signals.liveSignals.filter(s => s.id !== sig.id)
   }, 60_000)
-  return { success: true, signal: sig }
+  // Test signals do NOT trigger push — only real signals do
+  return { success: true, signal: sig, pushEnabled: push.isEnabled() }
 })
 
 // OI history — proxied from Binance /futures/data/openInterestHist
@@ -987,7 +1024,8 @@ const start = async () => {
     await fastify.listen({ port, host: '0.0.0.0' })
     fastify.log.info(`listening on 127.0.0.1:${port}`)
     // Init signals scanner (after server up so proxyCache is available)
-    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth })
+    push.init({ stmts: auth.stmts })
+    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push })
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {
