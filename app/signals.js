@@ -6,6 +6,13 @@
 const SIG_API = window.location.origin
 const SIG_REFRESH_MS = 30_000
 
+// Clear any stale/zombie notifications on page load
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.ready.then(reg => {
+    reg.getNotifications().then(nots => nots.forEach(n => n.close()))
+  })
+}
+
 const sigState = {
   signals: [],
   selected: null,

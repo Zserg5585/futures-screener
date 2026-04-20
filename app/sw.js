@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v17'
+const CACHE_NAME = 'fs-v19'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -18,9 +18,13 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    )
+    Promise.all([
+      caches.keys().then(keys =>
+        Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      ),
+      // Clear all existing notifications on SW update
+      self.registration.getNotifications().then(nots => nots.forEach(n => n.close())),
+    ])
   )
   self.clients.claim()
 })

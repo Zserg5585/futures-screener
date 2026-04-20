@@ -850,7 +850,7 @@ fastify.get('/api/klines', async (req) => {
   return data
 })
 
-// Test signal — inject a fake signal for notification testing
+// Test signal — inject a fake signal for notification testing (auto-expires in 60s)
 fastify.get('/api/signals/test', async () => {
   const sig = {
     id: `test-${Date.now()}`,
@@ -863,7 +863,13 @@ fastify.get('/api/signals/test', async () => {
     metadata: { ratio: 5.2, currentVol: 12000000, avgVol: 2300000 },
     created_at: new Date().toISOString(),
   }
+  // Remove any old test signals first
+  signals.liveSignals = signals.liveSignals.filter(s => !String(s.id).startsWith('test-'))
   signals.liveSignals.unshift(sig)
+  // Auto-remove after 60s
+  setTimeout(() => {
+    signals.liveSignals = signals.liveSignals.filter(s => s.id !== sig.id)
+  }, 60_000)
   return { success: true, signal: sig }
 })
 
