@@ -404,9 +404,10 @@ async function subscribeToPush() {
     const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
     const filters = {
       minConfidence: sp ? (sp.get('signalMinConfidence') || 50) : 50,
-      minRatio: sp ? (sp.get('signalMinRatio') || 3) : 3,
+      minRatio: sp ? (sp.get('signalMinRatio') || 2) : 2,
       watchlistOnly: sp ? sp.get('signalWatchlistOnly') : false,
       watchlist: sp?.watchlist ? [...sp.watchlist] : [],
+      types: sp ? (sp.get('signalTypes') || []) : [],
     }
 
     await fetch(`${SIG_API}/api/push/subscribe`, {

@@ -44,12 +44,13 @@ const settingsPanel = (() => {
     densityBlacklist: 'USDC,FDUSD,TUSD,USDP,DAI,USDD,EUR',
 
     // Signals
-    signalMinRatio: 3,            // volume spike min ratio (2x-20x)
+    signalMinRatio: 2,            // volume spike min ratio (2x-20x)
     signalMinConfidence: 50,      // min confidence to show signal (30-90)
     signalNotifications: false,   // browser notifications
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
+    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation'], // enabled signal types for push
 
     // Indicators
     indicatorOI: false,           // show OI overlay on charts
@@ -612,6 +613,22 @@ const settingsPanel = (() => {
         <p class="sp-hint">Min time between alerts for the same symbol</p>
       </div>
       <div class="sp-section">
+        <div class="sp-section-title">Push Alert Types</div>
+        <p class="sp-hint">Choose which signal types trigger push notifications</p>
+        ${[
+          { key: 'volume_spike', label: '📊 Volume Spike' },
+          { key: 'oi_longs', label: '🟢 OI Longs Build-up' },
+          { key: 'oi_shorts', label: '🔴 OI Shorts Build-up' },
+          { key: 'oi_squeeze', label: '⚡ OI Squeeze' },
+          { key: 'oi_liquidation', label: '💥 OI Liquidation' },
+        ].map(t => `
+          <label class="sp-toggle">
+            <input type="checkbox" ${(get('signalTypes') || []).includes(t.key) ? 'checked' : ''} data-signal-type="${t.key}" />
+            <span>${t.label}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div class="sp-section">
         <div class="sp-section-title">Filter</div>
         <label class="sp-toggle">
           <input type="checkbox" ${get('signalWatchlistOnly') ? 'checked' : ''} data-key="signalWatchlistOnly" />
@@ -695,6 +712,19 @@ const settingsPanel = (() => {
         if (['signalMinRatio', 'signalMinConfidence'].includes(el.dataset.key)) {
           if (typeof subscribeToPush === 'function' && get('signalNotifications')) subscribeToPush()
         }
+      })
+    })
+
+    // Signal type checkboxes
+    container.querySelectorAll('input[data-signal-type]').forEach(el => {
+      el.addEventListener('change', () => {
+        const types = get('signalTypes') || []
+        const t = el.dataset.signalType
+        if (el.checked && !types.includes(t)) types.push(t)
+        if (!el.checked) { const i = types.indexOf(t); if (i >= 0) types.splice(i, 1) }
+        set('signalTypes', [...types])
+        // Re-sync push subscription with updated types
+        if (typeof subscribeToPush === 'function' && get('signalNotifications')) subscribeToPush()
       })
     })
 
