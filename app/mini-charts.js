@@ -1508,7 +1508,7 @@ function openCoinModal(sym) {
         b.classList.toggle('active', b.dataset.tf === modal.currentTF);
     });
 
-    // Show modal
+    // Show modal (CSS: visibility:hidden→visible, NOT display:none)
     el('coinModal').classList.remove('hidden');
 
     // Create or recreate chart
@@ -1518,15 +1518,18 @@ function openCoinModal(sym) {
     }
 
     const chartEl = el('cmChartBody');
-    // Force synchronous reflow so clientWidth/Height reflect real dimensions
-    void chartEl.offsetHeight;
+    // Clean up stale DOM children (legend, ruler, toolbar) left from previous chart
+    chartEl.innerHTML = '';
+
+    const cw = chartEl.clientWidth, ch = chartEl.clientHeight;
+    console.log('[modal] chartEl dimensions:', cw, 'x', ch, '| children cleared');
 
     const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
     const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
     modal.chart = LightweightCharts.createChart(chartEl, {
-        width: chartEl.clientWidth,
-        height: chartEl.clientHeight,
+        width: cw,
+        height: ch,
         ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: getGridOpts(),
@@ -1540,7 +1543,11 @@ function openCoinModal(sym) {
     modal.series = addMainSeries(modal.chart, prec, minMove);
 
     if (wmText) {
-        LightweightCharts.createTextWatermark(modal.chart, { lines: [{ text: wmText, color: 'rgba(255,255,255,0.04)', fontSize: 48 }] });
+        try {
+            LightweightCharts.createTextWatermark(modal.chart, { lines: [{ text: wmText, color: 'rgba(255,255,255,0.04)', fontSize: 48 }] });
+        } catch (e) {
+            console.warn('[modal] createTextWatermark failed (LWC v5 compat):', e.message);
+        }
     }
 
     modal.volSeries = modal.chart.addSeries(LightweightCharts.HistogramSeries, {
@@ -1554,11 +1561,14 @@ function openCoinModal(sym) {
         borderVisible: false,
     });
 
-    // Own ResizeObserver instead of autoSize (avoids v5 timing race in modals)
+    // ResizeObserver for window resize + safety net for initial render
     if (modal._resizeObserver) modal._resizeObserver.disconnect();
     modal._resizeObserver = new ResizeObserver(entries => {
         const { width, height } = entries[0].contentRect;
-        if (width > 0 && height > 0 && modal.chart) modal.chart.resize(width, height);
+        if (width > 0 && height > 0 && modal.chart) {
+            console.log('[modal] ResizeObserver:', width, 'x', height);
+            modal.chart.resize(width, height);
+        }
     });
     modal._resizeObserver.observe(chartEl);
 
@@ -1656,12 +1666,34 @@ async function loadModalChart(sym, tf) {
         const data1 = parseKlines(json1);
         modal.candleData = data1;
         if (drawCtx.source === 'modal') drawCtx.candleData = data1;
+
+        console.log('[modal] setData:', data1.length, 'candles, chart size:', modal.chart.timeScale().width(), 'x', el('cmChartBody').clientHeight);
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
 
         // Show last ~100 candles in viewport
         const visFrom = Math.max(0, data1.length - 100);
-        modal.chart.timeScale().setVisibleLogicalRange({ from: visFrom, to: data1.length - 1 + 10 });
+        const visTo = data1.length - 1 + 10;
+        modal.chart.timeScale().setVisibleLogicalRange({ from: visFrom, to: visTo });
+        console.log('[modal] visibleRange set:', visFrom, '-', visTo);
+
+        // Safety net: if chart internal width was 0 when range was set,
+        // re-apply range after layout settles (fixes LWC v5 first-open bug)
+        const tsWidth = modal.chart.timeScale().width();
+        if (tsWidth <= 0) {
+            console.log('[modal] timeScale width=0, scheduling fitContent fallback');
+            setTimeout(() => {
+                if (!modal.chart) return;
+                const w2 = modal.chart.timeScale().width();
+                console.log('[modal] fallback: timeScale width now=', w2);
+                if (w2 > 0 && modal.candleData) {
+                    const vf = Math.max(0, modal.candleData.length - 100);
+                    modal.chart.timeScale().setVisibleLogicalRange({ from: vf, to: modal.candleData.length - 1 + 10 });
+                } else {
+                    modal.chart.timeScale().fitContent();
+                }
+            }, 150);
+        }
 
         // Update modal NATR with real value
         const modalNatr = calcNATR(data1);
@@ -1684,14 +1716,18 @@ async function loadModalChart(sym, tf) {
             if (diff < bestDiff) { bestDiff = diff; best = c; }
           }
           const isLong = m.direction === 'LONG';
-          if (modal._markers) modal._markers.setMarkers([]);
-          modal._markers = LightweightCharts.createSeriesMarkers(modal.series, [{
-            time: best.time,
-            position: isLong ? 'belowBar' : 'aboveBar',
-            color: isLong ? '#22c55e' : '#ef4444',
-            shape: isLong ? 'arrowUp' : 'arrowDown',
-            text: `${m.type === 'oi_cvd' ? '🔮 OI+CVD' : m.type === 'volume_spike' ? '📊 Vol' : m.type === 'big_mover' ? '🚀 Mover' : '⚡ NATR'} ${m.direction}`,
-          }]);
+          try {
+              if (modal._markers) modal._markers.setMarkers([]);
+              modal._markers = LightweightCharts.createSeriesMarkers(modal.series, [{
+                time: best.time,
+                position: isLong ? 'belowBar' : 'aboveBar',
+                color: isLong ? '#22c55e' : '#ef4444',
+                shape: isLong ? 'arrowUp' : 'arrowDown',
+                text: `${m.type === 'oi_cvd' ? '🔮 OI+CVD' : m.type === 'volume_spike' ? '📊 Vol' : m.type === 'big_mover' ? '🚀 Mover' : '⚡ NATR'} ${m.direction}`,
+              }]);
+          } catch (e) {
+              console.warn('[modal] createSeriesMarkers failed:', e.message);
+          }
         }
 
         // Apply density walls to modal

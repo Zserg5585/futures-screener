@@ -1118,7 +1118,7 @@ function openCoinModal(sym) {
         b.classList.toggle('active', b.dataset.tf === modal.currentTF);
     });
 
-    // Show modal
+    // Show modal (CSS: visibility:hidden→visible, NOT display:none)
     el('coinModal').classList.remove('hidden');
 
     // Create or recreate chart
@@ -1151,7 +1151,7 @@ function openCoinModal(sym) {
     modal.lines = [];
 
     // Attach ruler to modal chart
-    attachRuler(el('cmChartBody'), modal.chart, modal.series);
+    attachRuler(chartEl, modal.chart, modal.series);
 
     loadModalChart(sym, modal.currentTF);
 }

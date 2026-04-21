@@ -1413,7 +1413,9 @@ body.theme-amoled {
 }
 
 .mc-modal.hidden {
-    display: none;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .mc-modal-overlay {
