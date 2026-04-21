@@ -41,10 +41,10 @@ function addMainSeries(chart, prec, minMove) {
   const up = spGet('candleUp', '#22c55e')
   const down = spGet('candleDown', '#ef4444')
   const pf = { type: 'price', precision: prec, minMove }
-  if (type === 'Line') return chart.addLineSeries({ color: up, lineWidth: 2, priceFormat: pf })
-  if (type === 'Area') return chart.addAreaSeries({ topColor: up + '66', bottomColor: up + '0d', lineColor: up, lineWidth: 2, priceFormat: pf })
-  if (type === 'Bar') return chart.addBarSeries({ upColor: up, downColor: down, priceFormat: pf })
-  return chart.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceFormat: pf })
+  if (type === 'Line') return chart.addSeries(LightweightCharts.LineSeries, { color: up, lineWidth: 2, priceFormat: pf })
+  if (type === 'Area') return chart.addSeries(LightweightCharts.AreaSeries, { topColor: up + '66', bottomColor: up + '0d', lineColor: up, lineWidth: 2, priceFormat: pf })
+  if (type === 'Bar') return chart.addSeries(LightweightCharts.BarSeries, { upColor: up, downColor: down, priceFormat: pf })
+  return chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceFormat: pf })
 }
 
 function saveFlags() {
@@ -821,7 +821,7 @@ function createChartInstance(sym) {
     const series = addMainSeries(chart, prec, minMove);
 
     // Volume histogram
-    const volSeries = chart.addHistogramSeries({
+    const volSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
         priceFormat: { type: 'volume' },
         priceScaleId: 'vol',
         color: 'rgba(100,116,139,0.3)',
@@ -1023,7 +1023,7 @@ function applyDrawingsToMiniChart(sym) {
                 points.push({ time: t1, value: p1 });
                 points.push({ time: t2, value: p2 });
             }
-            const ls = c.chart.addLineSeries({
+            const ls = c.chart.addSeries(LightweightCharts.LineSeries, {
                 color: s.color || '#5b9cf6',
                 lineWidth: 1,
                 crosshairMarkerVisible: false,
@@ -1037,14 +1037,14 @@ function applyDrawingsToMiniChart(sym) {
             // Rectangle on mini-chart: top + bottom border lines
             const { t1, p1, t2, p2 } = s.data;
             const clr = s.color || '#5b9cf6';
-            const topLs = c.chart.addLineSeries({
+            const topLs = c.chart.addSeries(LightweightCharts.LineSeries, {
                 color: clr, lineWidth: 1, crosshairMarkerVisible: false,
                 lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
             });
             topLs.setData([{ time: t1, value: Math.max(p1, p2) }, { time: t2, value: Math.max(p1, p2) }]);
             c.drawObjs.push({ lineSeries: topLs });
 
-            const botLs = c.chart.addLineSeries({
+            const botLs = c.chart.addSeries(LightweightCharts.LineSeries, {
                 color: clr, lineWidth: 1, crosshairMarkerVisible: false,
                 lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
             });
@@ -1518,14 +1518,17 @@ function openCoinModal(sym) {
     }
 
     const chartEl = el('cmChartBody');
+    // Force synchronous reflow so clientWidth/Height reflect real dimensions
+    void chartEl.offsetHeight;
+
     const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
     const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
     modal.chart = LightweightCharts.createChart(chartEl, {
-        autoSize: true,
+        width: chartEl.clientWidth,
+        height: chartEl.clientHeight,
         ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-        watermark: { visible: !!wmText, text: wmText, fontSize: 48, color: 'rgba(255,255,255,0.04)', horzAlign: 'center', vertAlign: 'center' },
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
@@ -1536,7 +1539,11 @@ function openCoinModal(sym) {
 
     modal.series = addMainSeries(modal.chart, prec, minMove);
 
-    modal.volSeries = modal.chart.addHistogramSeries({
+    if (wmText) {
+        LightweightCharts.createTextWatermark(modal.chart, { lines: [{ text: wmText, color: 'rgba(255,255,255,0.04)', fontSize: 48 }] });
+    }
+
+    modal.volSeries = modal.chart.addSeries(LightweightCharts.HistogramSeries, {
         priceFormat: { type: 'volume' },
         priceScaleId: 'vol',
         color: 'rgba(100,116,139,0.3)',
@@ -1547,17 +1554,24 @@ function openCoinModal(sym) {
         borderVisible: false,
     });
 
+    // Own ResizeObserver instead of autoSize (avoids v5 timing race in modals)
+    if (modal._resizeObserver) modal._resizeObserver.disconnect();
+    modal._resizeObserver = new ResizeObserver(entries => {
+        const { width, height } = entries[0].contentRect;
+        if (width > 0 && height > 0 && modal.chart) modal.chart.resize(width, height);
+    });
+    modal._resizeObserver.observe(chartEl);
+
     modal.lines = [];
     modal.drawings = [];
 
     // Attach ruler to modal chart
-    attachRuler(el('cmChartBody'), modal.chart, modal.series);
+    attachRuler(chartEl, modal.chart, modal.series);
 
-    // Drawing tools
     // OHLCV legend on crosshair move
     const legend = document.createElement('div');
     legend.className = 'mc-ohlcv-legend';
-    el('cmChartBody').appendChild(legend);
+    chartEl.appendChild(legend);
     modal.legend = legend;
 
     modal.chart.subscribeCrosshairMove(param => {
@@ -1567,11 +1581,11 @@ function openCoinModal(sym) {
         }
         const data = param.seriesData.get(modal.series);
         if (!data) { modal.legend.style.display = 'none'; return; }
-        const prec = getPricePrecision(data.close || data.open || 1);
-        const o = (data.open || 0).toFixed(prec);
-        const h = (data.high || 0).toFixed(prec);
-        const l = (data.low || 0).toFixed(prec);
-        const c = (data.close || 0).toFixed(prec);
+        const p = getPricePrecision(data.close || data.open || 1);
+        const o = (data.open || 0).toFixed(p);
+        const h = (data.high || 0).toFixed(p);
+        const l = (data.low || 0).toFixed(p);
+        const c = (data.close || 0).toFixed(p);
         const volData = param.seriesData.get(modal.volSeries);
         const v = volData ? (volData.value >= 1e6 ? (volData.value/1e6).toFixed(1)+'M' : (volData.value >= 1e3 ? (volData.value/1e3).toFixed(0)+'K' : volData.value.toFixed(0))) : '—';
         const chg = data.close >= data.open;
@@ -1584,6 +1598,11 @@ function openCoinModal(sym) {
     renderDrawToolbar();
     setupDrawingHandlers();
     updateModalCursor();
+
+    // Attach library DrawingManager
+    if (typeof DM !== 'undefined' && DM && DM.attach) {
+        DM.attach(modal.chart, modal.series, chartEl, sym);
+    }
 
     loadModalChart(sym, modal.currentTF);
     startCountdown();
@@ -1640,7 +1659,7 @@ async function loadModalChart(sym, tf) {
         modal.series.setData(data1);
         if (modal.volSeries) modal.volSeries.setData(extractVolume(data1));
 
-        // Show last ~100 candles in viewport (user can scroll back to see all 1000)
+        // Show last ~100 candles in viewport
         const visFrom = Math.max(0, data1.length - 100);
         modal.chart.timeScale().setVisibleLogicalRange({ from: visFrom, to: data1.length - 1 + 10 });
 
@@ -1665,7 +1684,8 @@ async function loadModalChart(sym, tf) {
             if (diff < bestDiff) { bestDiff = diff; best = c; }
           }
           const isLong = m.direction === 'LONG';
-          modal.series.setMarkers([{
+          if (modal._markers) modal._markers.setMarkers([]);
+          modal._markers = LightweightCharts.createSeriesMarkers(modal.series, [{
             time: best.time,
             position: isLong ? 'belowBar' : 'aboveBar',
             color: isLong ? '#22c55e' : '#ef4444',
@@ -1790,7 +1810,7 @@ async function applyOI(chartObj, sym, tf) {
 
         const color = spGet('indicatorOIColor', '#eab308');
 
-        chartObj.oiSeries = chartObj.chart.addLineSeries({
+        chartObj.oiSeries = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
             color: color,
             lineWidth: 1.5,
             priceScaleId: 'oi',
@@ -2163,6 +2183,7 @@ function renderDrawToolbar(targetEl) {
             e.stopPropagation();
             const tool = btn.dataset.tool;
             if (tool === 'trash') {
+                if (typeof DM !== 'undefined' && DM && DM.isActive()) DM.clearAll();
                 clearAllDrawings();
                 return;
             }
@@ -2170,6 +2191,10 @@ function renderDrawToolbar(targetEl) {
             draw.clickCount = 0;
             removePreviewOverlay();
             if (tool !== 'ruler') removeRulerMeasurement();
+            // Activate library drawing tool if available
+            if (typeof DM !== 'undefined' && DM && DM.isActive() && DM.TOOL_MAP[tool] !== undefined) {
+                DM.setTool(tool);
+            }
             renderDrawToolbar();
             updateModalCursor();
         });
@@ -2212,10 +2237,15 @@ document.addEventListener('keydown', (e) => {
         }
         draw.clickCount = 0;
         removePreviewOverlay();
+        // Sync library tool
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && DM.TOOL_MAP[draw.activeTool] !== undefined) {
+            DM.setTool(draw.activeTool);
+        }
         renderDrawToolbar();
         updateModalCursor();
     }
     if (e.key === 'Delete' && (drawCtx.chart || modal.chart)) {
+        if (typeof DM !== 'undefined' && DM && DM.isActive()) DM.deleteSelected();
         if (draw.selected !== null) {
             deleteDrawing(draw.selected);
         } else {
@@ -2985,7 +3015,7 @@ function setupDrawingHandlers(targetEl) {
                 }
                 const startTime = d.data.startTime;
                 const farTime = startTime + 365 * 24 * 3600;
-                const ls = DC().addLineSeries({
+                const ls = DC().addSeries(LightweightCharts.LineSeries, {
                     color: d.color, lineWidth: 2,
                     crosshairMarkerVisible: false, lastValueVisible: false,
                     priceLineVisible: false, pointMarkersVisible: false,
@@ -3052,7 +3082,7 @@ function setupDrawingHandlers(targetEl) {
                 if (d.lineSeries) try { DC().removeSeries(d.lineSeries); } catch(ex) {}
                 const startTime = d.data.startTime;
                 const farTime = startTime + 365 * 24 * 3600;
-                const ls = DC().addLineSeries({
+                const ls = DC().addSeries(LightweightCharts.LineSeries, {
                     color: d.color, lineWidth: 2,
                     crosshairMarkerVisible: false, lastValueVisible: false,
                     priceLineVisible: false, pointMarkersVisible: false,
@@ -3257,7 +3287,7 @@ function drawHorizontalRay(price, startTime, color) {
     const c = color || '#5b9cf6';
     const farTime = startTime + 365 * 24 * 3600; // 1 year forward
 
-    const lineSeries = _c.addLineSeries({
+    const lineSeries = _c.addSeries(LightweightCharts.LineSeries, {
         color: c, lineWidth: 2,
         crosshairMarkerVisible: false, lastValueVisible: false,
         priceLineVisible: false, pointMarkersVisible: false,
@@ -3289,7 +3319,7 @@ function drawTwoPointLine(type, t1, p1, t2, p2, color) {
         return true;
     }).sort((a, b) => a.time - b.time);
 
-    const lineSeries = _c.addLineSeries({
+    const lineSeries = _c.addSeries(LightweightCharts.LineSeries, {
         color: c,
         lineWidth: 2,
         lineStyle: type === 'ray' ? 0 : 0,
@@ -3314,25 +3344,25 @@ function drawRectangle(t1, p1, t2, p2, color) {
     const pMin = Math.min(p1, p2);
     const pMax = Math.max(p1, p2);
 
-    const topLine = _c.addLineSeries({
+    const topLine = _c.addSeries(LightweightCharts.LineSeries, {
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     topLine.setData([{ time: tMin, value: pMax }, { time: tMax, value: pMax }]);
 
-    const bottomLine = _c.addLineSeries({
+    const bottomLine = _c.addSeries(LightweightCharts.LineSeries, {
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     bottomLine.setData([{ time: tMin, value: pMin }, { time: tMax, value: pMin }]);
 
-    const leftLine = _c.addLineSeries({
+    const leftLine = _c.addSeries(LightweightCharts.LineSeries, {
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
     leftLine.setData([{ time: tMin, value: pMin }, { time: tMin + 1, value: pMax }]);
 
-    const rightLine = _c.addLineSeries({
+    const rightLine = _c.addSeries(LightweightCharts.LineSeries, {
         color: c, lineWidth: 1.5, crosshairMarkerVisible: false,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
     });
@@ -3345,7 +3375,7 @@ function drawRectangle(t1, p1, t2, p2, color) {
         const b = parseInt(hex.slice(5, 7), 16);
         return `rgba(${r}, ${g}, ${b}, 0.08)`;
     };
-    const fillSeries = _c.addAreaSeries({
+    const fillSeries = _c.addSeries(LightweightCharts.AreaSeries, {
         topColor: hexToFill(c),
         bottomColor: 'transparent',
         lineColor: 'transparent',
@@ -3545,10 +3575,14 @@ function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
     removeRulerMeasurement();
+    // Cleanup ResizeObserver
+    if (modal._resizeObserver) { modal._resizeObserver.disconnect(); modal._resizeObserver = null; }
+    // Detach library DrawingManager
+    if (typeof DM !== 'undefined' && DM && DM.detach) DM.detach();
     // Stop countdown timer
     if (modal._countdownTimer) { clearInterval(modal._countdownTimer); modal._countdownTimer = null; }
     // Clear signal markers
-    if (modal.series) modal.series.setMarkers([]);
+    if (modal._markers) { modal._markers.setMarkers([]); modal._markers = null; }
     window._pendingSignalMarker = null;
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
@@ -3909,7 +3943,7 @@ function createSlotChart(slotIndex) {
 
     slot.series = addMainSeries(slot.chart, prec, minMove);
 
-    slot.volSeries = slot.chart.addHistogramSeries({
+    slot.volSeries = slot.chart.addSeries(LightweightCharts.HistogramSeries, {
         priceFormat: { type: 'volume' },
         priceScaleId: 'vol',
         color: 'rgba(100,116,139,0.3)',
@@ -4243,7 +4277,7 @@ function applyDrawingsToSlot(slotIndex) {
         } else if (s.type === 'ray' && s.data) {
             const startTime = s.data.startTime || s.data.t1;
             const farTime = startTime + 365 * 24 * 3600;
-            const ls = slot.chart.addLineSeries({
+            const ls = slot.chart.addSeries(LightweightCharts.LineSeries, {
                 color: s.color || '#5b9cf6',
                 lineWidth: 2,
                 crosshairMarkerVisible: false,
@@ -4257,7 +4291,7 @@ function applyDrawingsToSlot(slotIndex) {
             ]);
             slot.drawObjs.push({ lineSeries: ls });
         } else if (s.type === 'trendline' && s.data) {
-            const ls = slot.chart.addLineSeries({
+            const ls = slot.chart.addSeries(LightweightCharts.LineSeries, {
                 color: s.color || '#5b9cf6',
                 lineWidth: 2,
                 crosshairMarkerVisible: false,
@@ -4276,14 +4310,14 @@ function applyDrawingsToSlot(slotIndex) {
             const pMax = Math.max(p1, p2);
             const pMin = Math.min(p1, p2);
             // Top border
-            const topLs = slot.chart.addLineSeries({
+            const topLs = slot.chart.addSeries(LightweightCharts.LineSeries, {
                 color: clr, lineWidth: 1.5, crosshairMarkerVisible: false,
                 lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
             });
             topLs.setData([{ time: t1, value: pMax }, { time: t2, value: pMax }]);
             slot.drawObjs.push({ lineSeries: topLs });
             // Bottom border
-            const botLs = slot.chart.addLineSeries({
+            const botLs = slot.chart.addSeries(LightweightCharts.LineSeries, {
                 color: clr, lineWidth: 1.5, crosshairMarkerVisible: false,
                 lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
             });

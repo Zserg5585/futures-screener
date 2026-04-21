@@ -357,8 +357,6 @@ function renderDensities(entries) {
     }
 }
 
-}
-
 // Format helpers
 function formatNumber(value, decimals = 2) {
     if (!value) return '—'
@@ -843,7 +841,7 @@ function createChartInstance(sym) {
         handleScale: { mouseWheel: true, pinch: true },
     });
 
-    const series = chart.addCandlestickSeries({
+    const series = chart.addSeries(LightweightCharts.CandlestickSeries, {
         upColor: '#22c55e', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#22c55e', wickDownColor: '#ef4444',
@@ -1143,7 +1141,7 @@ function openCoinModal(sym) {
         handleScale: { mouseWheel: true, pinch: true },
     });
 
-    modal.series = modal.chart.addCandlestickSeries({
+    modal.series = modal.chart.addSeries(LightweightCharts.CandlestickSeries, {
         upColor: '#22c55e', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#22c55e', wickDownColor: '#ef4444',
