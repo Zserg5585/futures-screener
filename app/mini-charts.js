@@ -1240,8 +1240,9 @@ function wsConnect() {
 
             const vol = parseFloat(k.v);
 
-            // Check price alerts
+            // Check price alerts (custom drawings + library DM drawings)
             checkPriceAlerts(sym, candle.close);
+            if (typeof DM !== 'undefined' && DM && DM.checkAlerts) DM.checkAlerts(sym, candle.close);
 
             // Update mini-chart
             if (mc.charts[sym]) {
@@ -1609,9 +1610,17 @@ function openCoinModal(sym) {
     setupDrawingHandlers();
     updateModalCursor();
 
-    // Attach library DrawingManager
+    // Attach library DrawingManager (if loaded)
     if (typeof DM !== 'undefined' && DM && DM.attach) {
-        DM.attach(modal.chart, modal.series, chartEl, sym);
+        try {
+            DM.attach(modal.chart, modal.series, chartEl, sym, () => {
+                // Callback: library finished drawing → reset our UI to cursor
+                draw.activeTool = 'cursor';
+                draw.clickCount = 0;
+                renderDrawToolbar();
+                updateModalCursor();
+            });
+        } catch(e) { console.warn('[DM] attach failed:', e.message); }
     }
 
     loadModalChart(sym, modal.currentTF);
@@ -1950,14 +1959,14 @@ function drawModalLevels(data) {
 // Drawing Tools — Modal only
 // ==========================================
 const DRAW_TOOLS = [
-    { id: 'cursor', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4.5 2L4.5 14L8 10.5L11.5 16L13 15L9.5 9.5L14 9.5L4.5 2Z" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
-    { id: 'hline', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="1" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
-    { id: 'ray', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="3" cy="9" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/><line x1="5" y1="9" x2="17" y2="9" stroke="currentColor" stroke-width="1.5"/><path d="M14 6.5L17 9L14 11.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
-    { id: 'trendline', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="14" x2="15" y2="4" stroke="currentColor" stroke-width="1.5"/><circle cx="3" cy="14" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/><circle cx="15" cy="4" r="2" fill="currentColor" opacity="0.3" stroke="currentColor" stroke-width="1"/></svg>', title: 'Trend Line (T)', key: 't' },
-    { id: 'fib', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="2" y1="3" x2="16" y2="3" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1" opacity="0.6"/><line x1="2" y1="11" x2="16" y2="11" stroke="currentColor" stroke-width="1" opacity="0.6"/><line x1="2" y1="15" x2="16" y2="15" stroke="currentColor" stroke-width="1.2"/><text x="1" y="6.5" font-size="5" fill="currentColor" opacity="0.5">0</text><text x="1" y="14.5" font-size="5" fill="currentColor" opacity="0.5">1</text></svg>', title: 'Fibonacci (F)', key: 'f' },
-    { id: 'rect', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="4" width="12" height="10" stroke="currentColor" stroke-width="1.3" fill="currentColor" fill-opacity="0.08"/><circle cx="3" cy="4" r="1.5" fill="currentColor" opacity="0.4"/><circle cx="15" cy="14" r="1.5" fill="currentColor" opacity="0.4"/></svg>', title: 'Rectangle (B)', key: 'b' },
-    { id: 'ruler', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="15" x2="15" y2="3" stroke="currentColor" stroke-width="1.4"/><line x1="3" y1="15" x2="3" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.4"/><line x1="3" y1="3" x2="15" y2="3" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.4"/><path d="M12 5.5h3v-3" stroke="currentColor" stroke-width="1" opacity="0.6" fill="none"/><path d="M6 12.5H3v3" stroke="currentColor" stroke-width="1" opacity="0.6" fill="none"/></svg>', title: 'Ruler / Measure (M)', key: 'm' },
-    { id: 'trash', icon: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 5h10l-1 10.5H5L4 5z" stroke="currentColor" stroke-width="1.2" fill="currentColor" fill-opacity="0.05" stroke-linejoin="round"/><line x1="3" y1="5" x2="15" y2="5" stroke="currentColor" stroke-width="1.3"/><path d="M7 5V3.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V5" stroke="currentColor" stroke-width="1.1"/><line x1="7.5" y1="7.5" x2="7.5" y2="13" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="10.5" y1="7.5" x2="10.5" y2="13" stroke="currentColor" stroke-width="0.8" opacity="0.5"/></svg>', title: 'Clear All', key: 'Delete' },
+    { id: 'cursor', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M6 3v15.5l4-4.5 3.5 6.5 2-1-3.5-6.5H18L6 3z" fill="currentColor" fill-opacity="0.12" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
+    { id: 'hline', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/><circle cx="6" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><circle cx="18" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
+    { id: 'ray', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><line x1="7.5" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/><path d="M19 9l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
+    { id: 'trendline', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><line x1="4" y1="18" x2="20" y2="6" stroke="currentColor" stroke-width="2"/><circle cx="4" cy="18" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><circle cx="20" cy="6" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/></svg>', title: 'Trend Line (T)', key: 't' },
+    { id: 'fib', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><line x1="3" y1="4" x2="21" y2="4" stroke="currentColor" stroke-width="1.8"/><line x1="3" y1="9.5" x2="21" y2="9.5" stroke="currentColor" stroke-width="1" opacity="0.5" stroke-dasharray="3 2"/><line x1="3" y1="14.5" x2="21" y2="14.5" stroke="currentColor" stroke-width="1" opacity="0.5" stroke-dasharray="3 2"/><line x1="3" y1="20" x2="21" y2="20" stroke="currentColor" stroke-width="1.8"/><text x="2" y="8" font-size="6" font-weight="600" fill="currentColor" opacity="0.6" font-family="sans-serif">0</text><text x="2" y="19" font-size="6" font-weight="600" fill="currentColor" opacity="0.6" font-family="sans-serif">1</text></svg>', title: 'Fibonacci (F)', key: 'f' },
+    { id: 'rect', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="14" rx="1" stroke="currentColor" stroke-width="1.8" fill="currentColor" fill-opacity="0.06"/><circle cx="4" cy="5" r="2" stroke="currentColor" stroke-width="1.3" fill="#1e222d"/><circle cx="20" cy="5" r="2" stroke="currentColor" stroke-width="1.3" fill="#1e222d"/><circle cx="4" cy="19" r="2" stroke="currentColor" stroke-width="1.3" fill="#1e222d"/><circle cx="20" cy="19" r="2" stroke="currentColor" stroke-width="1.3" fill="#1e222d"/></svg>', title: 'Rectangle (B)', key: 'b' },
+    { id: 'ruler', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 20L20 4" stroke="currentColor" stroke-width="2"/><path d="M4 20v-7" stroke="currentColor" stroke-width="1.2" opacity="0.4" stroke-dasharray="2 2"/><path d="M4 13h4" stroke="currentColor" stroke-width="1" opacity="0.35"/><path d="M4 16h3" stroke="currentColor" stroke-width="1" opacity="0.35"/><path d="M20 4h-7" stroke="currentColor" stroke-width="1.2" opacity="0.4" stroke-dasharray="2 2"/><path d="M13 4v4" stroke="currentColor" stroke-width="1" opacity="0.35"/><path d="M16 4v3" stroke="currentColor" stroke-width="1" opacity="0.35"/></svg>', title: 'Ruler / Measure (M)', key: 'm' },
+    { id: 'trash', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M6 7h12l-1.2 12.5a1 1 0 01-1 .9H8.2a1 1 0 01-1-.9L6 7z" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.04"/><path d="M4 7h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2" stroke="currentColor" stroke-width="1.5"/><line x1="10" y1="10" x2="10" y2="17" stroke="currentColor" stroke-width="1.2" opacity="0.4"/><line x1="14" y1="10" x2="14" y2="17" stroke="currentColor" stroke-width="1.2" opacity="0.4"/></svg>', title: 'Clear All', key: 'Delete' },
 ];
 
 const DRAW_COLORS = ['#5b9cf6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ec4899', '#ffffff'];
@@ -2199,7 +2208,7 @@ function renderDrawToolbar(targetEl) {
     container.innerHTML = DRAW_TOOLS.map(t => {
         const active = draw.activeTool === t.id ? ' dt-active' : '';
         return `<button class="dt-btn${active}" data-tool="${t.id}" title="${t.title}">${t.icon}</button>`;
-    }).join('') + `<div class="dt-divider"></div><button class="dt-btn dt-magnet${drawMagnet ? ' dt-active' : ''}" data-tool="magnet" title="Magnet (snap to OHLC)"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M5 2v5a4 4 0 008 0V2" stroke="currentColor" stroke-width="1.4" fill="none"/><rect x="3.5" y="1" width="3" height="3" rx="0.5" stroke="currentColor" stroke-width="1" fill="currentColor" fill-opacity="0.2"/><rect x="11.5" y="1" width="3" height="3" rx="0.5" stroke="currentColor" stroke-width="1" fill="currentColor" fill-opacity="0.2"/><line x1="7" y1="10" x2="7" y2="12" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="9" y1="11" x2="9" y2="14" stroke="currentColor" stroke-width="0.8" opacity="0.5"/><line x1="11" y1="10" x2="11" y2="12" stroke="currentColor" stroke-width="0.8" opacity="0.5"/></svg></button>`;
+    }).join('') + `<div class="dt-divider"></div><button class="dt-btn dt-magnet${drawMagnet ? ' dt-active' : ''}" data-tool="magnet" title="Magnet (snap to OHLC)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4h4v8a3 3 0 006 0V4h4v8a7 7 0 01-14 0V4z" stroke="currentColor" stroke-width="1.6" fill="currentColor" fill-opacity="0.08"/><rect x="4.5" y="2" width="5" height="3.5" rx="0.8" fill="currentColor" opacity="0.25"/><rect x="14.5" y="2" width="5" height="3.5" rx="0.8" fill="currentColor" opacity="0.25"/></svg></button>`;
 
     chartEl.appendChild(container);
 
@@ -2219,6 +2228,7 @@ function renderDrawToolbar(targetEl) {
             e.stopPropagation();
             const tool = btn.dataset.tool;
             if (tool === 'trash') {
+                // Library drawings + custom drawings
                 if (typeof DM !== 'undefined' && DM && DM.isActive()) DM.clearAll();
                 clearAllDrawings();
                 return;
@@ -2227,8 +2237,8 @@ function renderDrawToolbar(targetEl) {
             draw.clickCount = 0;
             removePreviewOverlay();
             if (tool !== 'ruler') removeRulerMeasurement();
-            // Activate library drawing tool if available
-            if (typeof DM !== 'undefined' && DM && DM.isActive() && DM.TOOL_MAP[tool] !== undefined) {
+            // Route to library DrawingManager if available (hline/ray/trendline/fib/rect)
+            if (typeof DM !== 'undefined' && DM && DM.isActive() && tool !== 'ruler') {
                 DM.setTool(tool);
             }
             renderDrawToolbar();
@@ -2273,14 +2283,15 @@ document.addEventListener('keydown', (e) => {
         }
         draw.clickCount = 0;
         removePreviewOverlay();
-        // Sync library tool
-        if (typeof DM !== 'undefined' && DM && DM.isActive() && DM.TOOL_MAP[draw.activeTool] !== undefined) {
+        // Route to library DrawingManager
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler') {
             DM.setTool(draw.activeTool);
         }
         renderDrawToolbar();
         updateModalCursor();
     }
     if (e.key === 'Delete' && (drawCtx.chart || modal.chart)) {
+        // Try library first, then custom
         if (typeof DM !== 'undefined' && DM && DM.isActive()) DM.deleteSelected();
         if (draw.selected !== null) {
             deleteDrawing(draw.selected);
@@ -2839,6 +2850,8 @@ function setupDrawingHandlers(targetEl) {
         const _s = drawCtx.series || modal.series;
         if (!_c || !_s) return;
         if (draw.activeTool === 'cursor') return;
+        // If library DrawingManager is handling this tool, don't use custom handlers
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
@@ -3001,11 +3014,32 @@ function setupDrawingHandlers(targetEl) {
             }
             return;
         }
+        // If library DrawingManager handles this tool — don't preventDefault,
+        // let native touch→click conversion happen so chart.subscribeClick fires for the library
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler') return;
         e.preventDefault();
         const touch = e.changedTouches[0];
         if (!touch) return;
         handleDrawClick(touch.clientX, touch.clientY);
     }, { passive: false });
+
+    // Touch→mouse proxy for library DrawingManager drag (library only listens to mouse events)
+    chartEl.addEventListener('touchstart', (e) => {
+        if (typeof DM === 'undefined' || !DM || !DM.isActive()) return;
+        if (draw.activeTool !== 'cursor') return;
+        const t = e.touches[0]; if (!t) return;
+        chartEl.dispatchEvent(new MouseEvent('mousedown', { clientX: t.clientX, clientY: t.clientY, bubbles: true }));
+    }, { passive: true });
+    chartEl.addEventListener('touchmove', (e) => {
+        if (typeof DM === 'undefined' || !DM || !DM.isDragging || !DM.isDragging()) return;
+        const t = e.touches[0]; if (!t) return;
+        chartEl.dispatchEvent(new MouseEvent('mousemove', { clientX: t.clientX, clientY: t.clientY, bubbles: true }));
+    }, { passive: true });
+    chartEl.addEventListener('touchend', (e) => {
+        if (typeof DM === 'undefined' || !DM || !DM.isDragging || !DM.isDragging()) return;
+        const t = e.changedTouches[0]; if (!t) return;
+        chartEl.dispatchEvent(new MouseEvent('mouseup', { clientX: t.clientX, clientY: t.clientY, bubbles: true }));
+    }, { passive: true });
 
     // Drag support for hline and ray — mousedown
     chartEl.addEventListener('mousedown', (e) => {
@@ -3614,7 +3648,7 @@ function closeCoinModal() {
     // Cleanup ResizeObserver
     if (modal._resizeObserver) { modal._resizeObserver.disconnect(); modal._resizeObserver = null; }
     // Detach library DrawingManager
-    if (typeof DM !== 'undefined' && DM && DM.detach) DM.detach();
+    if (typeof DM !== 'undefined' && DM && DM.detach) { try { DM.detach(); } catch(e) {} }
     // Stop countdown timer
     if (modal._countdownTimer) { clearInterval(modal._countdownTimer); modal._countdownTimer = null; }
     // Clear signal markers

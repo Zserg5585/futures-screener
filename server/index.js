@@ -390,6 +390,9 @@ fastify.get('/auth.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('auth.js'))
 })
 
+fastify.get('/drawing-manager.js', async (req, reply) => {
+  reply.type('application/javascript; charset=utf-8').send(readFileSafe('drawing-manager.js'))
+})
 fastify.get('/signals.js', async (req, reply) => {
   reply.type('application/javascript; charset=utf-8').send(readFileSafe('signals.js'))
 })
@@ -399,6 +402,12 @@ fastify.get('/settings.js', async (req, reply) => {
 
 fastify.get('/styles.css', async (req, reply) => {
   reply.type('text/css; charset=utf-8').send(readFileSafe('styles.css'))
+})
+
+// Serve lightweight-charts-drawing UMD from node_modules
+fastify.get('/lightweight-charts-drawing.umd.js', async (req, reply) => {
+  const p = path.resolve(__dirname, '..', 'node_modules', 'lightweight-charts-drawing', 'dist', 'lightweight-charts-drawing.umd.js')
+  reply.type('application/javascript; charset=utf-8').send(fs.readFileSync(p))
 })
 
 fastify.get('/favicon.ico', async (req, reply) => {
