@@ -46,7 +46,8 @@ const settingsPanel = (() => {
     // Signals
     signalMinRatio: 2,            // volume spike min ratio (2x-20x)
     signalMinConfidence: 50,      // min confidence to show signal (30-90)
-    signalNotifications: false,   // browser notifications
+    signalNotifications: false,   // in-tab browser notifications (toast + Notification API)
+    signalPush: false,            // server push notifications (works with browser closed / on phone)
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
@@ -639,13 +640,21 @@ const settingsPanel = (() => {
         <div class="sp-section-title">Notifications</div>
         <label class="sp-toggle">
           <input type="checkbox" ${get('signalNotifications') ? 'checked' : ''} data-key="signalNotifications" />
-          <span>Browser notifications</span>
+          <span>In-tab alerts</span>
         </label>
         <label class="sp-toggle">
           <input type="checkbox" ${get('signalSound') ? 'checked' : ''} data-key="signalSound" />
           <span>Sound alert</span>
         </label>
-        <p class="sp-hint">Push notifications work even when browser is closed</p>
+        <p class="sp-hint">Toast + browser notification when tab is open</p>
+      </div>
+      <div class="sp-section">
+        <div class="sp-section-title">📲 Push Notifications</div>
+        <label class="sp-toggle">
+          <input type="checkbox" ${get('signalPush') ? 'checked' : ''} data-key="signalPush" />
+          <span>Push when browser closed</span>
+        </label>
+        <p class="sp-hint">Server push — works on phone & with browser closed. Uses filters above.</p>
       </div>
     `
   }
@@ -687,8 +696,8 @@ const settingsPanel = (() => {
     container.querySelectorAll('input[type="checkbox"][data-key]').forEach(el => {
       el.addEventListener('change', () => {
         set(el.dataset.key, el.checked)
-        // Web Push: subscribe/unsubscribe when notifications toggled
-        if (el.dataset.key === 'signalNotifications') {
+        // Web Push: subscribe/unsubscribe when push toggled (separate from in-tab notifications)
+        if (el.dataset.key === 'signalPush') {
           if (el.checked) {
             if (typeof subscribeToPush === 'function') subscribeToPush()
           } else {
@@ -710,7 +719,7 @@ const settingsPanel = (() => {
         }
         // Re-sync push filters when signal settings change
         if (['signalMinRatio', 'signalMinConfidence'].includes(el.dataset.key)) {
-          if (typeof subscribeToPush === 'function' && get('signalNotifications')) subscribeToPush()
+          if (typeof subscribeToPush === 'function' && get('signalPush')) subscribeToPush()
         }
       })
     })
@@ -724,7 +733,7 @@ const settingsPanel = (() => {
         if (!el.checked) { const i = types.indexOf(t); if (i >= 0) types.splice(i, 1) }
         set('signalTypes', [...types])
         // Re-sync push subscription with updated types
-        if (typeof subscribeToPush === 'function' && get('signalNotifications')) subscribeToPush()
+        if (typeof subscribeToPush === 'function' && get('signalPush')) subscribeToPush()
       })
     })
 

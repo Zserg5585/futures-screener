@@ -442,10 +442,10 @@ async function unsubscribeFromPush() {
   }
 }
 
-// Auto-subscribe on load if notifications are enabled
+// Auto-subscribe on load if push is enabled (separate from in-tab notifications)
 ;(async () => {
   const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null
-  if (sp?.get('signalNotifications')) {
+  if (sp?.get('signalPush')) {
     await subscribeToPush()
   }
 })()

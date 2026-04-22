@@ -20,8 +20,7 @@ const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
 
-// Connect WebSockets on Start
-wsManager.connect();
+// WS connects lazily on first subscribe() — no eager connect needed
 
 // ---- helpers ----
 async function bget(path) {
