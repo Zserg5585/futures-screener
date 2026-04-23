@@ -193,7 +193,7 @@ function renderBlacklistItems() {
         listEl.innerHTML = dv2.blacklist.map(coin => `
             <div class="dv2-bl-item">
                 <span class="dv2-bl-coin">${coin}</span>
-                <button class="dv2-bl-rm" onclick="removeBl('${coin}')">✕</button>
+                <button class="dv2-bl-rm" onclick="removeBl('${escAttr(coin)}')">✕</button>
             </div>
         `).join('')
     }
@@ -326,7 +326,7 @@ function renderDv2Table(entries) {
 
         return `<tr class="dv2-row" data-symbol="${entry.symbol}">
             <td class="dv2-coin">
-                <a href="#" onclick="event.preventDefault(); if(typeof openCoinModal==='function') openCoinModal('${entry.symbol}');">${sym}</a>
+                <a href="#" onclick="event.preventDefault(); if(typeof openCoinModal==='function') openCoinModal('${escAttr(entry.symbol)}');">${escAttr(sym)}</a>
             </td>
             ${renderImbalance(entry.imbalance, entry.imbalanceLabel)}
             ${renderWallCells(s, 'bid')}
@@ -416,7 +416,7 @@ function renderDv2Cards(entries) {
         const pct = Math.round(entry.imbalance * 100)
         const imbColor = entry.imbalanceLabel === 'BULLISH' ? '#22c55e' : entry.imbalanceLabel === 'BEARISH' ? '#ef4444' : 'var(--text-muted)'
 
-        return `<div class="card dv2-card" onclick="if(typeof openCoinModal==='function') openCoinModal('${entry.symbol}')">
+        return `<div class="card dv2-card" onclick="if(typeof openCoinModal==='function') openCoinModal('${escAttr(entry.symbol)}')">
             <div class="card-header">
                 <span class="dv2-card-sym">${sym}</span>
                 <span class="dv2-card-imb" style="color:${imbColor}">${pct > 0 ? '+' : ''}${pct}%</span>

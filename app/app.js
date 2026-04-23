@@ -4,6 +4,9 @@ const el = (id) => document.getElementById(id)
 const qs = (selector) => document.querySelector(selector)
 const qsa = (selector) => document.querySelectorAll(selector)
 
+// Sanitize strings for use in HTML attributes (prevent XSS)
+function escAttr(s) { return String(s).replace(/[&"'<>]/g, c => ({ '&':'&amp;', '"':'&quot;', "'":'&#39;', '<':'&lt;', '>':'&gt;' })[c]) }
+
 // Configuration
 const CONFIG = {
     API_BASE_URL: '/densities/simple',
@@ -302,7 +305,7 @@ function renderTable(entries) {
             <td class="state-cell">${stateDot}</td>
             <td style="font-family: monospace; color: #a1a1aa;">${formatTimeToEat(entry.timeToEatMinutes)}</td>
             <td class="watchlist-btn">
-                <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${symbol}')">
+                <button class="btn-star ${inWatchlist ? 'active' : ''}" onclick="toggleWatchlist('${escAttr(symbol)}')">
                     ${inWatchlist ? '⭐' : '☆'}
                 </button>
             </td>
@@ -447,7 +450,7 @@ function renderCards(entries) {
                         <span style="display:inline-block; width:16px; height:16px; line-height:16px; text-align:center; background:#f3ba2f; color:#000; border-radius:50%; font-size:11px; font-weight:bold; vertical-align:text-bottom; opacity:0.8;">B</span>
                     </a>
                     
-                    <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${symbol}')">${inWatchlist ? '⭐' : '☆'}</button>
+                    <button class="btn-star ${inWatchlist ? 'active' : ''}" style="margin-left:8px; background:none; border:none; color:inherit; cursor:pointer;" onclick="toggleWatchlist('${escAttr(symbol)}')">${inWatchlist ? '⭐' : '☆'}</button>
                 </div>
                 <div style="font-size:12px; opacity:0.8">${stateDot}</div>
             </div>

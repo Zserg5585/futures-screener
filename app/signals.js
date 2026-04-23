@@ -191,7 +191,7 @@ function renderSignals() {
     const confColor = s.confidence >= 80 ? '#22c55e' : s.confidence >= 60 ? '#f59e0b' : '#ef4444'
     const typeLabel = formatType(s.type)
 
-    return `<tr class="${isActive}" data-sig-id="${s.id}" onclick="selectSignal('${s.id}')">
+    return `<tr class="${isActive}" data-sig-id="${escAttr(s.id)}" onclick="selectSignal('${escAttr(s.id)}')">
       <td class="sig-time">${formatTime(s.created_at)}</td>
       <td><span class="sig-type-badge ${s.type}">${typeLabel}</span></td>
       <td class="sig-symbol">${s.symbol.replace('USDT', '')}</td>
@@ -295,7 +295,7 @@ function selectSignal(id) {
       <div class="sig-detail-value">${new Date(ensureUTC(s.created_at)).toLocaleString([], { timeZone: 'America/Vancouver' })}</div>
     </div>
 
-    <button class="sig-detail-btn" onclick="openSignalChart('${s.symbol}')">Open Chart</button>
+    <button class="sig-detail-btn" onclick="openSignalChart('${escAttr(s.symbol)}')">Open Chart</button>
   `
 }
 
