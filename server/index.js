@@ -702,6 +702,7 @@ fastify.get('/densities/simple', async (req) => {
       return { ...densityCache.meta, xFilter, natrFilter, data: finalData, cached: true, cacheAgeSec: Number(ageSec) }
     }
     // No cache at all — return empty (warmup will fill it)
+    reply.code(503)
     return { count: 0, data: [], cached: false, message: 'Warming up, try again in 30s' }
   }
 
@@ -885,6 +886,7 @@ fastify.get('/densities/v2', async (req) => {
   try {
     ticker24h = await bgetWithRetry('/fapi/v1/ticker/24hr')
   } catch (err) {
+    reply.code(503)
     return { count: 0, data: [], error: 'Failed to fetch ticker data' }
   }
   const volumeMap = new Map(ticker24h.map(t => [t.symbol, Number(t.quoteVolume)]))
@@ -1103,6 +1105,7 @@ fastify.get('/api/oi-history', async (req) => {
     setProxyCached(key, data)
     return data
   } catch (e) {
+    reply.code(503)
     return { error: 'Failed to fetch OI history', message: e.message }
   }
 })
