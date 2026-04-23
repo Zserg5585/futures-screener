@@ -348,12 +348,15 @@ const DM = (() => {
         };
         popup.appendChild(delRow);
 
-        // Close on outside click
+        // Close on outside click (persistent until popup is closed)
         setTimeout(() => {
             popup._closeHandler = (e) => {
-                if (!popup.contains(e.target)) _hideSettings();
+                if (!popup.contains(e.target)) {
+                    _hideSettings();
+                    document.removeEventListener('click', popup._closeHandler, { capture: true });
+                }
             };
-            document.addEventListener('click', popup._closeHandler, { capture: true, once: true });
+            document.addEventListener('click', popup._closeHandler, { capture: true });
         }, 100);
 
         currentContainer.appendChild(popup);
