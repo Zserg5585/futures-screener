@@ -1,6 +1,13 @@
 node_modules/
 server/node_modules/
 server/data/
-.env
-*.db
 data/density-cache.json
+.env
+.env.local
+.env.*.local
+*.db
+*.log
+*.pid
+.DS_Store
+.idea/
+.vscode/
