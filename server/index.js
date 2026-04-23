@@ -205,13 +205,16 @@ function saveDensityToDisk(data, meta) {
   try {
     const dir = require('path').dirname(DENSITY_CACHE_FILE)
     if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
-    require('fs').writeFileSync(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
+    // Non-blocking write (fire-and-forget)
+    fs.promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
+      .catch(e => console.log('[density-cache] disk save error:', e.message))
   } catch (e) { console.log('[density-cache] disk save error:', e.message) }
 }
 function loadDensityFromDisk() {
   try {
     if (!require('fs').existsSync(DENSITY_CACHE_FILE)) return null
-    const raw = JSON.parse(require('fs').readFileSync(DENSITY_CACHE_FILE, 'utf8'))
+    // Sync read OK here — only called once at startup
+    const raw = JSON.parse(fs.readFileSync(DENSITY_CACHE_FILE, 'utf8'))
     // Accept disk cache up to 10 minutes old (stale but better than nothing)
     if (raw && raw.data && (Date.now() - raw.ts) < 600000) {
       console.log(`[density-cache] Loaded ${raw.data.length} walls from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)
@@ -391,54 +394,73 @@ async function getKlinesWithStats(symbol) {
   }
 }
 
-// ---- UI (static files from ../app) ----
+// ---- UI (static files from ../app, cached in memory at startup) ----
 const path = require('path')
 const fs = require('fs')
 const APP_DIR = path.resolve(__dirname, '..', 'app')
 
-function readFileSafe(relPath) {
+// Pre-load static files into memory (never changes at runtime)
+const staticCache = new Map()
+function getStatic(relPath) {
+  if (staticCache.has(relPath)) return staticCache.get(relPath)
   const p = path.join(APP_DIR, relPath)
-  return fs.readFileSync(p)
+  const buf = fs.readFileSync(p)
+  staticCache.set(relPath, buf)
+  return buf
 }
 
+// Pre-warm all static files at module load
+const STATIC_FILES = [
+  'index.html', 'app.js', 'densities.js', 'mini-charts.js', 'auth.js',
+  'drawing-manager.js', 'signals.js', 'settings.js', 'styles.css',
+  'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
+]
+for (const f of STATIC_FILES) {
+  try { getStatic(f) } catch (e) { console.warn(`[Static] Failed to pre-load ${f}: ${e.message}`) }
+}
+
+// Also cache the UMD library
+const LWC_DRAWING_PATH = path.resolve(__dirname, '..', 'node_modules', 'lightweight-charts-drawing', 'dist', 'lightweight-charts-drawing.umd.js')
+let lwcDrawingBuf
+try { lwcDrawingBuf = fs.readFileSync(LWC_DRAWING_PATH) } catch (e) { console.warn('[Static] lightweight-charts-drawing UMD not found') }
+
 fastify.get('/', async (req, reply) => {
-  reply.type('text/html; charset=utf-8').send(readFileSafe('index.html'))
+  reply.type('text/html; charset=utf-8').send(getStatic('index.html'))
 })
 
 fastify.get('/app.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('app.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('app.js'))
 })
 
 fastify.get('/densities.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('densities.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('densities.js'))
 })
 
 fastify.get('/mini-charts.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('mini-charts.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('mini-charts.js'))
 })
 
 fastify.get('/auth.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('auth.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('auth.js'))
 })
 
 fastify.get('/drawing-manager.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('drawing-manager.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('drawing-manager.js'))
 })
 fastify.get('/signals.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('signals.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('signals.js'))
 })
 fastify.get('/settings.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(readFileSafe('settings.js'))
+  reply.type('application/javascript; charset=utf-8').send(getStatic('settings.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
-  reply.type('text/css; charset=utf-8').send(readFileSafe('styles.css'))
+  reply.type('text/css; charset=utf-8').send(getStatic('styles.css'))
 })
 
-// Serve lightweight-charts-drawing UMD from node_modules
 fastify.get('/lightweight-charts-drawing.umd.js', async (req, reply) => {
-  const p = path.resolve(__dirname, '..', 'node_modules', 'lightweight-charts-drawing', 'dist', 'lightweight-charts-drawing.umd.js')
-  reply.type('application/javascript; charset=utf-8').send(fs.readFileSync(p))
+  if (!lwcDrawingBuf) return reply.code(404).send('Not found')
+  reply.type('application/javascript; charset=utf-8').send(lwcDrawingBuf)
 })
 
 fastify.get('/favicon.ico', async (req, reply) => {
@@ -446,19 +468,19 @@ fastify.get('/favicon.ico', async (req, reply) => {
 })
 
 fastify.get('/manifest.json', async (req, reply) => {
-  reply.type('application/manifest+json; charset=utf-8').send(readFileSafe('manifest.json'))
+  reply.type('application/manifest+json; charset=utf-8').send(getStatic('manifest.json'))
 })
 
 fastify.get('/sw.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').header('Service-Worker-Allowed', '/').send(readFileSafe('sw.js'))
+  reply.type('application/javascript; charset=utf-8').header('Service-Worker-Allowed', '/').send(getStatic('sw.js'))
 })
 
 fastify.get('/icon-192.svg', async (req, reply) => {
-  reply.type('image/svg+xml').send(readFileSafe('icon-192.svg'))
+  reply.type('image/svg+xml').send(getStatic('icon-192.svg'))
 })
 
 fastify.get('/icon-512.svg', async (req, reply) => {
-  reply.type('image/svg+xml').send(readFileSafe('icon-512.svg'))
+  reply.type('image/svg+xml').send(getStatic('icon-512.svg'))
 })
 
 // ---- Auth routes ----
