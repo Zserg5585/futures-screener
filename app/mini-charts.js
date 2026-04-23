@@ -393,12 +393,16 @@ async function initMiniCharts() {
             });
         }
 
-        // Search input
+        // Search input (debounced 300ms)
         const searchInput = el('mcSearchInput');
         if (searchInput) {
+            let _searchTimer = null;
             searchInput.addEventListener('input', (e) => {
-                mc.searchQuery = e.target.value.trim().toUpperCase();
-                renderSidebar();
+                clearTimeout(_searchTimer);
+                _searchTimer = setTimeout(() => {
+                    mc.searchQuery = e.target.value.trim().toUpperCase();
+                    renderSidebar();
+                }, 300);
             });
         }
 
