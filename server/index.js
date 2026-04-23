@@ -206,7 +206,7 @@ function saveDensityToDisk(data, meta) {
     const dir = require('path').dirname(DENSITY_CACHE_FILE)
     if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
     // Non-blocking write (fire-and-forget)
-    fs.promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
+    require('fs').promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
       .catch(e => console.log('[density-cache] disk save error:', e.message))
   } catch (e) { console.log('[density-cache] disk save error:', e.message) }
 }
@@ -214,7 +214,7 @@ function loadDensityFromDisk() {
   try {
     if (!require('fs').existsSync(DENSITY_CACHE_FILE)) return null
     // Sync read OK here — only called once at startup
-    const raw = JSON.parse(fs.readFileSync(DENSITY_CACHE_FILE, 'utf8'))
+    const raw = JSON.parse(require('fs').readFileSync(DENSITY_CACHE_FILE, 'utf8'))
     // Accept disk cache up to 10 minutes old (stale but better than nothing)
     if (raw && raw.data && (Date.now() - raw.ts) < 600000) {
       console.log(`[density-cache] Loaded ${raw.data.length} walls from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)

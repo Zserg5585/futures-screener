@@ -4,11 +4,7 @@ const el = (id) => document.getElementById(id)
 const qs = (selector) => document.querySelector(selector)
 const qsa = (selector) => document.querySelectorAll(selector)
 
-// Sanitize strings for use in HTML attributes (prevent XSS)
-function escAttr(s) { return String(s).replace(/[&"'<>]/g, c => ({ '&':'&amp;', '"':'&quot;', "'":'&#39;', '<':'&lt;', '>':'&gt;' })[c]) }
-
-// Safe localStorage.setItem — silently handles QuotaExceededError
-function lsSet(key, value) { try { localStorage.setItem(key, value) } catch (e) { console.warn('[localStorage] Write failed:', key, e.name) } }
+// escAttr() and lsSet() are defined in index.html inline <script> (loaded before all modules)
 
 // Configuration
 const CONFIG = {

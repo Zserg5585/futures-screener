@@ -405,6 +405,11 @@
     </div>
 
     <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
+    <script>
+    // Global helpers (loaded before all modules)
+    function escAttr(s) { return String(s).replace(/[&"'<>]/g, c => ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[c]) }
+    function lsSet(key, value) { try { localStorage.setItem(key, value) } catch(e) { console.warn('[localStorage] Write failed:', key, e.name) } }
+    </script>
     <script src="/auth.js?v=20260415-v1"></script>
     <script src="/settings.js?v=20260419-v21"></script>
     <script src="/signals.js?v=20260420-v27"></script>
