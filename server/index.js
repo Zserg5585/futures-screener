@@ -1198,7 +1198,7 @@ const port = Number(process.env.PORT || 3200)
 const start = async () => {
   try {
     await fastify.listen({ port, host: '0.0.0.0' })
-    fastify.log.info(`listening on 127.0.0.1:${port}`)
+    fastify.log.info(`listening on 0.0.0.0:${port}`)
     // Init signals scanner (after server up so proxyCache is available)
     push.init({ stmts: auth.stmts })
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push })
@@ -1209,6 +1209,33 @@ const start = async () => {
     process.exit(1)
   }
 }
+
+// Graceful shutdown — clean up resources on PM2 restart / kill
+async function gracefulShutdown(signal) {
+  console.log(`[shutdown] ${signal} received, closing gracefully...`)
+  try {
+    // Close Fastify (stop accepting new requests, finish in-flight)
+    await fastify.close()
+    // Close WebSocket connections
+    if (wsManager.ws) {
+      wsManager.ws.close()
+    }
+    // Save density cache to disk before exit
+    if (densityCache.data) {
+      saveDensityToDisk(densityCache.data, densityCache.meta)
+      // Give async write a moment to flush
+      await new Promise(r => setTimeout(r, 200))
+    }
+    console.log(`[shutdown] Clean exit.`)
+    process.exit(0)
+  } catch (err) {
+    console.error('[shutdown] Error during cleanup:', err.message)
+    process.exit(1)
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 // Gradually subscribe symbols to depth WS and build density cache
 async function warmupDensitySubscriptions() {
