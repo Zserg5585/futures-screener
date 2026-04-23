@@ -1666,7 +1666,14 @@ function updateCountdown() {
     }
 }
 
+let _modalLoadController = null; // AbortController for current modal chart load
+
 async function loadModalChart(sym, tf) {
+    // Abort previous load if still in progress
+    if (_modalLoadController) _modalLoadController.abort();
+    _modalLoadController = new AbortController();
+    const signal = _modalLoadController.signal;
+
     // Unsubscribe previous modal WS stream
     if (modal.wsStream) {
         if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
@@ -1678,9 +1685,9 @@ async function loadModalChart(sym, tf) {
 
     try {
         // Phase 1: fast — 1000 candles (pre-warmed in server cache)
-        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000`);
+        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000`, { signal });
         const json1 = await res1.json();
-        if (!Array.isArray(json1) || !modal.chart) return;
+        if (signal.aborted || !Array.isArray(json1) || !modal.chart) return;
 
         const data1 = parseKlines(json1);
         modal.candleData = data1;
@@ -1770,9 +1777,9 @@ async function loadModalChart(sym, tf) {
             if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
             try {
                 // First batch: 1500 most recent
-                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`);
+                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`, { signal });
                 const json2 = await res2.json();
-                if (!Array.isArray(json2) || !modal.chart) return;
+                if (signal.aborted || !Array.isArray(json2) || !modal.chart) return;
 
                 let fullData = parseKlines(json2);
                 // Save visible TIME range (not logical) — stable across setData
@@ -1782,9 +1789,9 @@ async function loadModalChart(sym, tf) {
                 // Paginate backwards until we hit target or run out of data
                 let oldestTime = json2.length > 0 ? json2[0][0] : null;
                 while (fullData.length < TARGET && oldestTime) {
-                    if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
+                    if (signal.aborted || !modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
                     try {
-                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldestTime - 1}`);
+                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldestTime - 1}`, { signal });
                         const json = await res.json();
                         if (!Array.isArray(json) || json.length === 0) break;
                         const olderData = parseKlines(json);
@@ -1808,6 +1815,7 @@ async function loadModalChart(sym, tf) {
             } catch (e) { /* background load failed */ }
         }, 400);
     } catch (e) {
+        if (e.name === 'AbortError') return; // Cancelled by new TF click — expected
         console.error('Modal chart error:', e);
     }
 }
