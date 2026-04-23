@@ -1248,14 +1248,19 @@ function wsConnect() {
             checkPriceAlerts(sym, candle.close);
             if (typeof DM !== 'undefined' && DM && DM.checkAlerts) DM.checkAlerts(sym, candle.close);
 
-            // Update mini-chart
+            // Update mini-chart (throttled: max 4 updates/sec per symbol)
             if (mc.charts[sym]) {
-                mc.charts[sym].series.update(candle);
-                mc.charts[sym].volSeries.update({
-                    time: candle.time,
-                    value: vol,
-                    color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
-                });
+                const now = Date.now();
+                const lastUpdate = mc.charts[sym]._lastWsUpdate || 0;
+                if (now - lastUpdate >= 250) {
+                    mc.charts[sym]._lastWsUpdate = now;
+                    mc.charts[sym].series.update(candle);
+                    mc.charts[sym].volSeries.update({
+                        time: candle.time,
+                        value: vol,
+                        color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
+                    });
+                }
             }
 
             // Update multi-chart slots
