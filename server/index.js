@@ -1133,7 +1133,7 @@ fastify.post('/api/klines-batch', async (req) => {
       if (Array.isArray(data)) result[symbol] = data
     } catch(e) { /* skip */ }
   })
-  await Promise.all(promises)
+  await Promise.all(promises).catch(e => console.error('[klines-batch] Unexpected error:', e.message))
   return result
 })
 
@@ -1186,7 +1186,7 @@ fastify.get('/api/natr', async (req) => {
         if (lastClose > 0) result[t.symbol] = parseFloat(((atr / lastClose) * 100).toFixed(2))
       } catch(e) { /* skip pair */ }
     })
-    await Promise.all(promises)
+    await Promise.all(promises).catch(e => console.error('[natr] Unexpected error:', e.message))
     // Small delay between batches to avoid rate limits
     if (i + batchSize < usdtPairs.length) await new Promise(r => setTimeout(r, 200))
   }
