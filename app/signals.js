@@ -79,19 +79,19 @@ async function loadSignals() {
     if (sigState.typeFilter) params.set('type', sigState.typeFilter)
     if (sigState.dirFilter) params.set('direction', sigState.dirFilter)
 
-    const [liveRes, summaryRes, outcomesRes] = await Promise.all([
+    const [liveRes, summaryRes, outcomesRes] = await Promise.allSettled([
       fetch(`${SIG_API}/api/signals/live?${params}`).then(r => r.json()),
       fetch(`${SIG_API}/api/signals/summary`).then(r => r.json()),
       fetch(`${SIG_API}/api/signals/outcomes`).then(r => r.json()),
     ])
 
-    if (liveRes.success) {
-      const newSignals = liveRes.data || []
+    if (liveRes.status === 'fulfilled' && liveRes.value?.success) {
+      const newSignals = liveRes.value.data || []
       notifyNewSignals(newSignals)
       sigState.signals = newSignals
     }
-    if (outcomesRes.success) sigState.outcomes = outcomesRes.stats || []
-    if (summaryRes.success) renderSummary(summaryRes)
+    if (outcomesRes.status === 'fulfilled' && outcomesRes.value?.success) sigState.outcomes = outcomesRes.value.stats || []
+    if (summaryRes.status === 'fulfilled' && summaryRes.value?.success) renderSummary(summaryRes.value)
     renderSignals()
     renderOutcomeStats()
   } catch (err) {
