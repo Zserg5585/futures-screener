@@ -7,6 +7,16 @@ const fastify = require('fastify')({
   }
 })
 
+// Rate limiting
+const rateLimit = require('@fastify/rate-limit')
+fastify.register(rateLimit, {
+  max: 100,        // 100 requests per minute (global default)
+  timeWindow: 60000,
+  keyGenerator: (req) => req.ip,
+  addHeadersOnExceeding: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true },
+  addHeaders: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'retry-after': true }
+})
+
 // Binance Futures (USDT-M) REST base
 const BINANCE_FAPI = 'https://fapi.binance.com'
 
@@ -444,14 +454,14 @@ fastify.addHook('onRequest', async (req) => {
   auth.authHook(req)
 })
 
-fastify.post('/api/auth/register', async (req, reply) => {
+fastify.post('/api/auth/register', { config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => {
   const { email, password, name } = req.body || {}
   const result = auth.register(email, password, name)
   if (result.error) return reply.code(400).send(result)
   return result
 })
 
-fastify.post('/api/auth/login', async (req, reply) => {
+fastify.post('/api/auth/login', { config: { rateLimit: { max: 15, timeWindow: 60000 } } }, async (req, reply) => {
   const { email, password } = req.body || {}
   const result = auth.login(email, password)
   if (result.error) return reply.code(401).send(result)
