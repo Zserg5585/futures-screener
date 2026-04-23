@@ -7,6 +7,9 @@ const qsa = (selector) => document.querySelectorAll(selector)
 // Sanitize strings for use in HTML attributes (prevent XSS)
 function escAttr(s) { return String(s).replace(/[&"'<>]/g, c => ({ '&':'&amp;', '"':'&quot;', "'":'&#39;', '<':'&lt;', '>':'&gt;' })[c]) }
 
+// Safe localStorage.setItem — silently handles QuotaExceededError
+function lsSet(key, value) { try { localStorage.setItem(key, value) } catch (e) { console.warn('[localStorage] Write failed:', key, e.name) } }
+
 // Configuration
 const CONFIG = {
     API_BASE_URL: '/densities/simple',

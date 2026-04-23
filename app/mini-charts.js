@@ -48,7 +48,7 @@ function addMainSeries(chart, prec, minMove) {
 }
 
 function saveFlags() {
-    localStorage.setItem('mc_flags', JSON.stringify(mc.flags));
+    lsSet('mc_flags', JSON.stringify(mc.flags));
 }
 
 // --- Sidebar & Grid settings ---
@@ -1997,7 +1997,7 @@ const drawStore = (() => {
         try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { return {}; }
     }
     function saveAll(store) {
-        localStorage.setItem(KEY, JSON.stringify(store));
+        lsSet(KEY, JSON.stringify(store));
     }
     return {
         save(sym, drawings) {
@@ -2147,7 +2147,7 @@ const fibConfig = (() => {
         return FIB_DEFAULTS_OBJ.map(o => ({ ...o }));
     }
     function save(levels) {
-        localStorage.setItem(KEY, JSON.stringify(levels));
+        lsSet(KEY, JSON.stringify(levels));
     }
     // Helper: extract plain level numbers from config
     function levels(cfg) { return (cfg || load()).map(o => typeof o === 'number' ? o : o.level); }
@@ -2236,7 +2236,7 @@ function renderDrawToolbar(targetEl) {
         magnetBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             drawMagnet = !drawMagnet;
-            localStorage.setItem('fs_magnet', drawMagnet);
+            lsSet('fs_magnet', drawMagnet);
             magnetBtn.classList.toggle('dt-active', drawMagnet);
         });
     }
@@ -3772,7 +3772,7 @@ function initLayoutPicker() {
 
 function switchLayout(layout) {
     mch.layout = layout;
-    localStorage.setItem('mch_layout', layout);
+    lsSet('mch_layout', layout);
 
     const miniChartsLayout = el('mcMiniChartsLayout');
     const multiChart = el('mcMultiChart');
@@ -4417,7 +4417,7 @@ function applyDrawingsToSlot(slotIndex) {
 
 function saveSlotSymbols() {
     const syms = mch.slots.map(s => s.sym || null);
-    localStorage.setItem('mch_slots', JSON.stringify(syms));
+    lsSet('mch_slots', JSON.stringify(syms));
 }
 
 // WS helpers for multi-chart slots

@@ -131,7 +131,7 @@ const authUI = (() => {
 
   function saveToken(t) {
     token = t
-    localStorage.setItem('fs_token', t)
+    lsSet('fs_token', t)
   }
 
   function logout() {

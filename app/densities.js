@@ -30,7 +30,7 @@ function loadBlacklist() {
     }
 }
 function saveBlacklist() {
-    localStorage.setItem('dv2-blacklist', JSON.stringify(dv2.blacklist))
+    lsSet('dv2-blacklist', JSON.stringify(dv2.blacklist))
 }
 function isBlacklisted(symbol) {
     const coin = symbol.replace('USDT', '').toUpperCase()

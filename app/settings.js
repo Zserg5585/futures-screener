@@ -83,7 +83,7 @@ const settingsPanel = (() => {
   function loadWatchlist() {
     try { watchlist = new Set(JSON.parse(localStorage.getItem(WL_KEY) || '[]')) } catch { watchlist = new Set() }
   }
-  function saveWatchlist() { localStorage.setItem(WL_KEY, JSON.stringify([...watchlist])) }
+  function saveWatchlist() { lsSet(WL_KEY, JSON.stringify([...watchlist])) }
   function wlAdd(sym) { watchlist.add(sym); saveWatchlist(); notify('__watchlist', [...watchlist]) }
   function wlRemove(sym) { watchlist.delete(sym); saveWatchlist(); notify('__watchlist', [...watchlist]) }
   function wlToggle(sym) { watchlist.has(sym) ? wlRemove(sym) : wlAdd(sym) }
@@ -107,7 +107,7 @@ const settingsPanel = (() => {
   }
 
   function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    lsSet(STORAGE_KEY, JSON.stringify(settings))
     // Future: if pro, sync to server via authUI.authFetch
   }
 
