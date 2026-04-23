@@ -1,10 +1,24 @@
-const fastify = require('fastify')({
-  logger: true,
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  }
+const fastify = require('fastify')({ logger: true })
+
+// CORS — whitelist known origins only
+const ALLOWED_ORIGINS = [
+  'https://futures-screener.szhub.space',
+  'http://localhost:3200',
+  'http://127.0.0.1:3200'
+]
+const cors = require('@fastify/cors')
+fastify.register(cors, {
+  origin: (origin, cb) => {
+    // Allow same-origin requests (no origin header) and whitelisted origins
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      cb(null, true)
+    } else {
+      cb(null, false)
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 })
 
 // Rate limiting
