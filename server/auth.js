@@ -14,16 +14,19 @@ const crypto = require('crypto')
 
 // --- Config ---
 const DB_PATH = path.join(__dirname, 'data', 'users.db')
+if (!process.env.JWT_SECRET) {
+  console.error('[Auth] ❌ CRITICAL: JWT_SECRET not set in env! Tokens will reset on every restart.')
+  console.error('[Auth] Set JWT_SECRET in PM2 ecosystem.config.js or .env file.')
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[Auth] Refusing to start in production without JWT_SECRET.')
+    process.exit(1)
+  }
+}
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex')
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d'
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || ''
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ''
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || ''
-
-// Warn if using random JWT_SECRET (tokens won't survive restart)
-if (!process.env.JWT_SECRET) {
-  console.warn('[Auth] WARNING: JWT_SECRET not set in env, using random secret (tokens reset on restart)')
-}
 
 // --- Database Setup ---
 const db = new Database(DB_PATH)
