@@ -61,8 +61,8 @@ self.addEventListener('push', (e) => {
 
   const options = {
     body: payload.body || '',
-    icon: payload.icon || '/icon-192.png',
-    badge: payload.badge || '/icon-192.png',
+    icon: payload.icon || '/icon-192.svg',
+    badge: payload.badge || '/icon-192.svg',
     tag: payload.tag || 'signal',
     data: payload.data || {},
     vibrate: payload.vibrate || [200, 100, 200],
