@@ -1050,7 +1050,9 @@ fastify.post('/api/push/unsubscribe', async (req) => {
 })
 
 // ---- Test Signal ----
-fastify.get('/api/signals/test', async () => {
+fastify.get('/api/signals/test', async (req, reply) => {
+  // Require authenticated user to prevent public abuse
+  if (!req.user) return reply.code(401).send({ error: 'Auth required' })
   const sig = {
     id: `test-${Date.now()}`,
     type: 'volume_spike',
