@@ -91,6 +91,18 @@ const settingsPanel = (() => {
   function wlList() { return [...watchlist] }
   function wlClear() { watchlist.clear(); saveWatchlist(); notify('__watchlist', []) }
 
+  // Sync watchlist across tabs via storage event
+  window.addEventListener('storage', (e) => {
+    if (e.key === WL_KEY) {
+      try { watchlist = new Set(JSON.parse(e.newValue || '[]')) } catch { return }
+      notify('__watchlist', [...watchlist])
+    }
+    if (e.key === STORAGE_KEY) {
+      try { settings = { ...DEFAULTS, ...JSON.parse(e.newValue || '{}') } } catch { return }
+      notify('__settings', settings)
+    }
+  })
+
   // --- Load / Save ---
   function load() {
     try {
