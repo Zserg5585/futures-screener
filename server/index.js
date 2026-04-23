@@ -23,13 +23,21 @@ const push = require('./push');
 // WS connects lazily on first subscribe() — no eager connect needed
 
 // ---- helpers ----
+const FETCH_TIMEOUT_MS = 10000 // 10s timeout for all Binance requests
+
 async function bget(path) {
-  const res = await fetch(BINANCE_FAPI + path, { method: 'GET' })
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '')
-    throw new Error(`Binance GET ${path} failed: ${res.status} ${txt}`)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(BINANCE_FAPI + path, { method: 'GET', signal: controller.signal })
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '')
+      throw new Error(`Binance GET ${path} failed: ${res.status} ${txt}`)
+    }
+    return res.json()
+  } finally {
+    clearTimeout(timeoutId)
   }
-  return res.json()
 }
 
 function toNumber(x) { return Number(x) }
