@@ -3704,19 +3704,26 @@ function closeCoinModal() {
 }
 
 // Init modal event listeners (called once in initMiniCharts)
+let _modalEventsInitialized = false;
+
+function _modalEscapeHandler(e) {
+    if (e.key === 'Escape' && modal.currentSym) closeCoinModal();
+}
+
 function initModalEvents() {
+    if (_modalEventsInitialized) return; // Guard against double init
+    _modalEventsInitialized = true;
+
     // Close button
     el('cmClose').addEventListener('click', closeCoinModal);
 
     // Overlay click
     document.querySelector('.mc-modal-overlay').addEventListener('click', closeCoinModal);
 
-    // Escape key
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modal.currentSym) closeCoinModal();
-    });
+    // Escape key (named function — removable if needed)
+    document.addEventListener('keydown', _modalEscapeHandler);
 
-    // TF buttons in modal
+    // TF buttons in modal (event delegation on container — single listener)
     el('cmTFButtons').addEventListener('click', (e) => {
         const btn = e.target.closest('.mc-tf-btn');
         if (!btn || !modal.currentSym) return;
