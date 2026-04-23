@@ -466,7 +466,7 @@ async function checkOutcomes() {
       const trackKey = sig.id
       let track = mfeTracker.get(trackKey)
       if (!track) {
-        track = { mfe: 0, mae: 0 }
+        track = { mfe: 0, mae: 0, createdAt: now }
         mfeTracker.set(trackKey, track)
       }
       if (pnlNow > track.mfe) track.mfe = pnlNow
@@ -515,9 +515,9 @@ async function checkOutcomes() {
     }
 
     // Cleanup stale MFE trackers (older than 25h)
-    for (const [key] of mfeTracker.entries()) {
-      const id = parseInt(key)
-      if (id && now - id > 25 * 3600_000) mfeTracker.delete(key)
+    for (const [key, track] of mfeTracker.entries()) {
+      const age = now - (track.createdAt || 0)
+      if (age > 25 * 3600_000) mfeTracker.delete(key)
     }
   } catch (err) {
     console.error('[Signals] Outcome check error:', err.message)
