@@ -345,7 +345,10 @@ function renderDensities(entries) {
         if (!cardsContainer) {
             console.error('cardsContent element not found!')
             // Fallback: show error on page
-            document.body.innerHTML += `<div style="color:red;padding:20px;">ERROR: cardsContent element not found</div>`
+            const errDiv = document.createElement('div')
+            errDiv.style.cssText = 'color:red;padding:20px;'
+            errDiv.textContent = 'ERROR: cardsContent element not found'
+            document.body.appendChild(errDiv)
             return
         }
         renderCards(entries)
