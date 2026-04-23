@@ -1308,11 +1308,21 @@ function wsConnect() {
         } catch (e) { /* ignore parse errors */ }
     };
     mc.ws.onclose = () => {
+        if (mc._wsClosing) return; // Don't reconnect on intentional close
         console.log('[MC-WS] Disconnected, reconnecting in 3s...');
         setTimeout(wsConnect, 3000);
     };
     mc.ws.onerror = () => {}; // onclose will handle reconnect
 }
+
+// Clean up WebSocket on page unload to prevent dangling connections
+window.addEventListener('beforeunload', () => {
+    mc._wsClosing = true;
+    if (mc.ws) {
+        mc.ws.close();
+        mc.ws = null;
+    }
+});
 
 function wsSubscribe(sym) {
     const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
