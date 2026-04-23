@@ -66,21 +66,6 @@ async function bget(path) {
 
 function toNumber(x) { return Number(x) }
 
-// Utility function to calculate percentile
-function percentile(arr, p) {
-  if (!arr || arr.length === 0) return null;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length)));
-  return sorted[index];
-}
-
-// Multiplier for mm0 (minimum candidate) - default 2.0x
-const mmSeedMultiplier = Number(process.env.MM_SEED_MULTIPLIER) || 2.0
-
-// Scoring parameters
-const SCORE_DECAY_PCT = 0.45
-const SCORE_MM_BOOST = 1.8
-
 // K-lines timeframe (5 minutes in ms)
 const KLINE_INTERVAL = '5m'
 const KLINE_LIMIT = 20
