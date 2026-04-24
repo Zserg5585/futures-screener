@@ -139,13 +139,18 @@ class BinanceWS {
       this._reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.removeAllListeners();
+      // Add no-op error handler BEFORE removing listeners to prevent unhandled errors
+      // from orphaned CONNECTING WebSockets
+      const oldWs = this.ws;
+      this.ws = null;
+      oldWs.removeAllListeners();
+      oldWs.on('error', () => {}); // swallow any late errors
       try {
-        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CLOSING) {
-          this.ws.terminate();
+        // Terminate in any state except CLOSED (including CONNECTING)
+        if (oldWs.readyState !== WebSocket.CLOSED) {
+          oldWs.terminate();
         }
       } catch (_) {}
-      this.ws = null;
     }
   }
 }

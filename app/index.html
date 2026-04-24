@@ -404,18 +404,35 @@
         </div>
     </div>
 
-    <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
+    <script>
+    // Force SW update + cache clear on version bump
+    (async function() {
+      if (!('serviceWorker' in navigator)) return;
+      const SW_VER = 28;
+      const stored = parseInt(localStorage.getItem('sw_ver') || '0');
+      if (stored < SW_VER) {
+        // Unregister old SW, clear all caches, reload
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+        const keys = await caches.keys();
+        for (const k of keys) await caches.delete(k);
+        localStorage.setItem('sw_ver', String(SW_VER));
+        if (stored > 0) location.reload();
+      }
+      navigator.serviceWorker.register('/sw.js').catch(()=>{});
+    })();
+    </script>
     <script>
     // Global helpers (loaded before all modules)
     function escAttr(s) { return String(s).replace(/[&"'<>]/g, c => ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[c]) }
     function lsSet(key, value) { try { localStorage.setItem(key, value) } catch(e) { console.warn('[localStorage] Write failed:', key, e.name) } }
     </script>
-    <script src="/auth.js?v=20260415-v1"></script>
-    <script src="/settings.js?v=20260419-v21"></script>
-    <script src="/signals.js?v=20260420-v27"></script>
-    <script src="/densities.js?v=20260420-v15"></script>
-    <script src="/drawing-manager.js?v=20260421-v5"></script>
-    <script src="/mini-charts.js?v=20260421-v38"></script>
+    <script src="/auth.js?v=20260424-v1"></script>
+    <script src="/settings.js?v=20260424-v22"></script>
+    <script src="/signals.js?v=20260424-v28"></script>
+    <script src="/densities.js?v=20260424-v16"></script>
+    <script src="/drawing-manager.js?v=20260424-v6"></script>
+    <script src="/mini-charts.js?v=20260424-v39"></script>
 </body>
 
 </html>

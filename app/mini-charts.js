@@ -1,7 +1,76 @@
 // ==========================================
 // Mini-Charts v3 — Full Market Screener
 // Uses IntersectionObserver to only render visible charts
+// IndexedDB persistent cache for instant chart loading
 // ==========================================
+
+// ---- IndexedDB Klines Cache ----
+const IDB = {
+    db: null,
+    DB_NAME: 'FuturesScreenerKlines',
+    STORE: 'klines',
+    VERSION: 1,
+
+    async open() {
+        if (this.db) return this.db;
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.DB_NAME, this.VERSION);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(this.STORE)) {
+                    db.createObjectStore(this.STORE); // key = "BTCUSDT:5m"
+                }
+            };
+            req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+            req.onerror = () => { console.warn('[IDB] Open failed'); resolve(null); };
+        });
+    },
+
+    async get(sym, tf) {
+        try {
+            const db = await this.open();
+            if (!db) return null;
+            return new Promise((resolve) => {
+                const tx = db.transaction(this.STORE, 'readonly');
+                const req = tx.objectStore(this.STORE).get(`${sym}:${tf}`);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+        } catch(e) { return null; }
+    },
+
+    async put(sym, tf, candles) {
+        try {
+            const db = await this.open();
+            if (!db || !candles || candles.length === 0) return;
+            const tx = db.transaction(this.STORE, 'readwrite');
+            tx.objectStore(this.STORE).put({
+                candles,
+                lastTime: candles[candles.length - 1].time,
+                count: candles.length,
+                updated: Date.now()
+            }, `${sym}:${tf}`);
+        } catch(e) { /* quota exceeded or other — ignore */ }
+    },
+
+    async clearTF(tf) {
+        try {
+            const db = await this.open();
+            if (!db) return;
+            const tx = db.transaction(this.STORE, 'readwrite');
+            const store = tx.objectStore(this.STORE);
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) return;
+                if (cursor.key.endsWith(`:${tf}`)) cursor.delete();
+                cursor.continue();
+            };
+        } catch(e) { /* ignore */ }
+    }
+};
+// Pre-open IndexedDB
+IDB.open();
 const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
 const mc = {
     sortBy: 'change',
@@ -10,7 +79,8 @@ const mc = {
     loaded: false,
     allPairs: [],        // all fetched pairs (unfiltered)
     filteredPairs: [],   // after filters applied
-    charts: {},          // { sym: { chart, series, lines[] } } — only visible ones
+    charts: {},          // { sym: { chart, series, lines[] } } — only visible chart instances
+    dataCache: {},       // { sym: { candles, volume, tf } } — persists across scroll (never deleted until TF change)
     loadedData: {},      // { sym: true } — tracks which symbols have been loaded
     observer: null,      // IntersectionObserver
     loadQueue: [],       // queue for staggered loading
@@ -194,6 +264,7 @@ async function initMiniCharts() {
                     rebuildAllCharts()
                 } else if (key === 'defaultTF') {
                     mc.globalTF = val
+                    mc.dataCache = {} // TF changed, clear cache
                     // Update active TF button
                     const tfGroup = el('mcGlobalTF')
                     if (tfGroup) {
@@ -291,6 +362,8 @@ async function initMiniCharts() {
                 tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 mc.globalTF = btn.dataset.tf;
+                // Clear data cache — TF changed, all cached candles are stale
+                mc.dataCache = {};
                 // Reload all currently visible charts with new TF
                 mc.loadedData = {};
                 Object.keys(mc.charts).forEach(sym => {
@@ -434,17 +507,32 @@ async function initMiniCharts() {
                         added++;
                     }
                 } else {
-                    // Card scrolled out — destroy chart & unsubscribe WS
+                    // Card scrolled out — destroy chart instance but KEEP cached data
                     if (mc.charts[sym]) {
+                        // Save candle data to cache before destroying chart
+                        if (mc.charts[sym].candleData && mc.charts[sym].candleData.length > 0) {
+                            mc.dataCache[sym] = {
+                                candles: mc.charts[sym].candleData,
+                                volume: extractVolume(mc.charts[sym].candleData),
+                                tf: mc.globalTF
+                            };
+                        }
                         mc.charts[sym].chart.remove();
                         delete mc.charts[sym];
                         delete mc.loadedData[sym];
-                        // Unsub this symbol's stream
+                        // Unsub this symbol's stream (debounced)
                         const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
-                        if (mc.wsStreams.has(stream) && mc.ws && mc.ws.readyState === WebSocket.OPEN) {
-                            mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [stream], id: Date.now() }));
-                        }
                         mc.wsStreams.delete(stream);
+                        _wsPendingSub.delete(stream); // cancel pending sub if any
+                        if (!mc._wsUnsubPending) mc._wsUnsubPending = new Set();
+                        mc._wsUnsubPending.add(stream);
+                        clearTimeout(mc._wsUnsubTimer);
+                        mc._wsUnsubTimer = setTimeout(() => {
+                            if (mc._wsUnsubPending.size > 0 && mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+                                mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc._wsUnsubPending], id: Date.now() }));
+                            }
+                            mc._wsUnsubPending.clear();
+                        }, 200);
                     }
                 }
             });
@@ -857,65 +945,209 @@ function createChartInstance(sym) {
     setupDrawingHandlers(chartEl);
 }
 
-// Batch load queue — fetches multiple symbols at once via server batch endpoint
+// Render chart from cached data (instant, no network)
+function renderFromCache(sym) {
+    const cache = mc.dataCache[sym];
+    if (!cache || !mc.charts[sym]) return false;
+    if (cache.tf !== mc.globalTF) return false; // TF changed, cache stale
+
+    const c = mc.charts[sym];
+    c.candleData = cache.candles;
+    c.series.setData(cache.candles);
+    c.volSeries?.setData(cache.volume);
+    const visibleCount = Math.min(100, cache.candles.length);
+    c.chart.timeScale().setVisibleLogicalRange({
+        from: cache.candles.length - visibleCount,
+        to: cache.candles.length - 1 + 10
+    });
+    mc.loadedData[sym] = true;
+    applyDrawingsToMiniChart(sym);
+    wsSubscribe(sym);
+    return true;
+}
+
+// Infinite scroll: load more history when user scrolls to left edge
+// Works for both mini-charts and modal. Uses official TradingView pattern.
+const HISTORY_TARGET = 20000;
+const HISTORY_BARS_THRESHOLD = 10; // load when fewer than N bars remain on left
+
+function setupInfiniteScroll(chartObj, seriesObj, volSeriesObj, sym, tf, getCandleData, setCandleData) {
+    let loading = false;
+
+    const unsub = chartObj.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
+        if (!logicalRange || loading) return;
+        if (logicalRange.from >= HISTORY_BARS_THRESHOLD) return;
+
+        const candleData = getCandleData();
+        if (!candleData || candleData.length === 0 || candleData.length >= HISTORY_TARGET) return;
+
+        // Guard: don't trigger if user hasn't zoomed in (fitContent shows all data)
+        const visibleBars = logicalRange.to - logicalRange.from;
+        if (visibleBars >= candleData.length) return;
+
+        loading = true;
+        const oldestTime = candleData[0].time * 1000;
+
+        fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldestTime - 1}`)
+            .then(r => r.json())
+            .then(json => {
+                if (!Array.isArray(json) || json.length === 0) return;
+                const olderData = parseKlines(json);
+                const freshData = getCandleData() || candleData;
+                const oldestExisting = freshData[0]?.time || 0;
+                const filtered = olderData.filter(c => c.time < oldestExisting);
+                if (filtered.length === 0) return;
+                const newData = [...filtered, ...freshData];
+                setCandleData(newData);
+                seriesObj.setData(newData);
+                if (volSeriesObj) volSeriesObj.setData(extractVolume(newData));
+                console.log(`[InfiniteScroll] ${sym} ${tf}: +${filtered.length} → ${newData.length}`);
+            })
+            .catch(() => {})
+            .finally(() => { loading = false; });
+    });
+
+    return unsub;
+}
+
+// Apply parsed candles to a chart (shared logic)
+function applyDataToChart(sym, parsed, tf) {
+    if (!mc.charts[sym] || parsed.length === 0) return false;
+    mc.charts[sym].candleData = parsed;
+    mc.charts[sym].series.setData(parsed);
+    mc.charts[sym].volSeries?.setData(extractVolume(parsed));
+    const visibleCount = Math.min(100, parsed.length);
+    mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
+        from: parsed.length - visibleCount,
+        to: parsed.length - 1 + 10
+    });
+    mc.loadedData[sym] = true;
+    mc.dataCache[sym] = { candles: parsed, volume: extractVolume(parsed), tf };
+    const realNatr = calcNATR(parsed);
+    if (realNatr > 0) updateCardNATR(sym, realNatr);
+    applyDrawingsToMiniChart(sym);
+    wsSubscribe(sym);
+    // Save to IndexedDB in background (fire-and-forget)
+    IDB.put(sym, tf, parsed);
+    return true;
+}
+
+// Batch load queue — 3-tier cache: memory → IndexedDB → server (SQLite → Binance)
 async function processLoadQueue() {
     if (mc.loadingActive) return;
     mc.loadingActive = true;
 
     while (mc.loadQueue.length > 0) {
-        // Grab up to 20 symbols from queue (all visible cards at once)
         const batch = [];
         while (mc.loadQueue.length > 0 && batch.length < 20) {
             const sym = mc.loadQueue.shift();
-            if (!mc.charts[sym]) continue; // already scrolled away
-            if (mc.loadedData[sym]) continue; // already loaded
+            if (!mc.charts[sym]) continue;
+            if (mc.loadedData[sym]) continue;
             batch.push(sym);
         }
         if (batch.length === 0) continue;
 
-        try {
-            const res = await fetch('/api/klines-batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: batch, interval: mc.globalTF, limit: 500 })
-            });
-            const allData = await res.json();
-
-            // Apply data to all charts simultaneously (no awaits — pure DOM ops)
-            const loadedSyms = [];
-            for (const sym of batch) {
-                if (!mc.charts[sym]) continue;
-                if (allData[sym] && Array.isArray(allData[sym])) {
-                    const parsed = parseKlines(allData[sym]);
-                    if (parsed.length > 0) {
-                        mc.charts[sym].candleData = parsed;
-                        mc.charts[sym].series.setData(parsed);
-                        mc.charts[sym].volSeries?.setData(extractVolume(parsed));
-                        const visibleCount = Math.min(100, parsed.length);
-                        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
-                            from: parsed.length - visibleCount,
-                            to: parsed.length - 1 + 10
-                        });
-                        mc.loadedData[sym] = true;
-                        const realNatr = calcNATR(parsed);
-                        if (realNatr > 0) updateCardNATR(sym, realNatr);
-                        applyDrawingsToMiniChart(sym);
-                        wsSubscribe(sym);
-                        loadedSyms.push(sym);
-                    }
+        // Tier 1: Memory cache (instant, ~0ms)
+        const tier1Done = [];
+        const tier2Check = [];
+        for (const sym of batch) {
+            if (mc.dataCache[sym] && mc.dataCache[sym].tf === mc.globalTF) {
+                if (renderFromCache(sym)) {
+                    tier1Done.push(sym);
+                    continue;
                 }
             }
-            // Batch density load for all loaded symbols (one request instead of N)
-            if (loadedSyms.length > 0) {
-                applyDensityToBatch(loadedSyms);
-                applyOIToBatch(loadedSyms);
-            }
-        } catch(e) {
-            // Fallback: load individually
-            for (const sym of batch) {
-                if (!mc.charts[sym] || mc.loadedData[sym]) continue;
-                await loadChartData(sym, mc.globalTF);
-                await new Promise(r => setTimeout(r, 80));
+            tier2Check.push(sym);
+        }
+
+        // Tier 2: IndexedDB (fast, ~5-20ms, persists across page refresh)
+        const tier2Done = [];
+        const needFetch = [];
+        const needDelta = []; // symbols loaded from IDB that need fresh candles
+        for (const sym of tier2Check) {
+            if (!mc.charts[sym]) continue;
+            try {
+                const idbData = await IDB.get(sym, mc.globalTF);
+                if (idbData && idbData.candles && idbData.candles.length >= 100) {
+                    // Check staleness: if last candle > 5min old, show cached but queue delta
+                    const lastTime = idbData.candles[idbData.candles.length - 1].time;
+                    const age = Date.now() / 1000 - lastTime;
+                    applyDataToChart(sym, idbData.candles, mc.globalTF);
+                    tier2Done.push(sym);
+                    if (age > 300) needDelta.push({ sym, lastTime }); // > 5min stale
+                    continue;
+                }
+            } catch(e) { /* IDB failed, fetch from server */ }
+            needFetch.push(sym);
+        }
+
+        // Delta fetch for stale IndexedDB data (fill gap between cache and now)
+        if (needDelta.length > 0) {
+            setTimeout(async () => {
+                for (const { sym, lastTime } of needDelta) {
+                    if (!mc.charts[sym]) continue;
+                    try {
+                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${mc.globalTF}&limit=500&startTime=${lastTime * 1000}`);
+                        const json = await res.json();
+                        // Handle delta response (may be {cached, data} or raw array)
+                        const raw = json.data || json;
+                        if (!Array.isArray(raw) || raw.length === 0) continue;
+                        const delta = json.data ? raw : parseKlines(raw);
+                        if (!mc.charts[sym] || !mc.charts[sym].candleData) continue;
+                        // Merge delta into existing data
+                        const existing = mc.charts[sym].candleData;
+                        const lastExisting = existing[existing.length - 1].time;
+                        const newCandles = delta.filter(c => c.time > lastExisting);
+                        if (newCandles.length > 0) {
+                            const merged = [...existing, ...newCandles];
+                            mc.charts[sym].candleData = merged;
+                            mc.charts[sym].series.setData(merged);
+                            mc.charts[sym].volSeries?.setData(extractVolume(merged));
+                            mc.dataCache[sym] = { candles: merged, volume: extractVolume(merged), tf: mc.globalTF };
+                            IDB.put(sym, mc.globalTF, merged);
+                        }
+                    } catch(e) { /* delta failed, WS will catch up */ }
+                }
+            }, 100);
+        }
+
+        // Apply densities for all cached charts
+        const allCached = [...tier1Done, ...tier2Done];
+        if (allCached.length > 0) {
+            applyDensityToBatch(allCached);
+            applyOIToBatch(allCached);
+        }
+
+        // Tier 3: Server (SQLite cache → Binance fallback)
+        if (needFetch.length > 0) {
+            try {
+                const res = await fetch('/api/klines-batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: needFetch, interval: mc.globalTF, limit: 500 })
+                });
+                const allData = await res.json();
+
+                const loadedSyms = [];
+                for (const sym of needFetch) {
+                    if (!mc.charts[sym]) continue;
+                    if (allData[sym] && Array.isArray(allData[sym])) {
+                        const parsed = parseKlines(allData[sym]);
+                        if (applyDataToChart(sym, parsed, mc.globalTF)) {
+                            loadedSyms.push(sym);
+                        }
+                    }
+                }
+                if (loadedSyms.length > 0) {
+                    applyDensityToBatch(loadedSyms);
+                    applyOIToBatch(loadedSyms);
+                }
+            } catch(e) {
+                for (const sym of needFetch) {
+                    if (!mc.charts[sym] || mc.loadedData[sym]) continue;
+                    await loadChartData(sym, mc.globalTF);
+                    await new Promise(r => setTimeout(r, 80));
+                }
             }
         }
     }
@@ -1088,58 +1320,40 @@ function updateCardNATR(sym, natr) {
 
 async function loadChartData(sym, tf) {
     if (!mc.charts[sym]) return;
+
+    // Try cache first
+    if (renderFromCache(sym)) {
+        applyDensityToMiniChart(sym);
+        return;
+    }
+
     try {
-        // Phase 1: fast load — last 100 candles for instant render
-        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=100`);
+        // Load 1500 candles (max Binance allows per request)
+        const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`);
         const json1 = await res1.json();
         if (!Array.isArray(json1) || !mc.charts[sym]) return;
 
         const data1 = parseKlines(json1);
+        mc.charts[sym].candleData = data1;
         mc.charts[sym].series.setData(data1);
         mc.charts[sym].volSeries.setData(extractVolume(data1));
         mc.loadedData[sym] = true;
 
-        // Show all 100 candles
-        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({ from: 0, to: data1.length - 1 });
+        const visibleCount = Math.min(100, data1.length);
+        mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
+            from: data1.length - visibleCount,
+            to: data1.length - 1 + 10
+        });
 
-        // Calculate real NATR from candle data
+        // Save to cache
+        mc.dataCache[sym] = { candles: data1, volume: extractVolume(data1), tf };
+
         const realNatr = calcNATR(data1);
         if (realNatr > 0) updateCardNATR(sym, realNatr);
 
-        // Apply saved drawings to mini-chart
         applyDrawingsToMiniChart(sym);
-
-        // Apply density walls to mini-chart
         applyDensityToMiniChart(sym);
-
-        // Subscribe to live WS updates immediately
         wsSubscribe(sym);
-
-        // Phase 2: background load — 500 candles
-        setTimeout(async () => {
-            if (!mc.charts[sym]) return;
-            try {
-                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
-                const json2 = await res2.json();
-                if (!Array.isArray(json2) || !mc.charts[sym]) return;
-
-                const data2 = parseKlines(json2);
-                const visRange = mc.charts[sym].chart.timeScale().getVisibleLogicalRange();
-                mc.charts[sym].series.setData(data2);
-                mc.charts[sym].volSeries.setData(extractVolume(data2));
-
-                const added = data2.length - data1.length;
-                if (visRange) {
-                    mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
-                        from: visRange.from + added,
-                        to: visRange.to + added
-                    });
-                }
-
-                // Re-apply drawings after full data load
-                applyDrawingsToMiniChart(sym);
-            } catch (e) { /* background load failed */ }
-        }, 300);
 
         // Auto-levels disabled for now
         // if (mc.charts[sym].lines.length > 0) {
@@ -1216,21 +1430,52 @@ function drawAutoLevels(sym, data, series) {
 // ==========================================
 const BINANCE_WS = 'wss://fstream.binance.com/stream';
 
+function updateWsIndicator(state, extra) {
+    let el = document.getElementById('wsStatusBadge');
+    if (!el) {
+        el = document.createElement('span');
+        el.id = 'wsStatusBadge';
+        el.style.cssText = 'font-size:10px;margin-left:6px;padding:1px 5px;border-radius:3px;vertical-align:middle;color:#fff;font-family:monospace;';
+        const status = document.getElementById('mcStatus');
+        if (status) status.parentElement.appendChild(el);
+    }
+    const colors = { open: '#22c55e', connecting: '#eab308', closed: '#ef4444', error: '#ef4444' };
+    el.style.background = colors[state] || '#666';
+    el.textContent = extra || state;
+}
+
 function wsConnect() {
     if (mc.ws && mc.ws.readyState <= 1) return; // CONNECTING or OPEN
 
+    updateWsIndicator('connecting');
     mc.ws = new WebSocket(BINANCE_WS);
     mc.ws.onopen = () => {
-        console.log('[MC-WS] Connected');
+        console.log('[MC-WS] Connected, subscribing', mc.wsStreams.size, 'streams');
+        updateWsIndicator('open', 'WS:0');
         // Subscribe any pending streams
         if (mc.wsStreams.size > 0) {
             const params = [...mc.wsStreams];
             mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id: 1 }));
+            console.log('[MC-WS] SUBSCRIBE sent:', params.length, 'streams:', params.slice(0, 3).join(', '), '...');
         }
+        // Auto-resubscribe safety net: if no ticks after 5s, re-send SUBSCRIBE
+        setTimeout(() => {
+            if (mc._wsMsgCount === 0 && mc.ws && mc.ws.readyState === WebSocket.OPEN && mc.wsStreams.size > 0) {
+                console.warn('[MC-WS] No ticks after 5s! Re-subscribing', mc.wsStreams.size, 'streams...');
+                updateWsIndicator('open', 'RE-SUB');
+                mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [...mc.wsStreams], id: Date.now() }));
+            }
+        }, 5000);
     };
+    mc._wsMsgCount = 0;
+    mc._wsLastTick = 0;
     mc.ws.onmessage = (evt) => {
         try {
             const msg = JSON.parse(evt.data);
+            // Log ALL raw messages for first 5 to debug format
+            if (mc._wsMsgCount < 3) {
+                console.log('[MC-WS] raw msg:', JSON.stringify(msg).substring(0, 200));
+            }
             if (!msg.data || msg.data.e !== 'kline') return;
             const k = msg.data.k;
             const sym = k.s;
@@ -1243,6 +1488,14 @@ function wsConnect() {
             };
 
             const vol = parseFloat(k.v);
+
+            // Count WS ticks and show on badge
+            mc._wsMsgCount++;
+            mc._wsLastTick = Date.now();
+            if (mc._wsMsgCount <= 5 || mc._wsMsgCount % 100 === 0) {
+                updateWsIndicator('open', `WS:${mc._wsMsgCount}`);
+                console.log(`[MC-WS] tick #${mc._wsMsgCount} sym=${sym} close=${candle.close} hasChart=${!!mc.charts[sym]} streams=${mc.wsStreams.size}`);
+            }
 
             // Check price alerts (custom drawings + library DM drawings)
             checkPriceAlerts(sym, candle.close);
@@ -1260,6 +1513,15 @@ function wsConnect() {
                         value: vol,
                         color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                     });
+                    // Keep dataCache in sync with live candles
+                    if (mc.charts[sym].candleData) {
+                        const cd = mc.charts[sym].candleData;
+                        if (cd.length > 0 && cd[cd.length - 1].time === candle.time) {
+                            cd[cd.length - 1] = { ...candle, volume: vol };
+                        } else if (cd.length === 0 || candle.time > cd[cd.length - 1].time) {
+                            cd.push({ ...candle, volume: vol });
+                        }
+                    }
                 }
             }
 
@@ -1308,6 +1570,15 @@ function wsConnect() {
                         value: vol,
                         color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                     });
+                    // Keep modal.candleData in sync with live candles
+                    if (modal.candleData) {
+                        const cd = modal.candleData;
+                        if (cd.length > 0 && cd[cd.length - 1].time === candle.time) {
+                            cd[cd.length - 1] = { ...candle, volume: vol };
+                        } else if (cd.length === 0 || candle.time > cd[cd.length - 1].time) {
+                            cd.push({ ...candle, volume: vol });
+                        }
+                    }
                     // If user was scrolled left (scrollPos < rightOffset threshold), restore position
                     if (rangeBefore && scrollPos < 5) {
                         ts.setVisibleLogicalRange(rangeBefore);
@@ -1316,12 +1587,16 @@ function wsConnect() {
             }
         } catch (e) { /* ignore parse errors */ }
     };
-    mc.ws.onclose = () => {
+    mc.ws.onclose = (evt) => {
+        updateWsIndicator('closed');
         if (mc._wsClosing) return; // Don't reconnect on intentional close
-        console.log('[MC-WS] Disconnected, reconnecting in 3s...');
+        console.warn('[MC-WS] Disconnected (code:', evt.code, 'reason:', evt.reason || 'none', '), reconnecting in 3s...');
         setTimeout(wsConnect, 3000);
     };
-    mc.ws.onerror = () => {}; // onclose will handle reconnect
+    mc.ws.onerror = (e) => {
+        updateWsIndicator('error');
+        console.error('[MC-WS] Error:', e.message || e.type || 'unknown');
+    };
 }
 
 // Clean up WebSocket on page unload to prevent dangling connections
@@ -1333,6 +1608,21 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
+// Debounced WS subscribe — Binance limits 10 msgs/sec per WS connection
+// Collect individual subscribes for 200ms, then send as one batch
+let _wsPendingSub = new Set();
+let _wsSubTimer = null;
+
+function _flushWsSubscribe() {
+    _wsSubTimer = null;
+    if (_wsPendingSub.size === 0) return;
+    if (!mc.ws || mc.ws.readyState !== WebSocket.OPEN) return;
+    const params = [..._wsPendingSub];
+    _wsPendingSub.clear();
+    mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id: Date.now() }));
+    console.log('[MC-WS] Batch subscribed', params.length, 'streams');
+}
+
 function wsSubscribe(sym) {
     const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
     if (mc.wsStreams.has(stream)) return;
@@ -1342,7 +1632,11 @@ function wsSubscribe(sym) {
         wsConnect();
         return; // onopen will subscribe all pending
     }
-    mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [stream], id: Date.now() }));
+    // Debounce: collect for 200ms, send as one batch
+    _wsPendingSub.add(stream);
+    if (!_wsSubTimer) {
+        _wsSubTimer = setTimeout(_flushWsSubscribe, 200);
+    }
 }
 
 function wsUnsubscribeAll() {
@@ -1350,6 +1644,8 @@ function wsUnsubscribeAll() {
         mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc.wsStreams], id: Date.now() }));
     }
     mc.wsStreams.clear();
+    _wsPendingSub.clear();
+    if (_wsSubTimer) { clearTimeout(_wsSubTimer); _wsSubTimer = null; }
 }
 
 // ==========================================
@@ -1532,6 +1828,7 @@ function openCoinModal(sym) {
     el('coinModal').classList.remove('hidden');
 
     // Create or recreate chart
+    if (modal._infiniteUnsub) { try { modal._infiniteUnsub(); } catch(e) {} modal._infiniteUnsub = null; }
     if (modal.chart) {
         modal.chart.remove();
         modal.chart = null;
@@ -1781,48 +2078,47 @@ async function loadModalChart(sym, tf) {
             wsConnect();
         }
 
-        // Phase 2: background — paginate up to 20,000 candles
+        // Phase 2: background prepend history in chunks (official TradingView pattern)
+        // Prepending via setData does NOT cause jumps (fixed in LWC PR #555)
+        if (modal._infiniteUnsub) { try { modal._infiniteUnsub(); } catch(e) {} }
+        modal._infiniteUnsub = setupInfiniteScroll(
+            modal.chart, modal.series, modal.volSeries, sym, tf,
+            () => modal.candleData,
+            (newData) => {
+                modal.candleData = newData;
+                if (drawCtx.source === 'modal') drawCtx.candleData = newData;
+            }
+        );
+        // Auto-load history in background (prepend chunks, no jumps)
         setTimeout(async () => {
             if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
-            try {
-                // First batch: 1500 most recent
-                const res2 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`, { signal });
-                const json2 = await res2.json();
-                if (signal.aborted || !Array.isArray(json2) || !modal.chart) return;
-
-                let fullData = parseKlines(json2);
-                // Save visible TIME range (not logical) — stable across setData
-                const visTimeRange = modal.chart.timeScale().getVisibleRange();
-                const TARGET = 20000;
-
-                // Paginate backwards until we hit target or run out of data
-                let oldestTime = json2.length > 0 ? json2[0][0] : null;
-                while (fullData.length < TARGET && oldestTime) {
-                    if (signal.aborted || !modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
-                    try {
-                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldestTime - 1}`, { signal });
-                        const json = await res.json();
-                        if (!Array.isArray(json) || json.length === 0) break;
-                        const olderData = parseKlines(json);
-                        fullData = [...olderData, ...fullData];
-                        oldestTime = json[0][0];
-                        // Minimal delay (server caches, no direct Binance rate limit issue)
-                        await new Promise(r => setTimeout(r, 20));
-                    } catch(e) { break; }
-                }
-
-                if (!modal.chart || modal.currentSym !== sym) return;
-                modal.candleData = fullData;
-                if (drawCtx.source === 'modal') drawCtx.candleData = fullData;
-                modal.series.setData(fullData);
-                if (modal.volSeries) modal.volSeries.setData(extractVolume(fullData));
-                // Restore by time range (absolute, no offset math needed)
-                if (visTimeRange) {
-                    modal.chart.timeScale().setVisibleRange(visTimeRange);
-                }
-                console.log(`[Modal] ${sym} loaded ${fullData.length} candles`);
-            } catch (e) { /* background load failed */ }
-        }, 400);
+            const TARGET = 20000;
+            let attempts = 0;
+            while (attempts < 14) {
+                if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
+                const cd = modal.candleData;
+                if (!cd || cd.length >= TARGET) break;
+                const oldest = cd[0].time * 1000;
+                try {
+                    const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldest - 1}`);
+                    const json = await res.json();
+                    if (!Array.isArray(json) || json.length === 0) break;
+                    const olderData = parseKlines(json);
+                    const fresh = modal.candleData || cd;
+                    const filtered = olderData.filter(c => c.time < fresh[0].time);
+                    if (filtered.length === 0) break;
+                    const newData = [...filtered, ...fresh];
+                    modal.candleData = newData;
+                    if (drawCtx.source === 'modal') drawCtx.candleData = newData;
+                    modal.series.setData(newData);
+                    if (modal.volSeries) modal.volSeries.setData(extractVolume(newData));
+                    console.log(`[Modal] ${sym} prepend +${filtered.length} → ${newData.length}`);
+                    attempts++;
+                    await new Promise(r => setTimeout(r, 100));
+                } catch(e) { break; }
+            }
+        }, 500);
+        console.log(`[Modal] ${sym} loaded ${data1.length} candles, background loading started`);
     } catch (e) {
         if (e.name === 'AbortError') return; // Cancelled by new TF click — expected
         console.error('Modal chart error:', e);
@@ -3689,6 +3985,7 @@ function closeCoinModal() {
         mc.wsStreams.delete(modal.wsStream);
         modal.wsStream = null;
     }
+    if (modal._infiniteUnsub) { try { modal._infiniteUnsub(); } catch(e) {} modal._infiniteUnsub = null; }
     if (modal.chart) {
         modal.chart.remove();
         modal.chart = null;

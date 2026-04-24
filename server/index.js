@@ -43,6 +43,7 @@ const densityV2 = require('./densityV2');
 const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
+const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
 
@@ -871,8 +872,7 @@ fastify.get('/densities/v2', async (req) => {
   try {
     ticker24h = await bgetWithRetry('/fapi/v1/ticker/24hr')
   } catch (err) {
-    reply.code(503)
-    return { count: 0, data: [], error: 'Failed to fetch ticker data' }
+    return { count: 0, data: [], error: 'Ticker data temporarily unavailable' }
   }
   const volumeMap = new Map(ticker24h.map(t => [t.symbol, Number(t.quoteVolume)]))
 
@@ -993,24 +993,66 @@ fastify.get('/api/ticker24hr', async () => {
   return data
 })
 
-// Klines — cached 10s for latest, 5min for historical (with endTime)
+// Klines — SQLite cache first, Binance fallback
 fastify.get('/api/klines', async (req) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const interval = String(req.query.interval || '15m')
   const limit = Math.min(Number(req.query.limit || 200), 1500)
   const endTime = req.query.endTime ? Number(req.query.endTime) : null
+  const startTime = req.query.startTime ? Number(req.query.startTime) : null
   if (!symbol) return { error: 'symbol required' }
 
-  const endSuffix = endTime ? `&endTime=${endTime}` : ''
-  const key = `klines:${symbol}:${interval}:${limit}${endSuffix}`
-  // Historical pages (with endTime) don't change — cache 5 min
-  // Latest candles — cache 10s for live updates
-  const ttl = endTime ? 300000 : 10000
-  const cached = getProxyCached(key, ttl)
-  if (cached) return cached
+  // Delta request: return only candles after startTime (for client cache sync)
+  if (startTime) {
+    const delta = klinesCache.getCandlesAfter(symbol, interval, Math.floor(startTime / 1000))
+    if (delta.length > 0) return { cached: true, data: delta }
+    // Fallback: fetch from Binance
+    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&startTime=${startTime}`)
+    if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data)
+    return data
+  }
 
-  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${endSuffix}`)
-  setProxyCached(key, data)
+  // Historical pagination (endTime) — check SQLite first
+  if (endTime) {
+    const beforeSec = Math.floor(endTime / 1000)
+    const cached = klinesCache.getCandlesBefore(symbol, interval, beforeSec, limit)
+    if (cached.length >= limit * 0.8) {
+      // Return in Binance-compatible format for client parseKlines()
+      return cached.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+    }
+    // Not enough in cache — fetch from Binance and cache
+    const key = `klines:${symbol}:${interval}:${limit}:end${endTime}`
+    const proxyCached = getProxyCached(key, 300000)
+    if (proxyCached) return proxyCached
+    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&endTime=${endTime}`)
+    if (Array.isArray(data)) {
+      setProxyCached(key, data)
+      klinesCache.storeCandles(symbol, interval, data)
+    }
+    return data
+  }
+
+  // Latest candles — try SQLite cache (only if fresh enough)
+  const cachedCount = klinesCache.getCount(symbol, interval)
+  if (cachedCount >= limit) {
+    const latestTime = klinesCache.getLatestTime(symbol, interval)
+    const age = Date.now() / 1000 - (latestTime || 0)
+    // Use cache only if last candle is less than 60s old (background updater keeps it fresh)
+    if (age < 60) {
+      const rows = klinesCache.getCandles(symbol, interval, limit)
+      return rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+    }
+  }
+
+  // Cache stale or miss — fetch from Binance, update SQLite
+  const key = `klines:${symbol}:${interval}:${limit}`
+  const proxyCached = getProxyCached(key, 10000)
+  if (proxyCached) return proxyCached
+  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+  if (Array.isArray(data)) {
+    setProxyCached(key, data)
+    klinesCache.storeCandles(symbol, interval, data)
+  }
   return data
 })
 
@@ -1097,30 +1139,47 @@ fastify.get('/api/oi-history', async (req) => {
   }
 })
 
-// Batch klines — fetch multiple symbols in one request (for mini-charts fast load)
+// Batch klines — SQLite cache first, Binance fallback
 fastify.post('/api/klines-batch', async (req) => {
   const symbols = req.body?.symbols
   const interval = String(req.body?.interval || '15m')
-  const limit = Math.min(Number(req.body?.limit || 200), 500)
+  const limit = Math.min(Number(req.body?.limit || 200), 1500)
   if (!Array.isArray(symbols) || symbols.length === 0) return { error: 'symbols[] required' }
 
-  // Cap at 30 symbols per batch
   const syms = symbols.slice(0, 30).map(s => String(s).toUpperCase())
   const result = {}
+  const needFetch = []
 
-  // Fetch all in parallel (server-side, no rate limit issues with Binance for reasonable batch)
-  const promises = syms.map(async (symbol) => {
-    try {
-      const key = `klines:${symbol}:${interval}:${limit}`
-      let data = getProxyCached(key, 10000)
-      if (!data) {
-        data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
-        if (data) setProxyCached(key, data)
-      }
-      if (Array.isArray(data)) result[symbol] = data
-    } catch(e) { /* skip */ }
-  })
-  await Promise.all(promises).catch(e => console.error('[klines-batch] Unexpected error:', e.message))
+  // Try SQLite cache first for each symbol
+  for (const symbol of syms) {
+    const cachedCount = klinesCache.getCount(symbol, interval)
+    if (cachedCount >= limit) {
+      const rows = klinesCache.getCandles(symbol, interval, limit)
+      result[symbol] = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+    } else {
+      needFetch.push(symbol)
+    }
+  }
+
+  // Fetch uncached from Binance in parallel
+  if (needFetch.length > 0) {
+    const promises = needFetch.map(async (symbol) => {
+      try {
+        const key = `klines:${symbol}:${interval}:${limit}`
+        let data = getProxyCached(key, 10000)
+        if (!data) {
+          data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+          if (data) {
+            setProxyCached(key, data)
+            klinesCache.storeCandles(symbol, interval, data)
+          }
+        }
+        if (Array.isArray(data)) result[symbol] = data
+      } catch(e) { /* skip */ }
+    })
+    await Promise.all(promises).catch(e => console.error('[klines-batch] Error:', e.message))
+  }
+
   return result
 })
 
@@ -1182,6 +1241,51 @@ fastify.get('/api/natr', async (req) => {
   return result
 })
 
+// Klines cache stats
+fastify.get('/api/klines-cache/stats', async () => {
+  try { return klinesCache.getStats() } catch(e) { return { error: e.message } }
+})
+
+// Background klines updater — refreshes cached symbols every 30s
+let _klinesUpdaterInterval = null
+function startKlinesUpdater() {
+  const UPDATE_INTERVAL = 30000 // 30s
+  const BATCH_SIZE = 10         // symbols per batch
+  const BATCH_DELAY = 2000      // 2s between batches (rate-limit safe)
+
+  _klinesUpdaterInterval = setInterval(async () => {
+    try {
+      // Get the current TF from most common cached interval
+      const intervals = ['1m', '5m', '15m', '1h', '4h'] // all used TFs
+      for (const interval of intervals) {
+        const symbols = klinesCache.getCachedSymbols(interval)
+        if (symbols.length === 0) continue
+
+        // Process in batches
+        for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+          const batch = symbols.slice(i, i + BATCH_SIZE)
+          const promises = batch.map(async (symbol) => {
+            try {
+              // Fetch only last 3 candles (latest + 2 for safety)
+              const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=3`)
+              if (Array.isArray(data) && data.length > 0) {
+                klinesCache.storeCandles(symbol, interval, data)
+              }
+            } catch(e) { /* skip individual failures */ }
+          })
+          await Promise.all(promises)
+          if (i + BATCH_SIZE < symbols.length) {
+            await new Promise(r => setTimeout(r, BATCH_DELAY))
+          }
+        }
+      }
+    } catch(e) {
+      console.error('[KlinesUpdater] Error:', e.message)
+    }
+  }, UPDATE_INTERVAL)
+  console.log('[KlinesUpdater] Started (30s interval)')
+}
+
 // ---- start ----
 const port = Number(process.env.PORT || 3200)
 
@@ -1192,6 +1296,10 @@ const start = async () => {
     // Init signals scanner (after server up so proxyCache is available)
     push.init({ stmts: auth.stmts })
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push })
+    // Init klines SQLite cache
+    klinesCache.initDB()
+    // Start background klines updater (every 30s, updates cached symbols)
+    startKlinesUpdater()
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {
