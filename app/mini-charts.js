@@ -90,7 +90,8 @@ const mc = {
     flags: {},           // { sym: '#color' } — color flags, persisted in localStorage
     ws: null,            // Binance kline WebSocket
     wsStreams: new Set(), // currently subscribed streams
-    wsPending: new Set() // streams waiting to subscribe
+    wsPending: new Set(), // streams waiting to subscribe
+    srData: {}           // { sym: { type, pct, price, touches } } — nearest S/R distance
 };
 
 // Load flags from localStorage
@@ -265,6 +266,7 @@ async function initMiniCharts() {
                 } else if (key === 'defaultTF') {
                     mc.globalTF = val
                     mc.dataCache = {} // TF changed, clear cache
+                    mc.srData = {}
                     // Update active TF button
                     const tfGroup = el('mcGlobalTF')
                     if (tfGroup) {
@@ -439,6 +441,52 @@ async function initMiniCharts() {
             });
         }
 
+        // Levels toggle checkbox
+        const levelsToggle = el('mcLevelsToggle');
+        if (levelsToggle) {
+            levelsToggle.checked = spGet('levelsEnabled', true);
+            levelsToggle.addEventListener('change', () => {
+                const enabled = levelsToggle.checked;
+                const sp = _sp();
+                if (sp) sp.set('levelsEnabled', enabled);
+                if (!enabled) {
+                    // Remove auto levels from all mini-charts
+                    Object.keys(mc.charts).forEach(sym => removeAutoLevels(sym));
+                    // Remove from modal
+                    removeModalAutoLevels();
+                } else {
+                    // Re-apply levels
+                    Object.keys(mc.charts).forEach(sym => applyAutoLevels(sym));
+                    if (modal.chart && modal.currentSym) applyModalAutoLevels();
+                }
+            });
+        }
+
+        // Sort S/R button
+        const sortSRBtn = el('mcSortSR');
+        if (sortSRBtn) {
+            sortSRBtn.addEventListener('click', () => {
+                if (mc.sortBy === 'sr') {
+                    // Toggle off — go back to change sort
+                    mc.sortBy = 'change';
+                    mc.sortDir = 'desc';
+                    sortSRBtn.classList.remove('active');
+                } else {
+                    mc.sortBy = 'sr';
+                    mc.sortDir = 'desc';
+                    sortSRBtn.classList.add('active');
+                }
+                // Clear col header highlights
+                const colHeaders = document.getElementById('mcColHeaders');
+                if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
+                if (mc.sortBy !== 'sr') {
+                    const chgHdr = colHeaders?.querySelector('[data-sort="change"]');
+                    if (chgHdr) chgHdr.classList.add('active', 'desc');
+                }
+                applyFiltersAndRebuild();
+            });
+        }
+
         // Mobile sidebar toggle (hamburger)
         const sidebarToggle = el('mcSidebarToggle');
         const sidebarOverlay = el('mcSidebarOverlay');
@@ -516,6 +564,9 @@ async function initMiniCharts() {
                                 volume: extractVolume(mc.charts[sym].candleData),
                                 tf: mc.globalTF
                             };
+                        }
+                        if (mc.charts[sym]._infiniteUnsub) {
+                            mc.charts[sym]._infiniteUnsub();
                         }
                         mc.charts[sym].chart.remove();
                         delete mc.charts[sym];
@@ -737,6 +788,11 @@ function sortPairs() {
         if (mc.sortBy === 'natr') return dir * (b.proxyNatr - a.proxyNatr);
         if (mc.sortBy === 'trades') return dir * (b.tradesCount - a.tradesCount);
         if (mc.sortBy === 'change') return dir * (b.priceChange - a.priceChange);
+        if (mc.sortBy === 'sr') {
+            const sa = mc.srData[a.symbol]?.pct ?? 999;
+            const sb = mc.srData[b.symbol]?.pct ?? 999;
+            return dir * (sa - sb); // closest to S/R first when desc
+        }
         return dir * (b.quoteVol - a.quoteVol); // volume default
     };
     mc.allPairs.sort(sorter);
@@ -773,6 +829,11 @@ function renderSidebar() {
         if (mc.sortBy === 'symbol') return dir * a.symbol.localeCompare(b.symbol);
         if (mc.sortBy === 'natr') return dir * ((b.proxyNatr || 0) - (a.proxyNatr || 0));
         if (mc.sortBy === 'change') return dir * (b.priceChange - a.priceChange);
+        if (mc.sortBy === 'sr') {
+            const sa = mc.srData[a.symbol]?.pct ?? 999;
+            const sb = mc.srData[b.symbol]?.pct ?? 999;
+            return dir * (sa - sb);
+        }
         return dir * (b.quoteVol - a.quoteVol);
     });
 
@@ -1016,7 +1077,7 @@ function applyDataToChart(sym, parsed, tf) {
     mc.charts[sym].candleData = parsed;
     mc.charts[sym].series.setData(parsed);
     mc.charts[sym].volSeries?.setData(extractVolume(parsed));
-    const visibleCount = Math.min(100, parsed.length);
+    const visibleCount = Math.min(200, parsed.length);
     mc.charts[sym].chart.timeScale().setVisibleLogicalRange({
         from: parsed.length - visibleCount,
         to: parsed.length - 1 + 10
@@ -1029,6 +1090,23 @@ function applyDataToChart(sym, parsed, tf) {
     wsSubscribe(sym);
     // Save to IndexedDB in background (fire-and-forget)
     IDB.put(sym, tf, parsed);
+    // Auto S/R levels
+    applyAutoLevels(sym);
+    // Infinite scroll on mini-charts — load history when user scrolls left
+    if (mc.charts[sym] && !mc.charts[sym]._infiniteUnsub) {
+        const c = mc.charts[sym];
+        mc.charts[sym]._infiniteUnsub = setupInfiniteScroll(
+            c.chart, c.series, c.volSeries, sym, tf,
+            () => mc.charts[sym]?.candleData,
+            (newData) => {
+                if (mc.charts[sym]) {
+                    mc.charts[sym].candleData = newData;
+                    mc.dataCache[sym] = { candles: newData, volume: extractVolume(newData), tf: mc.globalTF };
+                    IDB.put(sym, mc.globalTF, newData);
+                }
+            }
+        );
+    }
     return true;
 }
 
@@ -1060,59 +1138,11 @@ async function processLoadQueue() {
             tier2Check.push(sym);
         }
 
-        // Tier 2: IndexedDB (fast, ~5-20ms, persists across page refresh)
-        const tier2Done = [];
-        const needFetch = [];
-        const needDelta = []; // symbols loaded from IDB that need fresh candles
-        for (const sym of tier2Check) {
-            if (!mc.charts[sym]) continue;
-            try {
-                const idbData = await IDB.get(sym, mc.globalTF);
-                if (idbData && idbData.candles && idbData.candles.length >= 100) {
-                    // Check staleness: if last candle > 5min old, show cached but queue delta
-                    const lastTime = idbData.candles[idbData.candles.length - 1].time;
-                    const age = Date.now() / 1000 - lastTime;
-                    applyDataToChart(sym, idbData.candles, mc.globalTF);
-                    tier2Done.push(sym);
-                    if (age > 300) needDelta.push({ sym, lastTime }); // > 5min stale
-                    continue;
-                }
-            } catch(e) { /* IDB failed, fetch from server */ }
-            needFetch.push(sym);
-        }
-
-        // Delta fetch for stale IndexedDB data (fill gap between cache and now)
-        if (needDelta.length > 0) {
-            setTimeout(async () => {
-                for (const { sym, lastTime } of needDelta) {
-                    if (!mc.charts[sym]) continue;
-                    try {
-                        const res = await fetch(`/api/klines?symbol=${sym}&interval=${mc.globalTF}&limit=500&startTime=${lastTime * 1000}`);
-                        const json = await res.json();
-                        // Handle delta response (may be {cached, data} or raw array)
-                        const raw = json.data || json;
-                        if (!Array.isArray(raw) || raw.length === 0) continue;
-                        const delta = json.data ? raw : parseKlines(raw);
-                        if (!mc.charts[sym] || !mc.charts[sym].candleData) continue;
-                        // Merge delta into existing data
-                        const existing = mc.charts[sym].candleData;
-                        const lastExisting = existing[existing.length - 1].time;
-                        const newCandles = delta.filter(c => c.time > lastExisting);
-                        if (newCandles.length > 0) {
-                            const merged = [...existing, ...newCandles];
-                            mc.charts[sym].candleData = merged;
-                            mc.charts[sym].series.setData(merged);
-                            mc.charts[sym].volSeries?.setData(extractVolume(merged));
-                            mc.dataCache[sym] = { candles: merged, volume: extractVolume(merged), tf: mc.globalTF };
-                            IDB.put(sym, mc.globalTF, merged);
-                        }
-                    } catch(e) { /* delta failed, WS will catch up */ }
-                }
-            }, 100);
-        }
+        // Tier 2: Skip IDB — server SQLite cache is fast enough, IDB delta merge caused gaps
+        const needFetch = [...tier2Check];
 
         // Apply densities for all cached charts
-        const allCached = [...tier1Done, ...tier2Done];
+        const allCached = [...tier1Done];
         if (allCached.length > 0) {
             applyDensityToBatch(allCached);
             applyOIToBatch(allCached);
@@ -1124,7 +1154,7 @@ async function processLoadQueue() {
                 const res = await fetch('/api/klines-batch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbols: needFetch, interval: mc.globalTF, limit: 500 })
+                    body: JSON.stringify({ symbols: needFetch, interval: mc.globalTF, limit: 1500 })
                 });
                 const allData = await res.json();
 
@@ -1355,74 +1385,216 @@ async function loadChartData(sym, tf) {
         applyDensityToMiniChart(sym);
         wsSubscribe(sym);
 
-        // Auto-levels disabled for now
-        // if (mc.charts[sym].lines.length > 0) {
-        //     mc.charts[sym].lines.forEach(l => series.removePriceLine(l));
-        // }
-        // mc.charts[sym].lines = [];
-        // drawAutoLevels(sym, data, series);
+        // Auto S/R levels applied via applyDataToChart → applyAutoLevels
 
     } catch (e) {
         console.error(`Chart load error ${sym}:`, e);
     }
 }
 
-function drawAutoLevels(sym, data, series) {
-    const WINDOW = 5;
-    const highs = [];
-    const lows = [];
+// ==========================================
+// Auto S/R Levels — Fractal Pivots + ATR Clustering
+// ==========================================
 
-    for (let i = WINDOW; i < data.length - WINDOW; i++) {
-        let isHigh = true;
-        let isLow = true;
+function computeAutoLevels(candles) {
+    if (!candles || candles.length < 30) return [];
+
+    // 1. Calculate ATR(14) for adaptive clustering
+    const trs = [];
+    for (let i = 1; i < candles.length; i++) {
+        const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    const atrSlice = trs.slice(-14);
+    const atr = atrSlice.reduce((s, v) => s + v, 0) / atrSlice.length;
+    const mergeDist = atr * 1.5; // ATR-based merge threshold (wider to merge nearby levels)
+    if (mergeDist <= 0) return [];
+
+    const currentPrice = candles[candles.length - 1].close;
+    const maxDist = atr * 40; // only levels within 40×ATR of current price
+
+    // 2. Detect fractal pivots (both swing highs and lows)
+    const WINDOW = Math.min(10, Math.max(3, Math.floor(candles.length / 30)));
+    const pivots = [];
+    const totalCandles = candles.length;
+
+    for (let i = WINDOW; i < totalCandles - WINDOW; i++) {
+        let isHigh = true, isLow = true;
         for (let j = i - WINDOW; j <= i + WINDOW; j++) {
             if (i === j) continue;
-            if (data[j].highRaw >= data[i].highRaw) isHigh = false;
-            if (data[j].lowRaw <= data[i].lowRaw) isLow = false;
+            if (candles[j].high >= candles[i].high) isHigh = false;
+            if (candles[j].low <= candles[i].low) isLow = false;
+            if (!isHigh && !isLow) break;
         }
-        if (isHigh) highs.push({ time: data[i].time, price: data[i].highRaw });
-        if (isLow) lows.push({ time: data[i].time, price: data[i].lowRaw });
+        if (isHigh) pivots.push({ price: candles[i].high, idx: i, vol: candles[i].volume || 0 });
+        if (isLow) pivots.push({ price: candles[i].low, idx: i, vol: candles[i].volume || 0 });
     }
 
-    const THRESHOLD_PCT = 0.003;
-    const levels = [];
+    if (pivots.length < 2) return [];
 
-    const findClusters = (pivots, type) => {
-        const used = new Set();
-        for (let i = 0; i < Math.min(pivots.length, 50); i++) {
-            if (used.has(i)) continue;
-            const cluster = [pivots[i]];
-            for (let j = i + 1; j < pivots.length; j++) {
-                if (used.has(j)) continue;
-                if (Math.abs(pivots[i].price - pivots[j].price) / pivots[i].price < THRESHOLD_PCT) {
-                    cluster.push(pivots[j]);
-                    used.add(j);
-                }
-            }
-            if (cluster.length >= 2) {
-                const avgPrice = cluster.reduce((sum, p) => sum + p.price, 0) / cluster.length;
-                levels.push({ price: avgPrice, type, weight: cluster.length });
-            }
+    // 3. Cluster pivots using ATR-based merge distance (sorted merge)
+    pivots.sort((a, b) => a.price - b.price);
+    const clusters = [];
+    let current = [pivots[0]];
+
+    for (let i = 1; i < pivots.length; i++) {
+        // Compare to cluster median, not just last element (prevents chain-merge)
+        const clusterMedian = current[Math.floor(current.length / 2)].price;
+        if (pivots[i].price - clusterMedian <= mergeDist) {
+            current.push(pivots[i]);
+        } else {
+            if (current.length >= 2) clusters.push(current);
+            current = [pivots[i]];
         }
-    };
+    }
+    if (current.length >= 2) clusters.push(current);
 
-    findClusters(highs, 'resistance');
-    findClusters(lows, 'support');
+    // 4. Score each cluster
+    const levels = [];
+    for (const cluster of clusters) {
+        // Use median price (more robust than average for skewed clusters)
+        const prices = cluster.map(p => p.price).sort((a, b) => a - b);
+        const medianPrice = prices[Math.floor(prices.length / 2)];
 
-    const supports = levels.filter(l => l.type === 'support').sort((a, b) => b.weight - a.weight).slice(0, 2);
-    const resists = levels.filter(l => l.type === 'resistance').sort((a, b) => b.weight - a.weight).slice(0, 2);
+        // Skip levels too far from current price
+        if (Math.abs(medianPrice - currentPrice) > maxDist) continue;
 
-    [...supports, ...resists].forEach(l => {
-        const line = series.createPriceLine({
+        const touches = cluster.length;
+
+        // Recency score: exponential decay, recent pivots matter more
+        const recencyScore = cluster.reduce((s, p) => {
+            const age = totalCandles - p.idx;
+            return s + Math.exp(-age / (totalCandles * 0.4));
+        }, 0) / touches;
+
+        // Volume score: log-scaled average volume at touch points
+        const avgVol = cluster.reduce((s, p) => s + p.vol, 0) / touches;
+        const volScore = avgVol > 0 ? Math.log10(avgVol + 1) : 0;
+
+        // Type based on position relative to current price (not pivot type)
+        const type = medianPrice < currentPrice ? 'support' : 'resistance';
+
+        // Composite score (0-100)
+        const score = Math.min(100, Math.round(
+            Math.min(touches, 8) * 10 + // touch count capped at 8 (2→20, 5→50, 8→80)
+            recencyScore * 15 +          // recency (0-15)
+            volScore * 2                 // volume bonus
+        ));
+
+        levels.push({ price: medianPrice, type, touches: Math.min(touches, 99), score });
+    }
+
+    // 5. Sort by proximity to current price, then score
+    const supports = levels.filter(l => l.type === 'support')
+        .sort((a, b) => b.price - a.price) // nearest support first
+        .slice(0, 3);
+    const resists = levels.filter(l => l.type === 'resistance')
+        .sort((a, b) => a.price - b.price) // nearest resistance first
+        .slice(0, 3);
+
+    return [...supports, ...resists];
+}
+
+// Compute nearest S/R distance % for a symbol (for sidebar sorting)
+// Stores result on mc.srData[sym] = { type: 'S'|'R', pct: 0.5, price: 74610 }
+function computeSRDistance(sym) {
+    const chartObj = mc.charts[sym];
+    const candles = chartObj?.candleData || mc.dataCache[sym]?.candles;
+    if (!candles || candles.length < 30) return;
+
+    const levels = computeAutoLevels(candles);
+    if (levels.length === 0) { mc.srData[sym] = null; return; }
+
+    const price = candles[candles.length - 1].close;
+    let nearest = null;
+    let minPct = Infinity;
+
+    for (const l of levels) {
+        const pct = Math.abs(l.price - price) / price * 100;
+        if (pct < minPct) {
+            minPct = pct;
+            nearest = { type: l.type === 'support' ? 'S' : 'R', pct, price: l.price, touches: l.touches };
+        }
+    }
+    mc.srData[sym] = nearest;
+}
+
+// Format S/R distance for sidebar display
+function formatSR(sym) {
+    const sr = mc.srData[sym];
+    if (!sr) return '<span style="color:#555">—</span>';
+    const color = sr.type === 'S' ? '#22c55e' : '#ef4444';
+    return `<span style="color:${color}">${sr.type}${sr.pct.toFixed(1)}%</span>`;
+}
+
+// Apply auto S/R levels to a mini-chart
+function applyAutoLevels(sym) {
+    // Always compute SR distance for sidebar (even if levels display is off)
+    computeSRDistance(sym);
+
+    if (!spGet('levelsEnabled', true)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+
+    removeAutoLevels(sym);
+
+    const levels = computeAutoLevels(chartObj.candleData);
+    chartObj.autoLevels = [];
+
+    levels.forEach(l => {
+        const opacity = Math.max(0.4, l.score / 100);
+        const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68]; // green / red
+        const color = `rgba(${baseColor.join(',')},${opacity})`;
+        const line = chartObj.series.createPriceLine({
             price: l.price,
-            color: l.type === 'support' ? '#22c55e' : '#ef4444',
+            color,
             lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: '',
+            lineStyle: 1, // dashed
+            axisLabelVisible: false,
+            title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
         });
-        mc.charts[sym].lines.push(line);
+        chartObj.autoLevels.push(line);
     });
+}
+
+// Remove auto S/R levels from a mini-chart
+function removeAutoLevels(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.autoLevels) return;
+    chartObj.autoLevels.forEach(pl => { try { chartObj.series.removePriceLine(pl); } catch(e) {} });
+    chartObj.autoLevels = [];
+}
+
+// Apply auto S/R levels to modal chart
+function applyModalAutoLevels() {
+    if (!spGet('levelsEnabled', true)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+
+    removeModalAutoLevels();
+
+    const levels = computeAutoLevels(modal.candleData);
+    modal.autoLevels = [];
+
+    levels.forEach(l => {
+        const opacity = Math.max(0.4, l.score / 100);
+        const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+        const color = `rgba(${baseColor.join(',')},${opacity})`;
+        const line = modal.series.createPriceLine({
+            price: l.price,
+            color,
+            lineWidth: 1,
+            lineStyle: 1,
+            axisLabelVisible: true,
+            title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
+        });
+        modal.autoLevels.push(line);
+    });
+}
+
+function removeModalAutoLevels() {
+    if (!modal.autoLevels) return;
+    modal.autoLevels.forEach(pl => { try { modal.series.removePriceLine(pl); } catch(e) {} });
+    modal.autoLevels = [];
 }
 
 // ==========================================
@@ -2065,6 +2237,9 @@ async function loadModalChart(sym, tf) {
         // Apply density walls to modal
         applyDensityToModal();
 
+        // Apply auto S/R levels to modal
+        applyModalAutoLevels();
+
         // Apply OI overlay if enabled
         applyOIOverlay(modal.chart, sym);
 
@@ -2225,57 +2400,7 @@ async function applyOIToBatch(symbols) {
     }
 }
 
-function drawModalLevels(data) {
-    const WINDOW = 5;
-    const highs = [], lows = [];
-    for (let i = WINDOW; i < data.length - WINDOW; i++) {
-        let isHigh = true, isLow = true;
-        for (let j = i - WINDOW; j <= i + WINDOW; j++) {
-            if (i === j) continue;
-            if (data[j].highRaw >= data[i].highRaw) isHigh = false;
-            if (data[j].lowRaw <= data[i].lowRaw) isLow = false;
-        }
-        if (isHigh) highs.push(data[i].highRaw);
-        if (isLow) lows.push(data[i].lowRaw);
-    }
-
-    const THRESHOLD = 0.003;
-    const findClusters = (pivots, type) => {
-        const used = new Set(), result = [];
-        for (let i = 0; i < Math.min(pivots.length, 60); i++) {
-            if (used.has(i)) continue;
-            const cluster = [pivots[i]];
-            for (let j = i + 1; j < pivots.length; j++) {
-                if (used.has(j)) continue;
-                if (Math.abs(pivots[i] - pivots[j]) / pivots[i] < THRESHOLD) {
-                    cluster.push(pivots[j]);
-                    used.add(j);
-                }
-            }
-            if (cluster.length >= 2) {
-                result.push({ price: cluster.reduce((s, p) => s + p, 0) / cluster.length, type, weight: cluster.length });
-            }
-        }
-        return result;
-    };
-
-    const levels = [
-        ...findClusters(highs, 'resistance').sort((a, b) => b.weight - a.weight).slice(0, 3),
-        ...findClusters(lows, 'support').sort((a, b) => b.weight - a.weight).slice(0, 3)
-    ];
-
-    levels.forEach(l => {
-        const line = modal.series.createPriceLine({
-            price: l.price,
-            color: l.type === 'support' ? '#22c55e' : '#ef4444',
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: l.type === 'support' ? `S×${l.weight}` : `R×${l.weight}`,
-        });
-        modal.lines.push(line);
-    });
-}
+// drawModalLevels replaced by applyModalAutoLevels() above
 
 
 // ==========================================
@@ -4429,6 +4554,24 @@ async function loadSlotChart(slotIndex) {
 
         // Fetch and render density walls
         applyDensityToSlot(slotIndex);
+
+        // Auto S/R levels on slot
+        if (spGet('levelsEnabled', true) && slot.candleData) {
+            if (slot.autoLevels) slot.autoLevels.forEach(pl => { try { slot.series.removePriceLine(pl); } catch(e){} });
+            slot.autoLevels = [];
+            const levels = computeAutoLevels(slot.candleData);
+            levels.forEach(l => {
+                const opacity = Math.max(0.4, l.score / 100);
+                const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+                const color = `rgba(${baseColor.join(',')},${opacity})`;
+                const line = slot.series.createPriceLine({
+                    price: l.price, color, lineWidth: 1, lineStyle: 1,
+                    axisLabelVisible: true,
+                    title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
+                });
+                slot.autoLevels.push(line);
+            });
+        }
 
         // OI indicator
         applyOI(slot, slot.sym, slot.tf);

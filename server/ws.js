@@ -2,31 +2,27 @@ const WebSocket = require('ws');
 
 const BINANCE_WS_URL = 'wss://fstream.binance.com/ws';
 const PING_INTERVAL = 3 * 60 * 1000; // 3 min (Binance closes idle after 5 min)
+const MAX_STREAMS_PER_CONN = 190; // Binance limit 200, leave margin
 
-class BinanceWS {
-  constructor() {
+class BinanceWSConnection {
+  constructor(id, onMessage) {
+    this.id = id;
     this.ws = null;
-    this.subscriptions = new Set();
-    this.callbacks = new Map(); // symbol -> callback(depthUpdate)
-    this.reconnectTimeout = 5000;
+    this.streams = new Set();
+    this.onMessage = onMessage;
     this._pingTimer = null;
     this._reconnectTimer = null;
   }
 
   connect() {
-    // Don't connect if nothing to subscribe to — Binance closes idle connections
-    if (this.subscriptions.size === 0) {
-      return;
-    }
-
-    // Clean up old WS instance to prevent listener leaks on reconnect
+    if (this.streams.size === 0) return;
     this._cleanup();
 
-    console.log(`[WS] Connecting to Binance Futures... (${this.subscriptions.size} streams)`);
+    console.log(`[WS-${this.id}] Connecting... (${this.streams.size} streams)`);
     this.ws = new WebSocket(BINANCE_WS_URL);
 
     this.ws.on('open', () => {
-      console.log('[WS] Connected.');
+      console.log(`[WS-${this.id}] Connected.`);
       this._resubscribe();
       this._startPing();
     });
@@ -35,85 +31,63 @@ class BinanceWS {
       try {
         const payload = JSON.parse(data);
         if (payload.e === 'depthUpdate') {
-          const symbol = payload.s;
-          if (this.callbacks.has(symbol)) {
-            this.callbacks.get(symbol)(payload);
-          }
+          this.onMessage(payload);
         }
       } catch (err) {
-        console.error('[WS] Parse error:', err);
+        console.error(`[WS-${this.id}] Parse error:`, err.message);
       }
     });
 
     this.ws.on('close', () => {
       this._stopPing();
-      // Only reconnect if we still have subscriptions
-      if (this.subscriptions.size > 0) {
-        console.log(`[WS] Disconnected. Reconnecting in ${this.reconnectTimeout}ms...`);
-        this._reconnectTimer = setTimeout(() => this.connect(), this.reconnectTimeout);
+      if (this.streams.size > 0) {
+        console.log(`[WS-${this.id}] Disconnected. Reconnecting in 5s...`);
+        this._reconnectTimer = setTimeout(() => this.connect(), 5000);
       } else {
-        console.log('[WS] Disconnected. No subscriptions, staying offline.');
+        console.log(`[WS-${this.id}] Disconnected. No streams, staying offline.`);
       }
     });
 
     this.ws.on('error', (err) => {
-      console.error('[WS] Error:', err.message);
+      console.error(`[WS-${this.id}] Error:`, err.message);
     });
 
-    this.ws.on('pong', () => {
-      // Binance responded to ping — connection alive
-    });
+    this.ws.on('pong', () => {});
   }
 
-  subscribe(symbol, callback) {
-    const streamName = `${symbol.toLowerCase()}@depth@100ms`;
-    this.subscriptions.add(streamName);
-    this.callbacks.set(symbol.toUpperCase(), callback);
-
+  addStream(streamName) {
+    this.streams.add(streamName);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this._sendSubscribe([streamName]);
+      this._send('SUBSCRIBE', [streamName]);
     } else if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
-      // No active connection — initiate one (will resubscribe all on open)
       this.connect();
     }
-    // If CONNECTING — do nothing, _resubscribe() on open will pick it up
   }
 
-  unsubscribe(symbol) {
-    const streamName = `${symbol.toLowerCase()}@depth@100ms`;
-    this.subscriptions.delete(streamName);
-    this.callbacks.delete(symbol.toUpperCase());
-
+  removeStream(streamName) {
+    this.streams.delete(streamName);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this._sendUnsubscribe([streamName]);
-      // Close if no more subscriptions
-      if (this.subscriptions.size === 0) {
-        console.log('[WS] No subscriptions left, closing connection.');
+      this._send('UNSUBSCRIBE', [streamName]);
+      if (this.streams.size === 0) {
         this.ws.close();
       }
     }
   }
 
   _resubscribe() {
-    if (this.subscriptions.size > 0) {
-      this._sendSubscribe(Array.from(this.subscriptions));
+    if (this.streams.size === 0) return;
+    // Binance: max 200 params per message, send in batches
+    const all = [...this.streams];
+    for (let i = 0; i < all.length; i += 200) {
+      const batch = all.slice(i, i + 200);
+      this._send('SUBSCRIBE', batch);
     }
   }
 
-  _sendSubscribe(streams) {
-    this.ws.send(JSON.stringify({
-      method: 'SUBSCRIBE',
-      params: streams,
-      id: Date.now()
-    }));
-  }
-
-  _sendUnsubscribe(streams) {
-    this.ws.send(JSON.stringify({
-      method: 'UNSUBSCRIBE',
-      params: streams,
-      id: Date.now()
-    }));
+  _send(method, params) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ method, params, id: Date.now() }));
+    }
   }
 
   _startPing() {
@@ -139,18 +113,72 @@ class BinanceWS {
       this._reconnectTimer = null;
     }
     if (this.ws) {
-      // Add no-op error handler BEFORE removing listeners to prevent unhandled errors
-      // from orphaned CONNECTING WebSockets
       const oldWs = this.ws;
       this.ws = null;
       oldWs.removeAllListeners();
-      oldWs.on('error', () => {}); // swallow any late errors
+      oldWs.on('error', () => {});
       try {
-        // Terminate in any state except CLOSED (including CONNECTING)
-        if (oldWs.readyState !== WebSocket.CLOSED) {
+        if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CLOSING) {
           oldWs.terminate();
+        } else if (oldWs.readyState === WebSocket.CONNECTING) {
+          oldWs.on('open', () => { try { oldWs.terminate(); } catch(_){} });
         }
       } catch (_) {}
+    }
+  }
+
+  destroy() {
+    this.streams.clear();
+    this._cleanup();
+  }
+}
+
+class BinanceWS {
+  constructor() {
+    this.connections = []; // BinanceWSConnection[]
+    this.callbacks = new Map(); // symbol -> callback
+    this.streamToConn = new Map(); // streamName -> connection
+  }
+
+  subscribe(symbol, callback) {
+    const streamName = `${symbol.toLowerCase()}@depth@100ms`;
+    this.callbacks.set(symbol.toUpperCase(), callback);
+
+    // Already subscribed?
+    if (this.streamToConn.has(streamName)) return;
+
+    // Find connection with capacity or create new one
+    let conn = this.connections.find(c => c.streams.size < MAX_STREAMS_PER_CONN);
+    if (!conn) {
+      const id = this.connections.length;
+      conn = new BinanceWSConnection(id, (payload) => {
+        const sym = payload.s;
+        if (this.callbacks.has(sym)) {
+          this.callbacks.get(sym)(payload);
+        }
+      });
+      this.connections.push(conn);
+      console.log(`[WS] Created connection #${id} (total: ${this.connections.length})`);
+    }
+
+    this.streamToConn.set(streamName, conn);
+    conn.addStream(streamName);
+  }
+
+  unsubscribe(symbol) {
+    const streamName = `${symbol.toLowerCase()}@depth@100ms`;
+    this.callbacks.delete(symbol.toUpperCase());
+
+    const conn = this.streamToConn.get(streamName);
+    if (conn) {
+      conn.removeStream(streamName);
+      this.streamToConn.delete(streamName);
+      // Clean up empty connections
+      if (conn.streams.size === 0) {
+        conn.destroy();
+        this.connections = this.connections.filter(c => c !== conn);
+        console.log(`[WS] Removed empty connection. Total: ${this.connections.length}`);
+      }
     }
   }
 }
