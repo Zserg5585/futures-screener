@@ -91,7 +91,8 @@ const mc = {
     ws: null,            // Binance kline WebSocket
     wsStreams: new Set(), // currently subscribed streams
     wsPending: new Set(), // streams waiting to subscribe
-    srData: {}           // { sym: { type, pct, price, touches } } — nearest S/R distance
+    srData: {},          // { sym: { type, pct, price, touches } } — nearest S/R distance
+    tlData: {},          // { sym: { type, pct, price, touches } } — nearest auto-trendline distance
 };
 
 // Load flags from localStorage
@@ -267,6 +268,7 @@ async function initMiniCharts() {
                     mc.globalTF = val
                     mc.dataCache = {} // TF changed, clear cache
                     mc.srData = {}
+                    mc.tlData = {}
                     // Update active TF button
                     const tfGroup = el('mcGlobalTF')
                     if (tfGroup) {
@@ -467,7 +469,6 @@ async function initMiniCharts() {
         if (sortSRBtn) {
             sortSRBtn.addEventListener('click', () => {
                 if (mc.sortBy === 'sr') {
-                    // Toggle off — go back to change sort
                     mc.sortBy = 'change';
                     mc.sortDir = 'desc';
                     sortSRBtn.classList.remove('active');
@@ -476,10 +477,56 @@ async function initMiniCharts() {
                     mc.sortDir = 'desc';
                     sortSRBtn.classList.add('active');
                 }
-                // Clear col header highlights
+                // Clear other sort buttons
+                const sortTL = el('mcSortTL');
+                if (sortTL) sortTL.classList.remove('active');
                 const colHeaders = document.getElementById('mcColHeaders');
                 if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
                 if (mc.sortBy !== 'sr') {
+                    const chgHdr = colHeaders?.querySelector('[data-sort="change"]');
+                    if (chgHdr) chgHdr.classList.add('active', 'desc');
+                }
+                applyFiltersAndRebuild();
+            });
+        }
+
+        // Trendlines toggle checkbox
+        const trendlinesToggle = el('mcTrendlinesToggle');
+        if (trendlinesToggle) {
+            trendlinesToggle.checked = spGet('trendlinesEnabled', false);
+            trendlinesToggle.addEventListener('change', () => {
+                const enabled = trendlinesToggle.checked;
+                const sp = _sp();
+                if (sp) sp.set('trendlinesEnabled', enabled);
+                if (!enabled) {
+                    Object.keys(mc.charts).forEach(sym => removeAutoTrendlines(sym));
+                    removeModalAutoTrendlines();
+                } else {
+                    Object.keys(mc.charts).forEach(sym => applyAutoTrendlines(sym));
+                    if (modal.chart && modal.currentSym) applyModalAutoTrendlines();
+                }
+            });
+        }
+
+        // Sort by trendline proximity button
+        const sortTLBtn = el('mcSortTL');
+        if (sortTLBtn) {
+            sortTLBtn.addEventListener('click', () => {
+                if (mc.sortBy === 'tl') {
+                    mc.sortBy = 'change';
+                    mc.sortDir = 'desc';
+                    sortTLBtn.classList.remove('active');
+                } else {
+                    mc.sortBy = 'tl';
+                    mc.sortDir = 'desc';
+                    sortTLBtn.classList.add('active');
+                }
+                // Clear col header highlights + other sort buttons
+                const colHeaders = document.getElementById('mcColHeaders');
+                if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
+                const sortSR = el('mcSortSR');
+                if (sortSR) sortSR.classList.remove('active');
+                if (mc.sortBy !== 'tl') {
                     const chgHdr = colHeaders?.querySelector('[data-sort="change"]');
                     if (chgHdr) chgHdr.classList.add('active', 'desc');
                 }
@@ -793,6 +840,11 @@ function sortPairs() {
             const sb = mc.srData[b.symbol]?.pct ?? 999;
             return dir * (sa - sb); // closest to S/R first when desc
         }
+        if (mc.sortBy === 'tl') {
+            const ta = mc.tlData[a.symbol]?.pct ?? 999;
+            const tb = mc.tlData[b.symbol]?.pct ?? 999;
+            return dir * (ta - tb); // closest to trendline first when desc
+        }
         return dir * (b.quoteVol - a.quoteVol); // volume default
     };
     mc.allPairs.sort(sorter);
@@ -1090,8 +1142,9 @@ function applyDataToChart(sym, parsed, tf) {
     wsSubscribe(sym);
     // Save to IndexedDB in background (fire-and-forget)
     IDB.put(sym, tf, parsed);
-    // Auto S/R levels
+    // Auto S/R levels + trendlines
     applyAutoLevels(sym);
+    applyAutoTrendlines(sym);
     // Infinite scroll on mini-charts — load history when user scrolls left
     if (mc.charts[sym] && !mc.charts[sym]._infiniteUnsub) {
         const c = mc.charts[sym];
@@ -1432,22 +1485,52 @@ function computeAutoLevels(candles) {
 
     if (pivots.length < 2) return [];
 
-    // 3. Cluster pivots using ATR-based merge distance (sorted merge)
-    pivots.sort((a, b) => a.price - b.price);
+    // 3. Cluster pivots using DBSCAN (density-based, no chain-merge problem)
+    //    epsilon = mergeDist (ATR×1.5), minPts = 2
+    const MIN_PTS = 2;
+    const visited = new Set();
+    const clustered = new Set();
     const clusters = [];
-    let current = [pivots[0]];
 
-    for (let i = 1; i < pivots.length; i++) {
-        // Compare to cluster median, not just last element (prevents chain-merge)
-        const clusterMedian = current[Math.floor(current.length / 2)].price;
-        if (pivots[i].price - clusterMedian <= mergeDist) {
-            current.push(pivots[i]);
-        } else {
-            if (current.length >= 2) clusters.push(current);
-            current = [pivots[i]];
+    for (let i = 0; i < pivots.length; i++) {
+        if (visited.has(i)) continue;
+        visited.add(i);
+
+        // Find all neighbors within epsilon (mergeDist)
+        const neighbors = [];
+        for (let j = 0; j < pivots.length; j++) {
+            if (Math.abs(pivots[i].price - pivots[j].price) <= mergeDist) {
+                neighbors.push(j);
+            }
         }
+
+        if (neighbors.length < MIN_PTS) continue; // noise point
+
+        // Expand cluster
+        const cluster = [];
+        const queue = [...neighbors];
+        for (const ni of queue) {
+            if (!clustered.has(ni)) {
+                clustered.add(ni);
+                cluster.push(pivots[ni]);
+            }
+            if (visited.has(ni)) continue;
+            visited.add(ni);
+            // Find neighbors of neighbor
+            const nn = [];
+            for (let j = 0; j < pivots.length; j++) {
+                if (Math.abs(pivots[ni].price - pivots[j].price) <= mergeDist) {
+                    nn.push(j);
+                }
+            }
+            if (nn.length >= MIN_PTS) {
+                for (const nj of nn) {
+                    if (!queue.includes(nj)) queue.push(nj);
+                }
+            }
+        }
+        if (cluster.length >= MIN_PTS) clusters.push(cluster);
     }
-    if (current.length >= 2) clusters.push(current);
 
     // 4. Score each cluster
     const levels = [];
@@ -1484,7 +1567,50 @@ function computeAutoLevels(candles) {
         levels.push({ price: medianPrice, type, touches: Math.min(touches, 99), score });
     }
 
-    // 5. Sort by proximity to current price, then score
+    // 5. Add Volume Profile levels (POC / VAH / VAL)
+    const vpLevels = computeVolumeProfile(candles, currentPrice);
+    for (const vp of vpLevels) {
+        // Avoid duplicates: skip VP level if too close to an existing fractal level
+        const tooClose = levels.some(l => Math.abs(l.price - vp.price) <= mergeDist);
+        if (!tooClose) levels.push(vp);
+    }
+
+    // 6. Break detection — penalize levels that price has recently broken through
+    //    Scan last 20% of candles for decisive closes past the level.
+    //    A "break" = close clearly past level (by 0.3×ATR). If price later returns, partial recovery.
+    const breakScanStart = Math.floor(totalCandles * 0.8);
+    const breakThresh = atr * 0.3; // close must be 0.3×ATR past level to count as break
+
+    for (const level of levels) {
+        if (level.vpType) continue; // don't penalize VP levels
+        let broken = false;
+        let returnedAfterBreak = false;
+
+        for (let i = breakScanStart; i < totalCandles; i++) {
+            const c = candles[i].close;
+            if (level.type === 'support') {
+                // Support broken = close below level
+                if (c < level.price - breakThresh) broken = true;
+                // Returned = close back above level after break
+                else if (broken && c > level.price + breakThresh) returnedAfterBreak = true;
+            } else {
+                // Resistance broken = close above level
+                if (c > level.price + breakThresh) broken = true;
+                else if (broken && c < level.price - breakThresh) returnedAfterBreak = true;
+            }
+        }
+
+        if (broken && !returnedAfterBreak) {
+            level.score = Math.max(10, Math.round(level.score * 0.5)); // halve score
+            level.broken = true;
+        } else if (broken && returnedAfterBreak) {
+            // Retested after break — slight penalty only (level proved it still matters)
+            level.score = Math.max(20, Math.round(level.score * 0.8));
+            level.retested = true;
+        }
+    }
+
+    // 7. Sort by proximity to current price, then score
     const supports = levels.filter(l => l.type === 'support')
         .sort((a, b) => b.price - a.price) // nearest support first
         .slice(0, 3);
@@ -1493,6 +1619,478 @@ function computeAutoLevels(candles) {
         .slice(0, 3);
 
     return [...supports, ...resists];
+}
+
+// ── Volume Profile (POC / VAH / VAL) ─────────────────────────────
+// Divides visible price range into bins, distributes volume,
+// returns POC (max volume), VAH/VAL (70% value area) as S/R levels.
+function computeVolumeProfile(candles, currentPrice) {
+    if (!candles || candles.length < 30) return [];
+
+    const NUM_BINS = 100;
+    const VALUE_AREA_PCT = 0.70;
+
+    // Price range
+    let minP = Infinity, maxP = -Infinity;
+    for (const c of candles) {
+        if (c.low < minP) minP = c.low;
+        if (c.high > maxP) maxP = c.high;
+    }
+    const range = maxP - minP;
+    if (range <= 0) return [];
+
+    const binSize = range / NUM_BINS;
+    const bins = new Float64Array(NUM_BINS); // volume per bin
+
+    // Distribute each candle's volume across bins it touches
+    for (const c of candles) {
+        const vol = c.volume || 0;
+        if (vol <= 0) continue;
+        const lo = Math.max(0, Math.floor((c.low - minP) / binSize));
+        const hi = Math.min(NUM_BINS - 1, Math.floor((c.high - minP) / binSize));
+        const span = hi - lo + 1;
+        const volPerBin = vol / span;
+        for (let b = lo; b <= hi; b++) bins[b] += volPerBin;
+    }
+
+    // POC = bin with max volume
+    let pocBin = 0, maxVol = 0;
+    for (let i = 0; i < NUM_BINS; i++) {
+        if (bins[i] > maxVol) { maxVol = bins[i]; pocBin = i; }
+    }
+
+    // Value Area: expand from POC until 70% of total volume captured
+    let totalVol = 0;
+    for (let i = 0; i < NUM_BINS; i++) totalVol += bins[i];
+    const targetVol = totalVol * VALUE_AREA_PCT;
+
+    let vaLow = pocBin, vaHigh = pocBin;
+    let areaVol = bins[pocBin];
+
+    while (areaVol < targetVol && (vaLow > 0 || vaHigh < NUM_BINS - 1)) {
+        const addLow = vaLow > 0 ? bins[vaLow - 1] : 0;
+        const addHigh = vaHigh < NUM_BINS - 1 ? bins[vaHigh + 1] : 0;
+        if (addLow >= addHigh && vaLow > 0) {
+            vaLow--;
+            areaVol += bins[vaLow];
+        } else if (vaHigh < NUM_BINS - 1) {
+            vaHigh++;
+            areaVol += bins[vaHigh];
+        } else {
+            vaLow--;
+            areaVol += bins[vaLow];
+        }
+    }
+
+    const pocPrice = minP + (pocBin + 0.5) * binSize;
+    const vahPrice = minP + (vaHigh + 1) * binSize;   // upper edge
+    const valPrice = minP + vaLow * binSize;            // lower edge
+
+    const results = [];
+
+    // POC — always significant (score 90, high visibility)
+    results.push({
+        price: pocPrice,
+        type: pocPrice < currentPrice ? 'support' : 'resistance',
+        touches: 0,   // VP levels don't have "touches"
+        score: 90,
+        vpType: 'POC'
+    });
+
+    // VAH — value area high (resistance zone edge)
+    if (Math.abs(vahPrice - pocPrice) > binSize * 2) {
+        results.push({
+            price: vahPrice,
+            type: vahPrice < currentPrice ? 'support' : 'resistance',
+            touches: 0,
+            score: 70,
+            vpType: 'VAH'
+        });
+    }
+
+    // VAL — value area low (support zone edge)
+    if (Math.abs(valPrice - pocPrice) > binSize * 2) {
+        results.push({
+            price: valPrice,
+            type: valPrice < currentPrice ? 'support' : 'resistance',
+            touches: 0,
+            score: 70,
+            vpType: 'VAL'
+        });
+    }
+
+    return results;
+}
+
+// ── Multi-TF Confluence ───────────────────────────────────────────
+// Fetches klines for additional timeframes, computes S/R on each,
+// then boosts levels that appear on multiple TFs.
+// Returns enriched levels with `confluence` count (1-3 TFs).
+const CONFLUENCE_TFS = {
+    '1m':  ['5m', '15m'],
+    '3m':  ['15m', '1h'],
+    '5m':  ['1h', '4h'],
+    '15m': ['1h', '4h'],
+    '30m': ['4h', '1d'],
+    '1h':  ['4h', '1d'],
+    '2h':  ['4h', '1d'],
+    '4h':  ['1d', '1w'],
+    '6h':  ['1d', '1w'],
+    '8h':  ['1d', '1w'],
+    '12h': ['1d', '1w'],
+    '1d':  ['1w', '1M'],
+    '1w':  ['1M'],
+};
+
+async function computeMultiTFLevels(sym, currentTF, currentCandles) {
+    // Start with levels from current TF
+    const baseLevels = computeAutoLevels(currentCandles);
+    if (baseLevels.length === 0) return baseLevels;
+
+    const extraTFs = CONFLUENCE_TFS[currentTF] || [];
+    if (extraTFs.length === 0) return baseLevels;
+
+    const currentPrice = currentCandles[currentCandles.length - 1].close;
+
+    // Fetch klines for additional TFs in parallel
+    const extraLevelSets = await Promise.all(extraTFs.map(async tf => {
+        try {
+            const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
+            if (!res.ok) return [];
+            const raw = await res.json();
+            if (!Array.isArray(raw) || raw.length < 30) return [];
+            const candles = parseKlines(raw);
+            return computeAutoLevels(candles);
+        } catch { return []; }
+    }));
+
+    // ATR from current candles for merge distance
+    const trs = [];
+    for (let i = 1; i < currentCandles.length; i++) {
+        const h = currentCandles[i].high, l = currentCandles[i].low, pc = currentCandles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    const atr = trs.slice(-14).reduce((s, v) => s + v, 0) / Math.min(14, trs.length);
+    const confluenceDist = atr * 2; // levels within 2×ATR are "same level"
+
+    // Enrich base levels with confluence count
+    for (const level of baseLevels) {
+        let conf = 1; // already on current TF
+        for (const extraLevels of extraLevelSets) {
+            const match = extraLevels.some(el => Math.abs(el.price - level.price) <= confluenceDist);
+            if (match) conf++;
+        }
+        level.confluence = conf;
+        // Boost score for multi-TF levels
+        if (conf >= 2) level.score = Math.min(100, level.score + 15);
+        if (conf >= 3) level.score = Math.min(100, level.score + 10);
+    }
+
+    // Also check if higher TFs have levels not in base set
+    for (const extraLevels of extraLevelSets) {
+        for (const el of extraLevels) {
+            const alreadyClose = baseLevels.some(bl => Math.abs(bl.price - el.price) <= confluenceDist);
+            if (!alreadyClose && Math.abs(el.price - currentPrice) <= atr * 40) {
+                el.confluence = 1;
+                el.score = Math.min(100, el.score + 10); // HTF bonus
+                el.htf = true; // mark as higher-TF only level
+                baseLevels.push(el);
+            }
+        }
+    }
+
+    // Re-sort and limit: 3 supports + 3 resistances, nearest first
+    const supports = baseLevels.filter(l => l.type === 'support')
+        .sort((a, b) => b.price - a.price).slice(0, 3);
+    const resists = baseLevels.filter(l => l.type === 'resistance')
+        .sort((a, b) => a.price - b.price).slice(0, 3);
+
+    return [...supports, ...resists];
+}
+
+// ── Auto Trendlines v3 ─────────────────────────────────────────
+// ZigZag swing detection + gradient descent slope optimization.
+// Key principle: ZERO violations — no candle crosses the line on wrong side.
+// Inspired by neurotrader888/TechnicalAnalysisAutomation.
+// Returns top 1 support + 1 resistance trendline (closest to price).
+// Each: { p1:{time,price}, p2:{time,price}, type, touches, score, slope, broken }
+
+function computeAutoTrendlines(candles) {
+    if (!candles || candles.length < 40) return [];
+
+    const totalCandles = candles.length;
+    const currentPrice = candles[totalCandles - 1].close;
+    const lastTime = candles[totalCandles - 1].time;
+
+    // ATR(14)
+    const trs = [];
+    for (let i = 1; i < totalCandles; i++) {
+        const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    const atr = trs.slice(-14).reduce((s, v) => s + v, 0) / Math.min(14, trs.length);
+    if (atr <= 0) return [];
+
+    const touchTol = atr * 0.3; // tighter than before (0.4 → 0.3)
+
+    // ── 1. ZigZag swing detection (ATR-based threshold) ──
+    // Produces 5-15 significant swings instead of 30+ fractal pivots
+    const zigzagThreshold = atr * 3; // swing must be ≥ 3×ATR to count
+    const swings = [];
+    let lastType = candles[0].close > candles[1].close ? 'high' : 'low';
+    let lastHigh = candles[0].high, lastLow = candles[0].low;
+    let lastHighIdx = 0, lastLowIdx = 0;
+
+    for (let i = 1; i < totalCandles; i++) {
+        if (lastType === 'low') {
+            if (candles[i].high > lastHigh) { lastHigh = candles[i].high; lastHighIdx = i; }
+            if (lastHigh - candles[i].low >= zigzagThreshold) {
+                swings.push({ idx: lastHighIdx, price: lastHigh, type: 'high', time: candles[lastHighIdx].time });
+                lastType = 'high'; lastLow = candles[i].low; lastLowIdx = i;
+            }
+        } else {
+            if (candles[i].low < lastLow) { lastLow = candles[i].low; lastLowIdx = i; }
+            if (candles[i].high - lastLow >= zigzagThreshold) {
+                swings.push({ idx: lastLowIdx, price: lastLow, type: 'low', time: candles[lastLowIdx].time });
+                lastType = 'low'; lastHigh = candles[i].high; lastHighIdx = i;
+            }
+        }
+    }
+    // Add final pending swing
+    if (lastType === 'low') swings.push({ idx: lastHighIdx, price: lastHigh, type: 'high', time: candles[lastHighIdx].time });
+    else swings.push({ idx: lastLowIdx, price: lastLow, type: 'low', time: candles[lastLowIdx].time });
+
+    const swingHighs = swings.filter(s => s.type === 'high');
+    const swingLows = swings.filter(s => s.type === 'low');
+
+    // ── 2. Gradient descent: find optimal trendline through each pivot ──
+    // For each pivot, try slope via gradient descent so that:
+    //   Support line: ALL candle lows stay ABOVE the line (zero violations)
+    //   Resistance line: ALL candle highs stay BELOW the line (zero violations)
+    // Then pick the slope that's closest to price (tightest valid line).
+
+    function fitTrendline(pivotIdx, pivotPrice, isSupport) {
+        // Initial slope: linear regression slope of closes
+        const startIdx = Math.max(0, pivotIdx - Math.floor(totalCandles * 0.3));
+        const endIdx = Math.min(totalCandles - 1, pivotIdx + Math.floor(totalCandles * 0.3));
+        const scanStart = Math.max(0, pivotIdx - Math.floor(totalCandles * 0.5));
+        const scanEnd = totalCandles - 1;
+
+        // Initial slope estimate from regression
+        let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0, n = 0;
+        for (let i = startIdx; i <= endIdx; i++) {
+            const x = i - pivotIdx;
+            const y = candles[i].close;
+            sumX += x; sumY += y; sumXY += x * y; sumXX += x * x; n++;
+        }
+        let slope = n > 1 ? (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX) : 0;
+
+        // Gradient descent: adjust slope to eliminate violations
+        const lr = atr * 0.001; // learning rate
+        const maxIter = 50;
+
+        for (let iter = 0; iter < maxIter; iter++) {
+            let worstViolation = 0;
+            let worstIdx = -1;
+
+            for (let i = scanStart; i <= scanEnd; i++) {
+                const linePrice = pivotPrice + slope * (i - pivotIdx);
+                const candlePrice = isSupport ? candles[i].low : candles[i].high;
+                const violation = isSupport
+                    ? linePrice - candlePrice  // support: line above low = bad
+                    : candlePrice - linePrice; // resistance: high above line = bad
+
+                if (violation > worstViolation) {
+                    worstViolation = violation;
+                    worstIdx = i;
+                }
+            }
+
+            if (worstViolation <= atr * 0.05) break; // close enough to zero
+
+            // Nudge slope to fix the worst violation
+            const dx = worstIdx - pivotIdx;
+            if (dx === 0) break;
+            // Adjust slope so the line moves away from the violation
+            slope -= (worstViolation * Math.sign(dx)) / Math.abs(dx) * 0.5;
+        }
+
+        // Final verification: zero violations
+        let valid = true;
+        for (let i = scanStart; i <= scanEnd; i++) {
+            const linePrice = pivotPrice + slope * (i - pivotIdx);
+            if (isSupport && candles[i].low < linePrice - atr * 0.08) { valid = false; break; }
+            if (!isSupport && candles[i].high > linePrice + atr * 0.08) { valid = false; break; }
+        }
+        if (!valid) return null;
+
+        // Enforce correct slope direction:
+        //   Support (lows) must slope UP (rising lows)
+        //   Resistance (highs) must slope DOWN (falling highs)
+        if (isSupport && slope < 0) return null;   // support must rise
+        if (!isSupport && slope > 0) return null;  // resistance must fall
+
+        // Reject near-horizontal (S/R levels territory)
+        const totalMove = Math.abs(slope * totalCandles);
+        if (totalMove < atr * 0.5) return null;
+
+        // Reject too steep
+        if (Math.abs(slope) > atr * 0.5) return null;
+
+        // Count touches (zigzag points near the line)
+        let touches = 1; // pivot itself
+        const allPivots = isSupport ? swingLows : swingHighs;
+        for (const p of allPivots) {
+            if (p.idx === pivotIdx) continue;
+            const linePrice = pivotPrice + slope * (p.idx - pivotIdx);
+            if (Math.abs(p.price - linePrice) <= touchTol) touches++;
+        }
+
+        // Also count candle wicks that touch the line
+        for (let i = scanStart; i <= scanEnd; i++) {
+            const linePrice = pivotPrice + slope * (i - pivotIdx);
+            const wickPrice = isSupport ? candles[i].low : candles[i].high;
+            const dist = Math.abs(wickPrice - linePrice);
+            if (dist <= touchTol && !allPivots.some(p => p.idx === i)) touches++;
+        }
+        // Cap wick touches to avoid noise
+        touches = Math.min(touches, 12);
+
+        // Project to current bar
+        const projectedPrice = pivotPrice + slope * (totalCandles - 1 - pivotIdx);
+        const distToCurrent = Math.abs(projectedPrice - currentPrice) / currentPrice * 100;
+
+        // Break detection: has price crossed the line after pivot?
+        let broken = false, breakIdx = -1;
+        for (let i = pivotIdx + 1; i < totalCandles; i++) {
+            const linePrice = pivotPrice + slope * (i - pivotIdx);
+            if (isSupport && candles[i].close < linePrice - atr * 0.8) { broken = true; breakIdx = i; break; }
+            if (!isSupport && candles[i].close > linePrice + atr * 0.8) { broken = true; breakIdx = i; break; }
+        }
+
+        // Recency: how recent is the pivot
+        const recency = Math.exp(-(totalCandles - pivotIdx) / (totalCandles * 0.4));
+
+        // Score: exponential touch reward + recency + proximity
+        const proximityBonus = distToCurrent < 5 ? (5 - distToCurrent) / 5 : 0;
+        const brokenPenalty = broken ? 0.3 : 1.0;
+        const score = Math.min(100, Math.round(
+            (Math.pow(touches, 2.5) * 3 + recency * 25 + proximityBonus * 15) * brokenPenalty
+        ));
+
+        return {
+            pivotIdx, pivotPrice, slope, touches, score,
+            projectedPrice, distToCurrent, broken, breakIdx,
+        };
+    }
+
+    // ── 3. Run gradient descent on each zigzag pivot ──
+    const supportCandidates = [];
+    const resistCandidates = [];
+
+    for (const s of swingLows) {
+        const result = fitTrendline(s.idx, s.price, true);
+        if (result && result.touches >= 2) supportCandidates.push({ ...result, time: s.time });
+    }
+    for (const s of swingHighs) {
+        const result = fitTrendline(s.idx, s.price, false);
+        if (result && result.touches >= 2) resistCandidates.push({ ...result, time: s.time });
+    }
+
+    supportCandidates.sort((a, b) => b.score - a.score);
+    resistCandidates.sort((a, b) => b.score - a.score);
+
+    // ── 4. Dedup & pick best ──
+    function dedup(arr) {
+        if (arr.length <= 1) return arr;
+        const result = [arr[0]];
+        for (let i = 1; i < arr.length; i++) {
+            const cur = arr[i];
+            const isDup = result.some(prev => {
+                const projDiff = Math.abs(cur.projectedPrice - prev.projectedPrice);
+                const slopeRatio = prev.slope !== 0 ? Math.abs(cur.slope / prev.slope) : 2;
+                return projDiff < atr * 2 && slopeRatio > 0.6 && slopeRatio < 1.4;
+            });
+            if (!isDup) result.push(cur);
+        }
+        return result;
+    }
+
+    const bestSupport = dedup(supportCandidates).slice(0, 1);
+    const bestResistance = dedup(resistCandidates).slice(0, 1);
+
+    // ── 5. Format output ──
+    const results = [];
+    for (const c of [...bestSupport, ...bestResistance]) {
+        const isSupport = supportCandidates.includes(c);
+        const type = isSupport ? 'support' : 'resistance';
+
+        const p1 = { time: c.time, price: c.pivotPrice, idx: c.pivotIdx };
+
+        let endIdx, endTime, endPrice;
+        if (c.broken && c.breakIdx > 0) {
+            endIdx = c.breakIdx;
+        } else {
+            endIdx = totalCandles - 1;
+        }
+        endTime = candles[endIdx].time;
+        endPrice = c.pivotPrice + c.slope * (endIdx - c.pivotIdx);
+
+        // Start line from the very beginning of the chart
+        const startIdx = 0;
+        const startTime = candles[0].time;
+        const startPrice = c.pivotPrice + c.slope * (0 - c.pivotIdx);
+
+        const finalProjected = c.broken ? endPrice : c.projectedPrice;
+        const finalDist = Math.abs(finalProjected - currentPrice) / currentPrice * 100;
+        if (finalDist > 10) continue;
+
+        results.push({
+            p1: { time: startTime, price: startPrice, idx: startIdx },
+            p2: { time: endTime, price: endPrice, idx: endIdx },
+            type,
+            touches: c.touches,
+            score: c.score,
+            slope: c.slope,
+            projectedPrice: finalProjected,
+            distToCurrent: finalDist,
+            broken: c.broken,
+        });
+    }
+
+    return results;
+}
+
+// Compute nearest auto-trendline distance % for a symbol (for sidebar sorting)
+// Stores result on mc.tlData[sym] = { type: 'S'|'R', pct: 0.5, price: 74610, touches }
+function computeTLDistance(sym) {
+    const chartObj = mc.charts[sym];
+    const candles = chartObj?.candleData || mc.dataCache[sym]?.candles;
+    if (!candles || candles.length < 40) return;
+
+    const lines = computeAutoTrendlines(candles);
+    if (lines.length === 0) { mc.tlData[sym] = null; return; }
+
+    const price = candles[candles.length - 1].close;
+    let nearest = null;
+    let minPct = Infinity;
+
+    for (const l of lines) {
+        const pct = l.distToCurrent;
+        if (pct < minPct) {
+            minPct = pct;
+            nearest = { type: l.type === 'support' ? 'S' : 'R', pct, price: l.projectedPrice, touches: l.touches };
+        }
+    }
+    mc.tlData[sym] = nearest;
+}
+
+// Format trendline distance for sidebar display
+function formatTL(sym) {
+    const tl = mc.tlData[sym];
+    if (!tl) return '<span style="color:#555">—</span>';
+    const color = tl.type === 'S' ? '#22c55e' : '#ef4444';
+    return `<span style="color:${color}">T${tl.type}${tl.pct.toFixed(1)}%</span>`;
 }
 
 // Compute nearest S/R distance % for a symbol (for sidebar sorting)
@@ -1527,6 +2125,36 @@ function formatSR(sym) {
     return `<span style="color:${color}">${sr.type}${sr.pct.toFixed(1)}%</span>`;
 }
 
+// ── Level → PriceLine config helper ──────────────────────────────
+// Unified styling for all chart types: mini-charts, modal, multi-chart slots.
+// Handles VP levels, fractal S/R, confluence tags, broken/retested states.
+function levelToPriceLine(l, showAxisLabel) {
+    let color, title, lineStyle, lineWidth;
+
+    if (l.vpType) {
+        // Volume Profile: POC = blue bold dotted, VAH/VAL = purple dotted
+        color = l.vpType === 'POC' ? 'rgba(59,130,246,0.85)' : 'rgba(168,85,247,0.65)';
+        title = l.vpType;
+        lineStyle = 2; // dotted
+        lineWidth = l.vpType === 'POC' ? 2 : 1;
+    } else {
+        // Fractal S/R
+        const opacity = l.broken ? 0.25 : l.retested ? 0.35 : Math.max(0.4, l.score / 100);
+        const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+        color = `rgba(${baseColor.join(',')},${opacity})`;
+
+        const prefix = l.type === 'support' ? 'S' : 'R';
+        const confTag = l.confluence >= 2 ? ` ★${l.confluence}TF` : '';
+        const breakTag = l.broken ? ' ✗' : l.retested ? ' ↻' : '';
+        title = `${prefix}×${l.touches}${confTag}${breakTag}`;
+
+        lineStyle = l.broken ? 2 : 1; // broken = dotted, normal = dashed
+        lineWidth = l.confluence >= 3 ? 2 : 1;
+    }
+
+    return { price: l.price, color, lineWidth, lineStyle, axisLabelVisible: !!showAxisLabel, title };
+}
+
 // Apply auto S/R levels to a mini-chart
 function applyAutoLevels(sym) {
     // Always compute SR distance for sidebar (even if levels display is off)
@@ -1542,17 +2170,7 @@ function applyAutoLevels(sym) {
     chartObj.autoLevels = [];
 
     levels.forEach(l => {
-        const opacity = Math.max(0.4, l.score / 100);
-        const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68]; // green / red
-        const color = `rgba(${baseColor.join(',')},${opacity})`;
-        const line = chartObj.series.createPriceLine({
-            price: l.price,
-            color,
-            lineWidth: 1,
-            lineStyle: 1, // dashed
-            axisLabelVisible: false,
-            title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
-        });
+        const line = chartObj.series.createPriceLine(levelToPriceLine(l, false));
         chartObj.autoLevels.push(line);
     });
 }
@@ -1565,28 +2183,29 @@ function removeAutoLevels(sym) {
     chartObj.autoLevels = [];
 }
 
-// Apply auto S/R levels to modal chart
-function applyModalAutoLevels() {
+// Apply auto S/R levels to modal chart (with Multi-TF confluence)
+async function applyModalAutoLevels() {
     if (!spGet('levelsEnabled', true)) return;
     if (!modal.chart || !modal.series || !modal.candleData) return;
 
     removeModalAutoLevels();
 
-    const levels = computeAutoLevels(modal.candleData);
+    // Use multi-TF confluence for modal (richer data, single symbol)
+    const sym = modal.currentSym;
+    const tf = modal.currentTF || mc.globalTF;
+    let levels;
+    try {
+        levels = await computeMultiTFLevels(sym, tf, modal.candleData);
+    } catch {
+        levels = computeAutoLevels(modal.candleData); // fallback to single-TF
+    }
     modal.autoLevels = [];
 
+    // Guard: modal may have been closed during async fetch
+    if (!modal.chart || !modal.series) return;
+
     levels.forEach(l => {
-        const opacity = Math.max(0.4, l.score / 100);
-        const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68];
-        const color = `rgba(${baseColor.join(',')},${opacity})`;
-        const line = modal.series.createPriceLine({
-            price: l.price,
-            color,
-            lineWidth: 1,
-            lineStyle: 1,
-            axisLabelVisible: true,
-            title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
-        });
+        const line = modal.series.createPriceLine(levelToPriceLine(l, true));
         modal.autoLevels.push(line);
     });
 }
@@ -1595,6 +2214,94 @@ function removeModalAutoLevels() {
     if (!modal.autoLevels) return;
     modal.autoLevels.forEach(pl => { try { modal.series.removePriceLine(pl); } catch(e) {} });
     modal.autoLevels = [];
+}
+
+// ── Auto Trendlines — Drawing ──────────────────────────────────
+
+// Apply auto trendlines to a mini-chart (as LineSeries, like manual trendlines)
+function applyAutoTrendlines(sym) {
+    // Always compute TL distance for sidebar sorting (even if display is off)
+    computeTLDistance(sym);
+
+    if (!spGet('trendlinesEnabled', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+
+    removeAutoTrendlines(sym);
+
+    const lines = computeAutoTrendlines(chartObj.candleData);
+    chartObj.autoTrendlines = [];
+
+    lines.forEach(tl => {
+        const opacity = tl.broken ? 0.25 : Math.max(0.4, tl.score / 100);
+        const baseColor = tl.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+        const color = `rgba(${baseColor.join(',')},${opacity})`;
+
+        const ls = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+            color,
+            lineWidth: 1,
+            lineStyle: tl.broken ? 3 : 2, // dotted if broken, dashed if active
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            pointMarkersVisible: false,
+        });
+        ls.setData([
+            { time: tl.p1.time, value: tl.p1.price },
+            { time: tl.p2.time, value: tl.p2.price },
+        ]);
+        chartObj.autoTrendlines.push({ lineSeries: ls });
+    });
+}
+
+// Remove auto trendlines from a mini-chart
+function removeAutoTrendlines(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.autoTrendlines) return;
+    chartObj.autoTrendlines.forEach(obj => {
+        if (obj.lineSeries) try { chartObj.chart.removeSeries(obj.lineSeries); } catch(e) {}
+    });
+    chartObj.autoTrendlines = [];
+}
+
+// Apply auto trendlines to modal chart
+function applyModalAutoTrendlines() {
+    if (!spGet('trendlinesEnabled', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+
+    removeModalAutoTrendlines();
+
+    const lines = computeAutoTrendlines(modal.candleData);
+    modal.autoTrendlines = [];
+
+    lines.forEach(tl => {
+        const opacity = tl.broken ? 0.25 : Math.max(0.4, tl.score / 100);
+        const baseColor = tl.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+        const color = `rgba(${baseColor.join(',')},${opacity})`;
+
+        const ls = modal.chart.addSeries(LightweightCharts.LineSeries, {
+            color,
+            lineWidth: tl.broken ? 1 : 2,
+            lineStyle: tl.broken ? 3 : 2, // dotted if broken, dashed if active
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            pointMarkersVisible: false,
+        });
+        ls.setData([
+            { time: tl.p1.time, value: tl.p1.price },
+            { time: tl.p2.time, value: tl.p2.price },
+        ]);
+        modal.autoTrendlines.push({ lineSeries: ls, type: tl.type, touches: tl.touches });
+    });
+}
+
+function removeModalAutoTrendlines() {
+    if (!modal.autoTrendlines) return;
+    modal.autoTrendlines.forEach(obj => {
+        if (obj.lineSeries) try { modal.chart.removeSeries(obj.lineSeries); } catch(e) {}
+    });
+    modal.autoTrendlines = [];
 }
 
 // ==========================================
@@ -2237,8 +2944,9 @@ async function loadModalChart(sym, tf) {
         // Apply density walls to modal
         applyDensityToModal();
 
-        // Apply auto S/R levels to modal
+        // Apply auto S/R levels + trendlines to modal
         applyModalAutoLevels();
+        applyModalAutoTrendlines();
 
         // Apply OI overlay if enabled
         applyOIOverlay(modal.chart, sym);
@@ -4555,21 +5263,39 @@ async function loadSlotChart(slotIndex) {
         // Fetch and render density walls
         applyDensityToSlot(slotIndex);
 
-        // Auto S/R levels on slot
+        // Auto S/R levels on slot (with Multi-TF confluence)
         if (spGet('levelsEnabled', true) && slot.candleData) {
             if (slot.autoLevels) slot.autoLevels.forEach(pl => { try { slot.series.removePriceLine(pl); } catch(e){} });
             slot.autoLevels = [];
-            const levels = computeAutoLevels(slot.candleData);
+            let levels;
+            try {
+                levels = await computeMultiTFLevels(slot.sym, slot.tf, slot.candleData);
+            } catch { levels = computeAutoLevels(slot.candleData); }
             levels.forEach(l => {
-                const opacity = Math.max(0.4, l.score / 100);
-                const baseColor = l.type === 'support' ? [34, 197, 94] : [239, 68, 68];
-                const color = `rgba(${baseColor.join(',')},${opacity})`;
-                const line = slot.series.createPriceLine({
-                    price: l.price, color, lineWidth: 1, lineStyle: 1,
-                    axisLabelVisible: true,
-                    title: `${l.type === 'support' ? 'S' : 'R'}×${l.touches}`,
-                });
+                const line = slot.series.createPriceLine(levelToPriceLine(l, true));
                 slot.autoLevels.push(line);
+            });
+        }
+
+        // Auto trendlines on slot
+        if (spGet('trendlinesEnabled', false) && slot.candleData) {
+            if (slot.autoTrendlines) slot.autoTrendlines.forEach(obj => { try { slot.chart.removeSeries(obj.lineSeries); } catch(e){} });
+            slot.autoTrendlines = [];
+            const tlines = computeAutoTrendlines(slot.candleData);
+            tlines.forEach(tl => {
+                const opacity = tl.broken ? 0.25 : Math.max(0.4, tl.score / 100);
+                const baseColor = tl.type === 'support' ? [34, 197, 94] : [239, 68, 68];
+                const color = `rgba(${baseColor.join(',')},${opacity})`;
+                const ls = slot.chart.addSeries(LightweightCharts.LineSeries, {
+                    color, lineWidth: tl.broken ? 1 : 2, lineStyle: tl.broken ? 3 : 2,
+                    crosshairMarkerVisible: false, lastValueVisible: false,
+                    priceLineVisible: false, pointMarkersVisible: false,
+                });
+                ls.setData([
+                    { time: tl.p1.time, value: tl.p1.price },
+                    { time: tl.p2.time, value: tl.p2.price },
+                ]);
+                slot.autoTrendlines.push({ lineSeries: ls });
             });
         }
 
