@@ -418,7 +418,7 @@
     // Force SW update + cache clear on version bump
     (async function() {
       if (!('serviceWorker' in navigator)) return;
-      const SW_VER = 28;
+      const SW_VER = 29;
       const stored = parseInt(localStorage.getItem('sw_ver') || '0');
       if (stored < SW_VER) {
         // Unregister old SW, clear all caches, reload
@@ -442,7 +442,7 @@
     <script src="/signals.js?v=20260424-v28"></script>
     <script src="/densities.js?v=20260424-v16"></script>
     <script src="/drawing-manager.js?v=20260424-v6"></script>
-    <script src="/mini-charts.js?v=20260424-v39"></script>
+    <script src="/mini-charts.js?v=20260425-v46"></script>
 </body>
 
 </html>

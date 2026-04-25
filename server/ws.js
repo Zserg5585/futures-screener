@@ -118,11 +118,7 @@ class BinanceWSConnection {
       oldWs.removeAllListeners();
       oldWs.on('error', () => {});
       try {
-        if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CLOSING) {
-          oldWs.terminate();
-        } else if (oldWs.readyState === WebSocket.CONNECTING) {
-          oldWs.on('open', () => { try { oldWs.terminate(); } catch(_){} });
-        }
+        oldWs.terminate();
       } catch (_) {}
     }
   }

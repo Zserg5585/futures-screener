@@ -266,6 +266,7 @@ async function initMiniCharts() {
                     rebuildAllCharts()
                 } else if (key === 'defaultTF') {
                     mc.globalTF = val
+                    wsUnsubscribeAll() // unsub old TF streams
                     mc.dataCache = {} // TF changed, clear cache
                     mc.srData = {}
                     mc.tlData = {}
@@ -275,6 +276,7 @@ async function initMiniCharts() {
                         tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === val))
                     }
                     mc.loadedData = {}
+                    mc.loadingActive = false // reset so processLoadQueue can run
                     Object.keys(mc.charts).forEach(sym => mc.loadQueue.push(sym))
                     processLoadQueue()
                     showSettingsToast('Timeframe → ' + val)
@@ -366,10 +368,17 @@ async function initMiniCharts() {
                 tfGroup.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 mc.globalTF = btn.dataset.tf;
+                console.log('[TF-SWITCH] Switching to', mc.globalTF, 'charts:', Object.keys(mc.charts).length, 'wsStreams:', mc.wsStreams.size);
+                // Unsubscribe old TF streams — critical! Otherwise old TF data
+                // keeps arriving and new TF streams may not subscribe properly
+                wsUnsubscribeAll();
                 // Clear data cache — TF changed, all cached candles are stale
                 mc.dataCache = {};
+                mc.srData = {};
+                mc.tlData = {};
                 // Reload all currently visible charts with new TF
                 mc.loadedData = {};
+                mc.loadingActive = false; // reset so processLoadQueue can run
                 Object.keys(mc.charts).forEach(sym => {
                     mc.loadQueue.push(sym);
                 });
@@ -2220,8 +2229,10 @@ function removeModalAutoLevels() {
 
 // Apply auto trendlines to a mini-chart (as LineSeries, like manual trendlines)
 function applyAutoTrendlines(sym) {
-    // Always compute TL distance for sidebar sorting (even if display is off)
-    computeTLDistance(sym);
+    // Only compute TL distance if sorting by trendlines or trendlines enabled
+    if (mc.sortBy === 'tl' || spGet('trendlinesEnabled', false)) {
+        computeTLDistance(sym);
+    }
 
     if (!spGet('trendlinesEnabled', false)) return;
     const chartObj = mc.charts[sym];
@@ -2307,7 +2318,7 @@ function removeModalAutoTrendlines() {
 // ==========================================
 // Live WebSocket — Binance kline stream
 // ==========================================
-const BINANCE_WS = 'wss://fstream.binance.com/stream';
+const BINANCE_WS = 'wss://fstream.binance.com/market/stream';
 
 function updateWsIndicator(state, extra) {
     let el = document.getElementById('wsStatusBadge');
@@ -2327,6 +2338,7 @@ function wsConnect() {
     if (mc.ws && mc.ws.readyState <= 1) return; // CONNECTING or OPEN
 
     updateWsIndicator('connecting');
+    console.log('[MC-WS] Connecting to:', BINANCE_WS, 'TF:', mc.globalTF);
     mc.ws = new WebSocket(BINANCE_WS);
     mc.ws.onopen = () => {
         console.log('[MC-WS] Connected, subscribing', mc.wsStreams.size, 'streams');
@@ -2340,9 +2352,13 @@ function wsConnect() {
         // Auto-resubscribe safety net: if no ticks after 5s, re-send SUBSCRIBE
         setTimeout(() => {
             if (mc._wsMsgCount === 0 && mc.ws && mc.ws.readyState === WebSocket.OPEN && mc.wsStreams.size > 0) {
-                console.warn('[MC-WS] No ticks after 5s! Re-subscribing', mc.wsStreams.size, 'streams...');
+                console.warn('[MC-WS] No ticks after 5s! Re-subscribing', mc.wsStreams.size, 'streams on TF=' + mc.globalTF);
                 updateWsIndicator('open', 'RE-SUB');
-                mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [...mc.wsStreams], id: Date.now() }));
+                // Re-build streams from current charts (in case globalTF changed)
+                const freshStreams = Object.keys(mc.charts).map(s => `${s.toLowerCase()}@kline_${mc.globalTF}`);
+                mc.wsStreams = new Set(freshStreams);
+                mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: freshStreams, id: Date.now() }));
+                document.title = `RE-SUB ${freshStreams.length} ${mc.globalTF}`;
             }
         }, 5000);
     };
@@ -2371,9 +2387,14 @@ function wsConnect() {
             // Count WS ticks and show on badge
             mc._wsMsgCount++;
             mc._wsLastTick = Date.now();
+            const incomingInterval = k.i; // actual interval from Binance: "5m", "4h", etc.
             if (mc._wsMsgCount <= 5 || mc._wsMsgCount % 100 === 0) {
                 updateWsIndicator('open', `WS:${mc._wsMsgCount}`);
-                console.log(`[MC-WS] tick #${mc._wsMsgCount} sym=${sym} close=${candle.close} hasChart=${!!mc.charts[sym]} streams=${mc.wsStreams.size}`);
+            }
+            // TEMP DEBUG: show tick info on first 5 ticks
+            if (mc._wsMsgCount <= 5) {
+                console.log(`[MC-WS] tick#${mc._wsMsgCount} sym=${sym} i=${incomingInterval} globalTF=${mc.globalTF} hasChart=${!!mc.charts[sym]} streams=${mc.wsStreams.size}`);
+                document.title = `T${mc._wsMsgCount} ${incomingInterval} ${sym.slice(0,4)} streams=${mc.wsStreams.size}`;
             }
 
             // Check price alerts (custom drawings + library DM drawings)
@@ -2464,7 +2485,7 @@ function wsConnect() {
                     }
                 }
             }
-        } catch (e) { /* ignore parse errors */ }
+        } catch (e) { console.error('[MC-WS] onmessage error:', e.message, e.stack?.split('\n')[1]); }
     };
     mc.ws.onclose = (evt) => {
         updateWsIndicator('closed');
@@ -2494,12 +2515,12 @@ let _wsSubTimer = null;
 
 function _flushWsSubscribe() {
     _wsSubTimer = null;
-    if (_wsPendingSub.size === 0) return;
-    if (!mc.ws || mc.ws.readyState !== WebSocket.OPEN) return;
+    if (_wsPendingSub.size === 0) { console.warn('[MC-WS] _flushWsSubscribe: nothing pending'); return; }
+    if (!mc.ws || mc.ws.readyState !== WebSocket.OPEN) { console.error('[MC-WS] _flushWsSubscribe: WS not open! state=', mc.ws?.readyState); return; }
     const params = [..._wsPendingSub];
     _wsPendingSub.clear();
     mc.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id: Date.now() }));
-    console.log('[MC-WS] Batch subscribed', params.length, 'streams');
+    console.log('[MC-WS] Batch subscribed', params.length, 'streams, TF=' + mc.globalTF, 'sample:', params.slice(0, 3));
 }
 
 function wsSubscribe(sym) {
@@ -2508,6 +2529,7 @@ function wsSubscribe(sym) {
     mc.wsStreams.add(stream);
 
     if (!mc.ws || mc.ws.readyState !== WebSocket.OPEN) {
+        console.log(`[MC-WS] wsSubscribe ${stream}: WS not open (state=${mc.ws?.readyState}), calling wsConnect`);
         wsConnect();
         return; // onopen will subscribe all pending
     }
@@ -2519,9 +2541,15 @@ function wsSubscribe(sym) {
 }
 
 function wsUnsubscribeAll() {
-    if (mc.ws && mc.ws.readyState === WebSocket.OPEN && mc.wsStreams.size > 0) {
-        mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc.wsStreams], id: Date.now() }));
+    console.log('[MC-WS] wsUnsubscribeAll: killing WS, had', mc.wsStreams.size, 'streams');
+    // Kill the entire WS connection — cleaner than unsub/resub
+    // New connection will be created by wsSubscribe() when charts reload
+    mc._wsClosing = true;
+    if (mc.ws) {
+        try { mc.ws.close(); } catch(_) {}
+        mc.ws = null;
     }
+    mc._wsClosing = false;
     mc.wsStreams.clear();
     _wsPendingSub.clear();
     if (_wsSubTimer) { clearTimeout(_wsSubTimer); _wsSubTimer = null; }
