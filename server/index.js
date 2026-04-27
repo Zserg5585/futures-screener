@@ -50,11 +50,94 @@ const klinesCache = require('./klines-cache');
 // ---- helpers ----
 const FETCH_TIMEOUT_MS = 10000 // 10s timeout for all Binance requests
 
+// ---- Global Binance Rate Limiter ----
+const rateLimiter = {
+  usedWeight: 0,              // last known X-MBX-USED-WEIGHT-1M
+  weightUpdatedAt: 0,         // when usedWeight was last updated
+  pauseUntil: 0,              // global pause timestamp (after 429)
+  WEIGHT_SOFT_LIMIT: 1800,    // start throttling at 1800/2400 (75%)
+  WEIGHT_HARD_LIMIT: 2200,    // hard pause at 2200/2400 (92%)
+  THROTTLE_DELAY_MS: 500,     // delay when approaching soft limit
+
+  /** Update weight from Binance response headers */
+  updateWeight(headers) {
+    const w = parseInt(headers.get('x-mbx-used-weight-1m') || '0', 10)
+    if (w > 0) {
+      this.usedWeight = w
+      this.weightUpdatedAt = Date.now()
+    }
+  },
+
+  /** Set global pause (all requests wait) */
+  setPause(ms) {
+    const until = Date.now() + ms
+    if (until > this.pauseUntil) {
+      this.pauseUntil = until
+      console.log(`[rate-limiter] ⚠️ Global pause ${ms}ms (until ${new Date(until).toISOString().slice(11,19)})`)
+    }
+  },
+
+  /** Wait if paused or throttled. Call before every request. */
+  async waitIfNeeded() {
+    // Global pause (after 429)
+    const now = Date.now()
+    if (now < this.pauseUntil) {
+      const wait = this.pauseUntil - now
+      console.log(`[rate-limiter] Waiting ${wait}ms (global pause)`)
+      await new Promise(r => setTimeout(r, wait))
+    }
+
+    // Weight is stale after 60s — Binance resets every minute
+    if (Date.now() - this.weightUpdatedAt > 60000) {
+      this.usedWeight = 0
+    }
+
+    // Hard limit — pause 5s
+    if (this.usedWeight >= this.WEIGHT_HARD_LIMIT) {
+      console.log(`[rate-limiter] Weight ${this.usedWeight} >= ${this.WEIGHT_HARD_LIMIT}, pausing 5s`)
+      await new Promise(r => setTimeout(r, 5000))
+    }
+    // Soft limit — small delay
+    else if (this.usedWeight >= this.WEIGHT_SOFT_LIMIT) {
+      await new Promise(r => setTimeout(r, this.THROTTLE_DELAY_MS))
+    }
+  },
+
+  /** Get current status for logging */
+  status() {
+    return `weight=${this.usedWeight}/2400, pause=${this.pauseUntil > Date.now() ? (this.pauseUntil - Date.now()) + 'ms' : 'none'}`
+  }
+}
+
+class RateLimitError extends Error {
+  constructor(path, retryAfterMs, usedWeight) {
+    super(`Binance 429 rate limited: ${path}`)
+    this.name = 'RateLimitError'
+    this.retryAfterMs = retryAfterMs
+    this.usedWeight = usedWeight
+  }
+}
+
 async function bget(path) {
+  // Wait if globally paused or approaching weight limit
+  await rateLimiter.waitIfNeeded()
+
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   try {
     const res = await fetch(BINANCE_FAPI + path, { method: 'GET', signal: controller.signal })
+
+    // Always track weight from response
+    rateLimiter.updateWeight(res.headers)
+
+    if (res.status === 429 || res.status === 418) {
+      // 429 = rate limited, 418 = IP ban (temp)
+      const retryAfter = parseInt(res.headers.get('retry-after') || '0', 10)
+      const retryMs = retryAfter > 0 ? retryAfter * 1000 : (res.status === 418 ? 120000 : 30000)
+      rateLimiter.setPause(retryMs)
+      throw new RateLimitError(path, retryMs, rateLimiter.usedWeight)
+    }
+
     if (!res.ok) {
       const txt = await res.text().catch(() => '')
       throw new Error(`Binance GET ${path} failed: ${res.status} ${txt}`)
@@ -294,12 +377,26 @@ function setCached(req, data) {
   cache.set(key, { data, ts: Date.now() })
 }
 
-// Retry/backoff helper for Binance requests
+// Retry/backoff helper for Binance requests (rate-limit aware)
 async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
+  let rateLimitRetries = 0
+  const MAX_RATE_LIMIT_RETRIES = 3 // max 3 rate-limit retries on top of regular retries
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await bget(path)
     } catch (err) {
+      if (err instanceof RateLimitError) {
+        rateLimitRetries++
+        if (rateLimitRetries > MAX_RATE_LIMIT_RETRIES) {
+          throw new Error(`Binance GET ${path} rate limited ${rateLimitRetries}x, giving up (${rateLimiter.status()})`)
+        }
+        // 429/418: global pause already set by bget(), wait and retry (don't count as regular attempt)
+        console.log(`[bgetWithRetry] 429 on ${path.slice(0, 60)}, retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES}, waiting ${err.retryAfterMs}ms`)
+        await new Promise(r => setTimeout(r, err.retryAfterMs))
+        attempt-- // don't count rate limit as a regular retry attempt
+        continue
+      }
       if (attempt === maxRetries) {
         throw new Error(`Binance GET ${path} failed after ${maxRetries} attempts: ${err.message}`)
       }
@@ -1285,6 +1382,22 @@ function startKlinesUpdater() {
   }, UPDATE_INTERVAL)
   console.log('[KlinesUpdater] Started (30s interval)')
 }
+
+// ---- rate limiter status endpoint ----
+fastify.get('/api/rate-limiter', async () => ({
+  usedWeight: rateLimiter.usedWeight,
+  weightUpdatedAt: rateLimiter.weightUpdatedAt,
+  weightAge: Date.now() - rateLimiter.weightUpdatedAt,
+  pauseUntil: rateLimiter.pauseUntil,
+  pauseRemaining: Math.max(0, rateLimiter.pauseUntil - Date.now()),
+  softLimit: rateLimiter.WEIGHT_SOFT_LIMIT,
+  hardLimit: rateLimiter.WEIGHT_HARD_LIMIT,
+  binanceLimit: 2400,
+  status: rateLimiter.pauseUntil > Date.now() ? 'PAUSED'
+    : rateLimiter.usedWeight >= rateLimiter.WEIGHT_HARD_LIMIT ? 'HARD_THROTTLE'
+    : rateLimiter.usedWeight >= rateLimiter.WEIGHT_SOFT_LIMIT ? 'SOFT_THROTTLE'
+    : 'OK'
+}))
 
 // ---- start ----
 const port = Number(process.env.PORT || 3200)
