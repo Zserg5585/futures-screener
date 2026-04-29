@@ -493,11 +493,10 @@ function scoreConfidence({
   score += Math.min(15, Math.max(0, (wickRatio - 0.60) / 0.30 * 15))
 
   // --- Level strength (0–15) ---
-  // strength 1→1.5, 5→7.5, 10→15
+  // strength 1→1.5, 5→7.5, 10→15 (wall confluence already adds +3 to strength)
   let lvlPts = Math.min(10, levelStrength * 1.5)
-  // Source bonus: swing = most reliable, wall = good, round = weaker
-  if (levelSource === 'swing') lvlPts += 3
-  else if (levelSource === 'wall') lvlPts += 2
+  // All signals are swing-based now (+3 base)
+  lvlPts += 3
   // Confluence bonus: multiple levels swept at once
   if (levelsSwept >= 2) lvlPts += 2
   score += Math.min(15, lvlPts)
@@ -627,16 +626,22 @@ async function scanLiqSweep(deps) {
           // Skip 1h fetch via API to save rate limit — swing levels are "nice to have"
           candles1h = null
         }
-        const swingLevels = candles1h ? findSwingLevels(candles1h, 3, 3) : []
+        const swingLevels = candles1h ? findSwingLevels(candles1h, 5, 3) : []
 
-        // 3b. Order book walls
+        // 3b. Order book walls — used as confluence boost, not standalone trigger
         const wallLevels = getWallLevels({ symbol, markPrice, stateManager, densityV2, persistenceMap })
 
-        // 3c. Round numbers
-        const roundLevels = findRoundNumbers(markPrice, 2)
+        // 3c. Boost swing levels that coincide with walls (±0.2%)
+        for (const sw of swingLevels) {
+          const hasWallConfluence = wallLevels.some(w => Math.abs(w.price - sw.price) / sw.price < 0.002)
+          if (hasWallConfluence) {
+            sw.strength = (sw.strength || 1) + 3 // wall confluence bonus
+            sw.wallConfluence = true
+          }
+        }
 
-        // 3d. Merge and deduplicate
-        const allLevels = mergeLevels([...swingLevels, ...wallLevels, ...roundLevels])
+        // 3d. Only use swing levels (round numbers removed, walls are boost only)
+        const allLevels = mergeLevels(swingLevels)
         if (allLevels.length === 0) continue
 
         // --- 4. Confirm sweep ---
