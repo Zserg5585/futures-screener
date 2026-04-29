@@ -51,7 +51,16 @@ const settingsPanel = (() => {
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
-    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation'], // enabled signal types for push
+    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation', 'liq_sweep'], // enabled signal types for push
+
+    // Liq Sweep
+    sweepLevelSwing: true,        // show signals from swing high/low levels
+    sweepLevelWall: true,         // show signals from order book walls
+    sweepLevelRound: true,        // show signals from round numbers
+    sweepMinWickPct: 60,          // min wick ratio % to show (60-90)
+
+    // Signals on charts
+    showSignalsOnCharts: false,   // show signal markers on mini-charts and modal
 
     // Indicators
     indicatorOI: false,           // show OI overlay on charts
@@ -596,77 +605,162 @@ const settingsPanel = (() => {
   }
 
   function renderSignalsSection() {
+    const types = get('signalTypes') || []
     return `
-      <div class="sp-section">
-        <div class="sp-section-title">Volume Spike Filter</div>
-        <div class="sp-slider-row">
-          <input type="range" min="2" max="20" step="1" value="${get('signalMinRatio')}" data-key="signalMinRatio" class="sp-slider" />
-          <span class="sp-slider-val" data-for="signalMinRatio">${get('signalMinRatio')}x</span>
+      <!-- General -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>⚙️ General</span>
+          <span class="sp-group-arrow">▶</span>
         </div>
-        <p class="sp-hint">Show volume spikes ≥ this ratio vs SMA(20)</p>
-      </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Min Confidence</div>
-        <div class="sp-slider-row">
-          <input type="range" min="30" max="90" step="5" value="${get('signalMinConfidence')}" data-key="signalMinConfidence" class="sp-slider" />
-          <span class="sp-slider-val" data-for="signalMinConfidence">${get('signalMinConfidence')}%</span>
-        </div>
-        <p class="sp-hint">Hide signals below this confidence level</p>
-      </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Alert Cooldown</div>
-        <div class="sp-radio-group">
-          ${[1, 5, 15, 30].map(m => `
-            <label class="sp-radio">
-              <input type="radio" name="signalCooldown" value="${m}" ${get('signalCooldown') === m ? 'checked' : ''} data-key="signalCooldown" />
-              <span>${m}min</span>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <div class="sp-section-title">Min Confidence</div>
+            <div class="sp-slider-row">
+              <input type="range" min="30" max="90" step="5" value="${get('signalMinConfidence')}" data-key="signalMinConfidence" class="sp-slider" />
+              <span class="sp-slider-val" data-for="signalMinConfidence">${get('signalMinConfidence')}%</span>
+            </div>
+            <p class="sp-hint">Hide signals below this confidence level</p>
+          </div>
+          <div class="sp-section">
+            <div class="sp-section-title">Alert Cooldown</div>
+            <div class="sp-radio-group">
+              ${[1, 5, 15, 30].map(m => `
+                <label class="sp-radio">
+                  <input type="radio" name="signalCooldown" value="${m}" ${get('signalCooldown') === m ? 'checked' : ''} data-key="signalCooldown" />
+                  <span>${m}min</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+          <div class="sp-section">
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('signalWatchlistOnly') ? 'checked' : ''} data-key="signalWatchlistOnly" />
+              <span>Watchlist coins only</span>
             </label>
-          `).join('')}
+            <label class="sp-toggle" style="margin-top:6px;">
+              <input type="checkbox" ${get('showSignalsOnCharts') ? 'checked' : ''} data-key="showSignalsOnCharts" />
+              <span>Show signals on charts</span>
+            </label>
+            <p class="sp-hint">Display signal markers on mini-charts and modal</p>
+          </div>
         </div>
-        <p class="sp-hint">Min time between alerts for the same symbol</p>
       </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Push Alert Types</div>
-        <p class="sp-hint">Choose which signal types trigger push notifications</p>
-        ${[
-          { key: 'volume_spike', label: '📊 Volume Spike' },
-          { key: 'oi_longs', label: '🟢 OI Longs Build-up' },
-          { key: 'oi_shorts', label: '🔴 OI Shorts Build-up' },
-          { key: 'oi_squeeze', label: '⚡ OI Squeeze' },
-          { key: 'oi_liquidation', label: '💥 OI Liquidation' },
-        ].map(t => `
-          <label class="sp-toggle">
-            <input type="checkbox" ${(get('signalTypes') || []).includes(t.key) ? 'checked' : ''} data-signal-type="${t.key}" />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
+
+      <!-- Volume Spike -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>📊 Volume Spike</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <div class="sp-section-title">Min Ratio vs SMA(20)</div>
+            <div class="sp-slider-row">
+              <input type="range" min="2" max="20" step="1" value="${get('signalMinRatio')}" data-key="signalMinRatio" class="sp-slider" />
+              <span class="sp-slider-val" data-for="signalMinRatio">${get('signalMinRatio')}x</span>
+            </div>
+          </div>
+          <div class="sp-section">
+            <label class="sp-toggle">
+              <input type="checkbox" ${types.includes('volume_spike') ? 'checked' : ''} data-signal-type="volume_spike" />
+              <span>Push notifications</span>
+            </label>
+          </div>
+        </div>
       </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Filter</div>
-        <label class="sp-toggle">
-          <input type="checkbox" ${get('signalWatchlistOnly') ? 'checked' : ''} data-key="signalWatchlistOnly" />
-          <span>Watchlist coins only</span>
-        </label>
+
+      <!-- OI + CVD -->
+      <div class="sp-group">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>🔮 OI + CVD</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <div class="sp-section-title">Push by sub-type</div>
+            ${[
+              { key: 'oi_longs', label: '🟢 Longs Build-up' },
+              { key: 'oi_shorts', label: '🔴 Shorts Build-up' },
+              { key: 'oi_squeeze', label: '⚡ Squeeze' },
+              { key: 'oi_liquidation', label: '💥 Liquidation' },
+            ].map(t => `
+              <label class="sp-toggle">
+                <input type="checkbox" ${types.includes(t.key) ? 'checked' : ''} data-signal-type="${t.key}" />
+                <span>${t.label}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
       </div>
-      <div class="sp-section">
-        <div class="sp-section-title">Notifications</div>
-        <label class="sp-toggle">
-          <input type="checkbox" ${get('signalNotifications') ? 'checked' : ''} data-key="signalNotifications" />
-          <span>In-tab alerts</span>
-        </label>
-        <label class="sp-toggle">
-          <input type="checkbox" ${get('signalSound') ? 'checked' : ''} data-key="signalSound" />
-          <span>Sound alert</span>
-        </label>
-        <p class="sp-hint">Toast + browser notification when tab is open</p>
+
+      <!-- Liq Sweep -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>🎯 Liq Sweep</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <div class="sp-section-title">Level Types</div>
+            <p class="sp-hint">Which liquidity sources to show</p>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('sweepLevelSwing') ? 'checked' : ''} data-key="sweepLevelSwing" />
+              <span>📐 Swing High/Low <span style="color:var(--text-muted);font-size:11px;">— structural levels from 1h candles</span></span>
+            </label>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('sweepLevelWall') ? 'checked' : ''} data-key="sweepLevelWall" />
+              <span>🧱 Order Book Walls <span style="color:var(--text-muted);font-size:11px;">— density walls from live orderbook</span></span>
+            </label>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('sweepLevelRound') ? 'checked' : ''} data-key="sweepLevelRound" />
+              <span>🔢 Round Numbers <span style="color:var(--text-muted);font-size:11px;">— psychological price levels</span></span>
+            </label>
+          </div>
+          <div class="sp-section">
+            <div class="sp-section-title">Min Wick Ratio</div>
+            <div class="sp-slider-row">
+              <input type="range" min="50" max="90" step="5" value="${get('sweepMinWickPct')}" data-key="sweepMinWickPct" class="sp-slider" />
+              <span class="sp-slider-val" data-for="sweepMinWickPct">${get('sweepMinWickPct')}%</span>
+            </div>
+            <p class="sp-hint">Higher = cleaner pin bars only</p>
+          </div>
+          <div class="sp-section">
+            <label class="sp-toggle">
+              <input type="checkbox" ${types.includes('liq_sweep') ? 'checked' : ''} data-signal-type="liq_sweep" />
+              <span>Push notifications</span>
+            </label>
+          </div>
+        </div>
       </div>
-      <div class="sp-section">
-        <div class="sp-section-title">📲 Push Notifications</div>
-        <label class="sp-toggle">
-          <input type="checkbox" ${get('signalPush') ? 'checked' : ''} data-key="signalPush" />
-          <span>Push when browser closed</span>
-        </label>
-        <p class="sp-hint">Server push — works on phone & with browser closed. Uses filters above.</p>
+
+      <!-- Notifications -->
+      <div class="sp-group">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>🔔 Notifications</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('signalNotifications') ? 'checked' : ''} data-key="signalNotifications" />
+              <span>In-tab alerts</span>
+            </label>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('signalSound') ? 'checked' : ''} data-key="signalSound" />
+              <span>Sound alert</span>
+            </label>
+            <p class="sp-hint">Toast + browser notification when tab is open</p>
+          </div>
+          <div class="sp-section">
+            <div class="sp-section-title">📲 Push Notifications</div>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('signalPush') ? 'checked' : ''} data-key="signalPush" />
+              <span>Push when browser closed</span>
+            </label>
+            <p class="sp-hint">Server push — works on phone & with browser closed</p>
+          </div>
+        </div>
       </div>
     `
   }

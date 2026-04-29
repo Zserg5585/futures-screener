@@ -404,6 +404,8 @@ async function initMiniCharts() {
                     // Update header classes
                     colHeaders2.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
                     hdr.classList.add('active', mc.sortDir);
+                    // Clear toolbar sort buttons
+                    ['mcSortSR', 'mcSortTL', 'mcSortSig'].forEach(id => { const b = el(id); if (b) b.classList.remove('active'); });
                     applyFiltersAndRebuild();
                 });
             });
@@ -489,6 +491,8 @@ async function initMiniCharts() {
                 // Clear other sort buttons
                 const sortTL = el('mcSortTL');
                 if (sortTL) sortTL.classList.remove('active');
+                const sortSig = el('mcSortSig');
+                if (sortSig) sortSig.classList.remove('active');
                 const colHeaders = document.getElementById('mcColHeaders');
                 if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
                 if (mc.sortBy !== 'sr') {
@@ -535,7 +539,37 @@ async function initMiniCharts() {
                 if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
                 const sortSR = el('mcSortSR');
                 if (sortSR) sortSR.classList.remove('active');
+                const sortSig2 = el('mcSortSig');
+                if (sortSig2) sortSig2.classList.remove('active');
                 if (mc.sortBy !== 'tl') {
+                    const chgHdr = colHeaders?.querySelector('[data-sort="change"]');
+                    if (chgHdr) chgHdr.classList.add('active', 'desc');
+                }
+                applyFiltersAndRebuild();
+            });
+        }
+
+        // Sort by latest signal button
+        const sortSigBtn = el('mcSortSig');
+        if (sortSigBtn) {
+            sortSigBtn.addEventListener('click', () => {
+                if (mc.sortBy === 'signals') {
+                    mc.sortBy = 'change';
+                    mc.sortDir = 'desc';
+                    sortSigBtn.classList.remove('active');
+                } else {
+                    mc.sortBy = 'signals';
+                    mc.sortDir = 'desc';
+                    sortSigBtn.classList.add('active');
+                }
+                // Clear col header highlights + other sort buttons
+                const colHeaders = document.getElementById('mcColHeaders');
+                if (colHeaders) colHeaders.querySelectorAll('.mc-col-hdr').forEach(h => h.classList.remove('active', 'asc', 'desc'));
+                const sortSR = el('mcSortSR');
+                if (sortSR) sortSR.classList.remove('active');
+                const sortTL = el('mcSortTL');
+                if (sortTL) sortTL.classList.remove('active');
+                if (mc.sortBy !== 'signals') {
                     const chgHdr = colHeaders?.querySelector('[data-sort="change"]');
                     if (chgHdr) chgHdr.classList.add('active', 'desc');
                 }
@@ -837,8 +871,24 @@ function rebuildGrid() {
     });
 }
 
+/** Signal data per symbol: count + latest timestamp (for sorting by recency) */
+function _getSignalData() {
+    if (typeof sigState === 'undefined' || !sigState.signals) return {};
+    const data = {};
+    for (const s of sigState.signals) {
+        if (!data[s.symbol]) {
+            data[s.symbol] = { count: 0, latest: 0 };
+        }
+        data[s.symbol].count++;
+        const ts = new Date(s.created_at.includes('T') ? s.created_at : s.created_at.replace(' ', 'T') + 'Z').getTime() || 0;
+        if (ts > data[s.symbol].latest) data[s.symbol].latest = ts;
+    }
+    return data;
+}
+
 function sortPairs() {
     const dir = mc.sortDir === 'desc' ? 1 : -1;
+    const _sigD = mc.sortBy === 'signals' ? _getSignalData() : null;
     const sorter = (a, b) => {
         if (mc.sortBy === 'symbol') return dir * a.symbol.localeCompare(b.symbol);
         if (mc.sortBy === 'natr') return dir * (b.proxyNatr - a.proxyNatr);
@@ -853,6 +903,9 @@ function sortPairs() {
             const ta = mc.tlData[a.symbol]?.pct ?? 999;
             const tb = mc.tlData[b.symbol]?.pct ?? 999;
             return dir * (ta - tb); // closest to trendline first when desc
+        }
+        if (mc.sortBy === 'signals') {
+            return dir * ((_sigD[b.symbol]?.latest || 0) - (_sigD[a.symbol]?.latest || 0));
         }
         return dir * (b.quoteVol - a.quoteVol); // volume default
     };
@@ -895,10 +948,17 @@ function renderSidebar() {
             const sb = mc.srData[b.symbol]?.pct ?? 999;
             return dir * (sa - sb);
         }
+        if (mc.sortBy === 'signals') {
+            const _sd = _getSignalData();
+            return dir * ((_sd[b.symbol]?.latest || 0) - (_sd[a.symbol]?.latest || 0));
+        }
         return dir * (b.quoteVol - a.quoteVol);
     });
 
     if (countEl) countEl.textContent = pairs.length;
+
+    // Pre-compute signal data for sidebar display
+    const _sidebarSigData = _getSignalData();
 
     list.innerHTML = pairs.map(p => {
         const sym = p.symbol;
@@ -1084,6 +1144,7 @@ function renderFromCache(sym) {
     });
     mc.loadedData[sym] = true;
     applyDrawingsToMiniChart(sym);
+    applySignalMarkers(sym, c.series, cache.candles);
     wsSubscribe(sym);
     return true;
 }
@@ -1148,6 +1209,7 @@ function applyDataToChart(sym, parsed, tf) {
     const realNatr = calcNATR(parsed);
     if (realNatr > 0) updateCardNATR(sym, realNatr);
     applyDrawingsToMiniChart(sym);
+    applySignalMarkers(sym, mc.charts[sym].series, parsed);
     wsSubscribe(sym);
     // Save to IndexedDB in background (fire-and-forget)
     IDB.put(sym, tf, parsed);
@@ -1284,6 +1346,91 @@ function extractVolume(data) {
         value: d.volume,
         color: d.close >= d.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
     }));
+}
+
+// ======================== SIGNAL MARKERS ON CHARTS ========================
+
+const _sigTypeLabel = { oi_cvd: '🔮 OI+CVD', volume_spike: '📊 Vol', big_mover: '🚀 Mover', liq_sweep: '🎯 Sweep' };
+
+/**
+ * Place signal markers on a chart series (works for both mini-charts and modal).
+ * Reads from sigState.signals (populated by signals.js).
+ * @param {string} sym — symbol e.g. "BTCUSDT"
+ * @param {Object} series — LightweightCharts series instance
+ * @param {Array}  candles — [{time, open, high, low, close}, ...] ASC
+ * @param {Object} [modalRef] — if provided, stores markers ref on modal obj; else on mc.charts[sym]
+ */
+function applySignalMarkers(sym, series, candles, modalRef, force) {
+    // Check setting (skip check when forced, e.g. from Signals tab modal)
+    if (!force) {
+        const sp = typeof settingsPanel !== 'undefined' ? settingsPanel : null;
+        if (sp && !sp.get('showSignalsOnCharts')) return;
+    }
+    if (!series || !candles || candles.length === 0) return;
+    if (typeof sigState === 'undefined' || !sigState.signals) return;
+
+    // Get signals for this symbol
+    const signals = sigState.signals.filter(s => s.symbol === sym);
+    if (signals.length === 0) return;
+
+    const firstTime = candles[0].time;
+    const lastTime = candles[candles.length - 1].time;
+
+    const markers = [];
+    for (const sig of signals) {
+        const sigTime = Math.floor(new Date(ensureUTC(sig.created_at)).getTime() / 1000);
+        if (sigTime < firstTime || sigTime > lastTime) continue;
+
+        // Find nearest candle
+        let best = candles[candles.length - 1];
+        let bestDiff = Infinity;
+        for (const c of candles) {
+            const diff = Math.abs(c.time - sigTime);
+            if (diff < bestDiff) { bestDiff = diff; best = c; }
+        }
+
+        const isLong = sig.direction === 'LONG';
+        markers.push({
+            time: best.time,
+            position: isLong ? 'belowBar' : 'aboveBar',
+            color: isLong ? '#22c55e' : '#ef4444',
+            shape: isLong ? 'arrowUp' : 'arrowDown',
+            text: `${_sigTypeLabel[sig.type] || sig.type} ${sig.direction}`,
+        });
+    }
+
+    if (markers.length === 0) return;
+
+    // Sort markers by time (LWC requires this)
+    markers.sort((a, b) => a.time - b.time);
+
+    // Dedupe same time+direction (keep first)
+    const seen = new Set();
+    const unique = markers.filter(m => {
+        const key = `${m.time}:${m.position}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+
+    try {
+        const target = modalRef || mc.charts[sym];
+        if (!target) return;
+        if (target._sigMarkers) target._sigMarkers.setMarkers([]);
+        target._sigMarkers = LightweightCharts.createSeriesMarkers(series, unique);
+    } catch (e) {
+        // Silently fail — chart may have been disposed
+    }
+}
+
+// Reuse ensureUTC from signals.js (or define fallback)
+if (typeof ensureUTC === 'undefined') {
+    var ensureUTC = function(iso) {
+        if (!iso) return iso;
+        let s = iso.includes('T') ? iso : iso.replace(' ', 'T');
+        if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+        return s;
+    };
 }
 
 // Apply saved drawings (hlines, fibs) to mini-chart
@@ -2942,32 +3089,12 @@ async function loadModalChart(sym, tf) {
         // Restore saved drawings for this symbol
         restoreDrawings();
 
-        // Signal marker (from Signals tab "Open Chart")
-        if (window._pendingSignalMarker && modal.series) {
-          const m = window._pendingSignalMarker;
-          window._pendingSignalMarker = null;
-          // Find nearest candle (apply same TZ offset as klines)
-          const target = m.time; // both marker and candles are now UTC, same space
-          let best = data1[data1.length - 1];
-          let bestDiff = Infinity;
-          for (const c of data1) {
-            const diff = Math.abs(c.time - target);
-            if (diff < bestDiff) { bestDiff = diff; best = c; }
-          }
-          const isLong = m.direction === 'LONG';
-          try {
-              if (modal._markers) modal._markers.setMarkers([]);
-              modal._markers = LightweightCharts.createSeriesMarkers(modal.series, [{
-                time: best.time,
-                position: isLong ? 'belowBar' : 'aboveBar',
-                color: isLong ? '#22c55e' : '#ef4444',
-                shape: isLong ? 'arrowUp' : 'arrowDown',
-                text: `${m.type === 'oi_cvd' ? '🔮 OI+CVD' : m.type === 'volume_spike' ? '📊 Vol' : m.type === 'big_mover' ? '🚀 Mover' : '⚡ NATR'} ${m.direction}`,
-              }]);
-          } catch (e) {
-              console.warn('[modal] createSeriesMarkers failed:', e.message);
-          }
-        }
+        // Signal markers on modal chart
+        // Show all signals for this symbol (not just pending one)
+        const isSignalsTab = document.getElementById('tab-signals')?.style.display !== 'none';
+        applySignalMarkers(sym, modal.series, data1, modal, isSignalsTab);
+        // Also consume pending marker (from Signals tab "Open Chart") — already handled by applySignalMarkers
+        window._pendingSignalMarker = null;
 
         // Apply density walls to modal
         applyDensityToModal();

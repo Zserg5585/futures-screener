@@ -11,3 +11,4 @@ data/density-cache.json
 .DS_Store
 .idea/
 .vscode/
+ecosystem.config.js

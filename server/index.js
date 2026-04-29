@@ -1408,9 +1408,9 @@ const start = async () => {
     fastify.log.info(`listening on 0.0.0.0:${port}`)
     // Init signals scanner (after server up so proxyCache is available)
     push.init({ stmts: auth.stmts })
-    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push })
-    // Init klines SQLite cache
+    // Init klines SQLite cache (before signals so liq_sweep can use it)
     klinesCache.initDB()
+    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)

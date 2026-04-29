@@ -1,13 +1,17 @@
 /**
  * Signals Scanner — detects trading signals from market data
- * Types: volume_spike (5m klines SMA20-based), oi_cvd
+ * Types: volume_spike (5m klines SMA20-based), oi_cvd, liq_sweep
  * Volume scan (60s): fetches 5m klines for liquid symbols, compares current candle vs SMA(20)
  * OI+CVD scan (5min): uses Binance openInterestHist 1h period + taker ratio
+ * Liq Sweep scan (60s): detects pin bars that sweep liquidity levels
  * Outcome tracker: snapshots at 5m/15m/1h/4h/1d + MFE/MAE tracking
  */
 
+const { scanLiqSweep } = require('./liq-sweep')
+
 const SCAN_INTERVAL_MS = 60_000
 const OI_CVD_INTERVAL_MS = 5 * 60_000
+const LIQ_SWEEP_INTERVAL_MS = 60_000
 const OUTCOME_CHECK_MS = 30_000
 
 // Volume spike: current 5m candle vs SMA(20) of 5m candles
@@ -40,26 +44,59 @@ let _auth = null
 let _push = null
 let _scanTimer = null
 let _oiCvdTimer = null
+let _liqSweepTimer = null
 let _outcomeTimer = null
 
-function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push }) {
+// Extra deps for liq_sweep (optional — passed from index.js)
+let _klinesCache = null
+let _stateManager = null
+let _densityV2 = null
+let _persistenceMap = null
+
+function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap }) {
   _getProxyCached = getProxyCached
   _setProxyCached = setProxyCached
   _bgetWithRetry = bgetWithRetry
   _auth = auth
   _push = push || null
+  _klinesCache = klinesCache || null
+  _stateManager = stateManager || null
+  _densityV2 = densityV2 || null
+  _persistenceMap = persistenceMap || null
 
   _scanTimer = setInterval(scan, SCAN_INTERVAL_MS)
   _oiCvdTimer = setInterval(scanOiCvd, OI_CVD_INTERVAL_MS)
   _outcomeTimer = setInterval(checkOutcomes, OUTCOME_CHECK_MS)
   setTimeout(scan, 10_000)
   setTimeout(scanOiCvd, 30_000)
-  console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s fast, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)
+
+  // Liq Sweep scanner (only if klinesCache available)
+  if (_klinesCache) {
+    _liqSweepTimer = setInterval(_runLiqSweep, LIQ_SWEEP_INTERVAL_MS)
+    setTimeout(_runLiqSweep, 20_000) // first run 20s after start
+    console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${LIQ_SWEEP_INTERVAL_MS / 1000}s liq_sweep, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)
+  } else {
+    console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${OUTCOME_CHECK_MS / 1000}s outcomes) [liq_sweep disabled — no klinesCache]`)
+  }
+}
+
+/** Wrapper to call scanLiqSweep with injected deps */
+function _runLiqSweep() {
+  scanLiqSweep({
+    getProxyCached: _getProxyCached,
+    bgetWithRetry: _bgetWithRetry,
+    klinesCache: _klinesCache,
+    stateManager: _stateManager,
+    densityV2: _densityV2,
+    persistenceMap: _persistenceMap,
+    emitSignal,
+  }).catch(err => console.error('[Signals] liq_sweep wrapper error:', err.message))
 }
 
 function stop() {
   if (_scanTimer) clearInterval(_scanTimer)
   if (_oiCvdTimer) clearInterval(_oiCvdTimer)
+  if (_liqSweepTimer) clearInterval(_liqSweepTimer)
   if (_outcomeTimer) clearInterval(_outcomeTimer)
 }
 
@@ -617,6 +654,11 @@ function getLiveSignals(filters = {}) {
         const sub = m.subType || ''
         const labels = { oi_longs: '🟢 Longs accumulating', oi_shorts: '🔴 Shorts accumulating', oi_squeeze: '🟡 Short squeeze', oi_liquidation: '🟡 Long liquidation' }
         s.description = `${labels[sub] || sub} — OI ${m.oiChangePct > 0 ? '+' : ''}${m.oiChangePct}%/1h`
+      } else if (s.type === 'liq_sweep' && m.sweptLevel) {
+        const dir = s.direction === 'LONG' ? 'Bullish' : 'Bearish'
+        const lvl = (m.levelType || '').replace('_', ' ')
+        const wick = m.wickRatio ? `${(m.wickRatio * 100).toFixed(0)}% wick` : ''
+        s.description = `🎯 ${dir} sweep — took ${lvl} at ${m.sweptLevel}${wick ? ', ' + wick : ''}`
       }
     }
   } catch (err) {
@@ -637,6 +679,7 @@ function getSignalTypes() {
   return [
     { id: 'volume_spike', label: 'Volume Spike', icon: '📊', color: '#3b82f6' },
     { id: 'oi_cvd', label: 'OI + CVD', icon: '🔮', color: '#8b5cf6' },
+    { id: 'liq_sweep', label: 'Liq Sweep', icon: '🎯', color: '#ef4444' },
   ]
 }
 

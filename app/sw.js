@@ -1,9 +1,10 @@
-const CACHE_NAME = 'fs-v29'
+const CACHE_NAME = 'fs-v35'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
   '/auth.js',
   '/settings.js',
+  '/signals.js',
   '/densities.js',
   '/mini-charts.js',
   '/manifest.json',

@@ -1363,9 +1363,15 @@ body.theme-amoled {
     font-weight: 600;
     transition: all 0.15s;
 }
-.mc-sort-sr-btn:hover, .mc-sort-sr-btn.active {
+.mc-sort-sr-btn:hover {
     background: rgba(99, 102, 241, 0.3);
     color: #a5b4fc;
+}
+.mc-sort-sr-btn.active {
+    background: rgba(99, 102, 241, 0.5);
+    color: #fff;
+    border-color: #818cf8;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
 }
 
 .mc-coin-vol {
@@ -1373,6 +1379,13 @@ body.theme-amoled {
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     text-align: right;
+}
+.mc-coin-sig {
+    font-size: 10px;
+    font-weight: 600;
+    color: #ef4444;
+    text-align: right;
+    min-width: 18px;
 }
 
 /* Column headers — same grid as .mc-coin-item but Coin spans first 4 cols */
@@ -2589,6 +2602,41 @@ body.theme-amoled {
     color: var(--text-secondary); font-size: 13px; cursor: pointer;
 }
 .sp-toggle input { accent-color: #6366f1; width: 16px; height: 16px; }
+
+/* Accordion groups */
+.sp-group {
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+.sp-group-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.03);
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    transition: background 0.15s;
+}
+.sp-group-header:hover { background: rgba(255,255,255,0.06); }
+.sp-group-arrow {
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    margin-left: auto;
+}
+.sp-group.open .sp-group-arrow { transform: rotate(90deg); }
+.sp-group-body {
+    display: none;
+    padding: 12px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+}
+.sp-group.open .sp-group-body { display: block; }
+.sp-group-body .sp-section { margin-bottom: 14px; }
+.sp-group-body .sp-section:last-child { margin-bottom: 0; }
 
 /* Slider */
 .sp-slider-row { display: flex; align-items: center; gap: 12px; }

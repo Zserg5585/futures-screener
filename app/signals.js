@@ -27,6 +27,12 @@ const sigState = {
   firstLoad: true,    // skip notifications on first load
 }
 
+// Pre-load signals on page load (for chart markers, before Signals tab is opened)
+fetch(`${SIG_API}/api/signals/live?limit=500&hours=24`)
+  .then(r => r.json())
+  .then(d => { if (d?.success && d.data) sigState.signals = d.data })
+  .catch(() => {})
+
 const sigEl = (id) => document.getElementById(id)
 
 // ---- Init / Stop ----
@@ -132,7 +138,7 @@ function renderOutcomeStats() {
     const wrColor = wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444'
     const avgPnl = s.avg_pnl != null ? (s.avg_pnl > 0 ? '+' : '') + s.avg_pnl.toFixed(2) + '%' : '—'
     const pnlColor = s.avg_pnl > 0 ? '#22c55e' : '#ef4444'
-    const icon = { volume_spike: '📊', oi_cvd: '🔮' }[s.type] || '•'
+    const icon = { volume_spike: '📊', oi_cvd: '🔮', liq_sweep: '🎯' }[s.type] || '•'
 
     return `<div class="sig-outcome-card">
       <div class="sig-outcome-type">${icon} ${formatTypeShort(s.type)}</div>
@@ -174,6 +180,23 @@ function renderSignals() {
   // Filter by watchlist if enabled
   if (typeof settingsPanel !== 'undefined' && settingsPanel.get('signalWatchlistOnly')) {
     list = list.filter(s => settingsPanel.wlHas(s.symbol))
+  }
+
+  // Filter liq_sweep by level type and wick ratio settings
+  if (typeof settingsPanel !== 'undefined') {
+    list = list.filter(s => {
+      if (s.type !== 'liq_sweep') return true
+      const m = s.metadata || {}
+      // Level type filter
+      const src = m.levelSource
+      if (src === 'swing' && !settingsPanel.get('sweepLevelSwing')) return false
+      if (src === 'wall' && !settingsPanel.get('sweepLevelWall')) return false
+      if (src === 'round' && !settingsPanel.get('sweepLevelRound')) return false
+      // Wick ratio filter
+      const minWick = (settingsPanel.get('sweepMinWickPct') || 60) / 100
+      if ((m.wickRatio || 0) < minWick) return false
+      return true
+    })
   }
 
   if (sigState.search) {
@@ -241,6 +264,16 @@ function selectSignal(id) {
   if (meta.oiValue !== undefined) metaItems.push({ key: 'OI Value', val: fmtVol(meta.oiValue) })
   if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
   if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation' }[meta.subType] || meta.subType })
+
+  // Liq Sweep metadata
+  if (meta.sweptLevel !== undefined) metaItems.push({ key: 'Swept Level', val: formatPrice(meta.sweptLevel), color: '#ef4444' })
+  if (meta.levelType) metaItems.push({ key: 'Level Type', val: meta.levelType.replace('_', ' '), color: meta.levelSource === 'swing' ? '#3b82f6' : meta.levelSource === 'wall' ? '#f59e0b' : '#94a3b8' })
+  if (meta.wickRatio !== undefined) metaItems.push({ key: 'Wick Ratio', val: `${(meta.wickRatio * 100).toFixed(0)}%`, color: meta.wickRatio >= 0.8 ? '#22c55e' : '#f59e0b' })
+  if (meta.sweepDepthPct !== undefined) metaItems.push({ key: 'Sweep Depth', val: `${meta.sweepDepthPct.toFixed(2)}%` })
+  if (meta.levelsSwept !== undefined && meta.levelsSwept > 1) metaItems.push({ key: 'Levels Swept', val: meta.levelsSwept, color: '#f59e0b' })
+  if (meta.bodyRatio !== undefined) metaItems.push({ key: 'Body Ratio', val: `${(meta.bodyRatio * 100).toFixed(0)}%` })
+  if (meta.volumeRatio !== undefined && meta.volumeRatio !== null) metaItems.push({ key: 'Volume Ratio', val: `${meta.volumeRatio}x`, color: meta.volumeRatio >= 2 ? '#22c55e' : '#94a3b8' })
+  if (meta.wallNotional !== undefined && meta.wallNotional !== null) metaItems.push({ key: 'Wall Size', val: '$' + fmtVol(meta.wallNotional) })
 
   // Market context metadata (new enriched fields)
   if (meta.volume24h !== undefined) metaItems.push({ key: 'Volume 24h', val: '$' + fmtVol(meta.volume24h) })
@@ -325,12 +358,13 @@ function formatType(type) {
   const map = {
     volume_spike: '📊 Vol Spike',
     oi_cvd: '🔮 OI+CVD',
+    liq_sweep: '🎯 Liq Sweep',
   }
   return map[type] || type
 }
 
 function formatTypeShort(type) {
-  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD' }
+  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD', liq_sweep: 'Liq Sweep' }
   return map[type] || type
 }
 
