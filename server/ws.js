@@ -16,6 +16,8 @@ class BinanceWSConnection {
 
   connect() {
     if (this.streams.size === 0) return;
+    // Already connecting — just wait for 'open' to resubscribe
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
     this._cleanup();
 
     console.log(`[WS-${this.id}] Connecting... (${this.streams.size} streams)`);
@@ -116,9 +118,15 @@ class BinanceWSConnection {
       const oldWs = this.ws;
       this.ws = null;
       oldWs.removeAllListeners();
-      oldWs.on('error', () => {});
+      oldWs.on('error', () => {}); // swallow async errors from terminate
       try {
-        oldWs.terminate();
+        if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CLOSING) {
+          oldWs.terminate();
+        } else if (oldWs.readyState === WebSocket.CONNECTING) {
+          // Can't terminate CONNECTING socket safely — close it and let 'close' event fire
+          oldWs.close();
+        }
+        // CLOSED state — nothing to do
       } catch (_) {}
     }
   }

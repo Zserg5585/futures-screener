@@ -138,7 +138,7 @@ function renderOutcomeStats() {
     const wrColor = wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444'
     const avgPnl = s.avg_pnl != null ? (s.avg_pnl > 0 ? '+' : '') + s.avg_pnl.toFixed(2) + '%' : '—'
     const pnlColor = s.avg_pnl > 0 ? '#22c55e' : '#ef4444'
-    const icon = { volume_spike: '📊', oi_cvd: '🔮', liq_sweep: '🎯' }[s.type] || '•'
+    const icon = { volume_spike: '📊', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡', liq_sweep: '🎯' }[s.type] || '•'
 
     return `<div class="sig-outcome-card">
       <div class="sig-outcome-type">${icon} ${formatTypeShort(s.type)}</div>
@@ -263,7 +263,9 @@ function selectSignal(id) {
   if (meta.oiChangePct !== undefined) metaItems.push({ key: 'OI Change', val: `${meta.oiChangePct > 0 ? '+' : ''}${meta.oiChangePct}%`, color: meta.oiChangePct > 0 ? '#3b82f6' : '#ef4444' })
   if (meta.oiValue !== undefined) metaItems.push({ key: 'OI Value', val: fmtVol(meta.oiValue) })
   if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
-  if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation' }[meta.subType] || meta.subType })
+  if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation', oi_divergence: 'OI Divergence', oi_funding_squeeze: 'Funding Squeeze' }[meta.subType] || meta.subType })
+  if (meta.oiTrendPct !== undefined) metaItems.push({ key: 'OI Trend', val: `${meta.oiTrendPct > 0 ? '+' : ''}${meta.oiTrendPct}%`, color: meta.oiTrendPct > 0 ? '#3b82f6' : '#ef4444' })
+  if (meta.fundingPct !== undefined && sig.type !== 'oi_cvd') metaItems.push({ key: 'Funding', val: `${meta.fundingPct > 0 ? '+' : ''}${meta.fundingPct}%`, color: meta.fundingPct > 0 ? '#22c55e' : '#ef4444' })
 
   // Liq Sweep metadata
   if (meta.sweptLevel !== undefined) metaItems.push({ key: 'Swept Level', val: formatPrice(meta.sweptLevel), color: '#ef4444' })
@@ -358,13 +360,15 @@ function formatType(type) {
   const map = {
     volume_spike: '📊 Vol Spike',
     oi_cvd: '🔮 OI+CVD',
+    oi_divergence: '🔀 OI Diver',
+    oi_funding_squeeze: '⚡ Fund Squeeze',
     liq_sweep: '🎯 Liq Sweep',
   }
   return map[type] || type
 }
 
 function formatTypeShort(type) {
-  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD', liq_sweep: 'Liq Sweep' }
+  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD', oi_divergence: 'OI Diver', oi_funding_squeeze: 'Fund Squeeze', liq_sweep: 'Liq Sweep' }
   return map[type] || type
 }
 

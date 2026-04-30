@@ -43,7 +43,8 @@ function sendPushForSignal(signal) {
 
   const ticker = signal.symbol.replace('USDT', '')
   const dir = signal.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'
-  const icon = signal.type === 'volume_spike' ? '📊' : signal.type === 'liq_sweep' ? '🎯' : '🔮'
+  const iconMap = { volume_spike: '📊', liq_sweep: '🎯', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡' }
+  const icon = iconMap[signal.type] || '🔮'
   const confStr = `Conf ${signal.confidence}%`
 
   const payload = JSON.stringify({

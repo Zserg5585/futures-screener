@@ -1,6 +1,6 @@
 /**
  * Signals Scanner — detects trading signals from market data
- * Types: volume_spike (5m klines SMA20-based), oi_cvd, liq_sweep
+ * Types: volume_spike (5m klines SMA20-based), oi_cvd, oi_divergence, oi_funding_squeeze, liq_sweep
  * Volume scan (60s): fetches 5m klines for liquid symbols, compares current candle vs SMA(20)
  * OI+CVD scan (5min): uses Binance openInterestHist 1h period + taker ratio
  * Liq Sweep scan (60s): detects pin bars that sweep liquidity levels
@@ -24,6 +24,16 @@ const OI_CVD_TOP_N = 50
 const OI_CVD_DELAY_MS = 200
 const CVD_MIN_SKEW = 0.1      // |buySellRatio - 1| must exceed this
 const PRICE_DIVERGENCE_PCT = 0.5  // price move threshold for divergence detection
+
+// Funding rate thresholds for OI gating (values in %, e.g. 0.03 = 0.03%)
+const FUNDING_GATE_LONGS = 0.03    // skip oi_longs when funding > +0.03%
+const FUNDING_GATE_SHORTS = -0.02  // skip oi_shorts when funding < -0.02%
+const FUNDING_EXTREME_POS = 0.04   // boost oi_liquidation confidence
+const FUNDING_EXTREME_NEG = -0.03  // boost oi_squeeze confidence
+const FUNDING_SQUEEZE_POS = 0.05   // trigger oi_funding_squeeze SHORT
+const FUNDING_SQUEEZE_NEG = -0.03  // trigger oi_funding_squeeze LONG
+const OI_DIV_TREND_PCT = 2.0       // min OI trend % over window for divergence
+const OI_DIV_PRICE_PCT = 1.0       // min price change % for divergence
 
 const liveSignals = []
 const MAX_LIVE = 200
@@ -330,9 +340,9 @@ async function scanOiCvd() {
       if (!price) continue
 
       try {
-        // Fetch OI history (1h candles, last 3) + taker ratio in parallel
+        // Fetch OI history (1h candles, last 6 for divergence+ROC) + taker ratio in parallel
         const [oiHist, takerData] = await Promise.all([
-          _bgetWithRetry(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=3`),
+          _bgetWithRetry(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=6`),
           _bgetWithRetry(`/futures/data/takerlongshortRatio?symbol=${symbol}&period=1h&limit=1`),
         ])
 
@@ -344,6 +354,27 @@ async function scanOiCvd() {
         const oiValueUsd = parseFloat(oiHist[lastIdx].sumOpenInterestValue || 0)
         if (!oiPrev || oiPrev === 0) continue
         const oiChangePct = ((oiCurr - oiPrev) / oiPrev) * 100
+
+        // --- OI ROC: 3-candle acceleration ---
+        let oiRocAdj = 0
+        if (oiHist.length >= 3) {
+          const oi0 = parseFloat(oiHist[lastIdx - 2].sumOpenInterest)
+          const oi1 = parseFloat(oiHist[lastIdx - 1].sumOpenInterest)
+          const oi2 = parseFloat(oiHist[lastIdx].sumOpenInterest)
+          if (oi0 > 0 && oi1 > 0) {
+            const delta1 = (oi1 - oi0) / oi0 * 100
+            const delta2 = (oi2 - oi1) / oi1 * 100
+            if (Math.sign(delta1) === Math.sign(delta2) && Math.abs(delta2) > Math.abs(delta1)) {
+              oiRocAdj = +5  // accelerating OI change
+            } else if (Math.sign(delta1) !== Math.sign(delta2)) {
+              oiRocAdj = -5  // reversing direction
+            }
+          }
+        }
+
+        // --- Funding rate for this symbol ---
+        const fundingRate = fundingMap[symbol] || 0
+        const fundingPct = fundingRate * 100  // convert to %, e.g. 0.0003 → 0.03%
 
         // CVD from taker buy/sell ratio
         let cvdDirection = null
@@ -382,6 +413,18 @@ async function scanOiCvd() {
           subType = 'oi_liquidation'
         }
 
+        // --- Funding rate gate: skip signals when crowd is already on our side ---
+        let fundingAdj = 0
+        if (subType === 'oi_longs' && fundingPct > FUNDING_GATE_LONGS) {
+          continue  // longs already overcrowded, skip accumulation signal
+        } else if (subType === 'oi_shorts' && fundingPct < FUNDING_GATE_SHORTS) {
+          continue  // shorts already overcrowded, skip
+        } else if (subType === 'oi_squeeze' && fundingPct < FUNDING_EXTREME_NEG) {
+          fundingAdj = +10  // extreme neg funding = shorts overcrowded → squeeze very likely
+        } else if (subType === 'oi_liquidation' && fundingPct > FUNDING_EXTREME_POS) {
+          fundingAdj = +10  // extreme pos funding = longs overcrowded → liquidation likely
+        }
+
         // Confidence: bell-curve on OI change — sweet spot 4-8%, extreme >10% = lagging signal
         const absOi = Math.abs(oiChangePct)
         let confOi
@@ -415,6 +458,10 @@ async function scanOiCvd() {
         const priceMoveDir = priceChange1h > PRICE_DIVERGENCE_PCT ? 'UP' : priceChange1h < -PRICE_DIVERGENCE_PCT ? 'DOWN' : 'FLAT'
         const oiMoveDir = oiUp ? 'UP' : 'DOWN'
 
+        if (fundingAdj > 0) regimeTag.push(`💰 Funding confirms (${fundingPct > 0 ? '+' : ''}${fundingPct.toFixed(3)}%)`)
+        if (oiRocAdj > 0) regimeTag.push('🔥 OI accelerating')
+        else if (oiRocAdj < 0) regimeTag.push('⏸️ OI decelerating')
+
         if (priceMoveDir !== 'FLAT' && oiMoveDir !== priceMoveDir) {
           // Divergence detected!
           // Bullish div: OI UP + Price DOWN → hidden accumulation → expect UP
@@ -429,7 +476,7 @@ async function scanOiCvd() {
           }
         }
 
-        const finalConf = Math.max(30, Math.min(95, confBase + confRatio + regimeAdj + divAdj))
+        const finalConf = Math.max(30, Math.min(95, confBase + confRatio + regimeAdj + divAdj + fundingAdj + oiRocAdj))
 
         // Enhanced description
         const tagStr = regimeTag.length > 0 ? ' | ' + regimeTag.join(' ') : ''
@@ -453,12 +500,111 @@ async function scanOiCvd() {
             oiValue: oiValueUsd,
             buySellRatio: buySellRatio ? parseFloat(buySellRatio.toFixed(3)) : null,
             cvdDirection, subType, change,
+            fundingPct: parseFloat(fundingPct.toFixed(4)),
+            oiRocAdj,
             marketRegime: regime.direction || 'UNKNOWN',
             divergence: divAdj !== 0 ? (divAdj > 0 ? 'confirms' : 'conflicts') : null,
             ...ctx,
           }
         })
         signalCount++
+
+        // === OI DIVERGENCE standalone signal ===
+        // Price trending one way, OI trending the other = exhaustion or hidden accumulation
+        if (oiHist.length >= 4) {
+          const oiValues = oiHist.map(h => parseFloat(h.sumOpenInterest))
+          const oiFirst = oiValues[0]
+          const oiLast = oiValues[oiValues.length - 1]
+          const oiTrendPct = ((oiLast - oiFirst) / oiFirst) * 100
+          const oiTrending = Math.abs(oiTrendPct) > OI_DIV_TREND_PCT
+          const priceTrending = Math.abs(change) > OI_DIV_PRICE_PCT
+
+          if (oiTrending && priceTrending) {
+            const oiTrendDir = oiTrendPct > 0 ? 'UP' : 'DOWN'
+            const priceTrendDir = change > 0 ? 'UP' : 'DOWN'
+
+            if (oiTrendDir !== priceTrendDir) {
+              let divDirection, divDesc
+              if (priceTrendDir === 'UP' && oiTrendDir === 'DOWN') {
+                divDirection = 'SHORT'
+                divDesc = `🔀 OI Divergence (exhaustion) — Price +${change.toFixed(1)}% but OI ${oiTrendPct.toFixed(1)}%`
+              } else {
+                divDirection = 'LONG'
+                divDesc = `🔀 OI Divergence (accumulation) — Price ${change.toFixed(1)}% but OI +${oiTrendPct.toFixed(1)}%`
+              }
+
+              // Confidence: stronger divergence = higher conf
+              let divConf = 50
+                + Math.min(15, Math.abs(oiTrendPct) * 2)
+                + Math.min(10, Math.abs(change) * 2)
+              if (regime.direction) {
+                const withTrend = (regime.direction === 'BULLISH' && divDirection === 'LONG') ||
+                                  (regime.direction === 'BEARISH' && divDirection === 'SHORT')
+                divConf += withTrend ? 5 : -5
+              }
+
+              emitSignal({
+                type: 'oi_divergence',
+                symbol, price,
+                signalTime: new Date(parseInt(oiHist[lastIdx].timestamp)).toISOString(),
+                direction: divDirection,
+                confidence: Math.max(30, Math.min(95, Math.round(divConf))),
+                description: divDesc,
+                metadata: {
+                  oiTrendPct: parseFloat(oiTrendPct.toFixed(2)),
+                  priceChange: parseFloat(change.toFixed(2)),
+                  oiCandles: oiHist.length,
+                  subType: 'oi_divergence',
+                  fundingPct: parseFloat(fundingPct.toFixed(4)),
+                  marketRegime: regime.direction || 'UNKNOWN',
+                  ...ctx,
+                }
+              })
+            }
+          }
+        }
+
+        // === OI FUNDING SQUEEZE contrarian signal ===
+        // OI spiking + extreme funding = one side overcrowded → trade against them
+        if (oiChangePct > OI_CHANGE_PCT) {
+          let sqDir = null, sqDesc = null
+
+          if (fundingPct > FUNDING_SQUEEZE_POS) {
+            sqDir = 'SHORT'
+            sqDesc = `⚡ Funding Squeeze — OI +${oiChangePct.toFixed(1)}%/1h + funding +${fundingPct.toFixed(3)}% (longs overcrowded)`
+          } else if (fundingPct < FUNDING_SQUEEZE_NEG) {
+            sqDir = 'LONG'
+            sqDesc = `⚡ Funding Squeeze — OI +${oiChangePct.toFixed(1)}%/1h + funding ${fundingPct.toFixed(3)}% (shorts overcrowded)`
+          }
+
+          if (sqDir) {
+            const fundingExtreme = Math.abs(fundingPct)
+            let sqConf = 55
+              + Math.min(15, fundingExtreme * 100)
+              + Math.min(10, (oiChangePct - OI_CHANGE_PCT) * 2)
+            if (regime.direction) {
+              const withTrend = (regime.direction === 'BULLISH' && sqDir === 'LONG') ||
+                                (regime.direction === 'BEARISH' && sqDir === 'SHORT')
+              sqConf += withTrend ? 5 : -5
+            }
+
+            emitSignal({
+              type: 'oi_funding_squeeze',
+              symbol, price,
+              signalTime: new Date(parseInt(oiHist[lastIdx].timestamp)).toISOString(),
+              direction: sqDir,
+              confidence: Math.max(30, Math.min(95, Math.round(sqConf))),
+              description: sqDesc,
+              metadata: {
+                oiChangePct: parseFloat(oiChangePct.toFixed(2)),
+                fundingPct: parseFloat(fundingPct.toFixed(4)),
+                subType: 'oi_funding_squeeze',
+                marketRegime: regime.direction || 'UNKNOWN',
+                ...ctx,
+              }
+            })
+          }
+        }
 
       } catch (e) {
         if (signalCount === 0 && idx < 3) console.log(`[Signals] OI+CVD ${symbol} error: ${e.message}`)
@@ -654,6 +800,12 @@ function getLiveSignals(filters = {}) {
         const sub = m.subType || ''
         const labels = { oi_longs: '🟢 Longs accumulating', oi_shorts: '🔴 Shorts accumulating', oi_squeeze: '🟡 Short squeeze', oi_liquidation: '🟡 Long liquidation' }
         s.description = `${labels[sub] || sub} — OI ${m.oiChangePct > 0 ? '+' : ''}${m.oiChangePct}%/1h`
+      } else if (s.type === 'oi_divergence' && m.oiTrendPct !== undefined) {
+        const divType = m.oiTrendPct < 0 ? 'exhaustion' : 'accumulation'
+        s.description = `🔀 OI Divergence (${divType}) — Price ${m.priceChange > 0 ? '+' : ''}${m.priceChange}% but OI ${m.oiTrendPct > 0 ? '+' : ''}${m.oiTrendPct}%`
+      } else if (s.type === 'oi_funding_squeeze' && m.fundingPct !== undefined) {
+        const crowd = m.fundingPct > 0 ? 'longs overcrowded' : 'shorts overcrowded'
+        s.description = `⚡ Funding Squeeze — OI ${m.oiChangePct > 0 ? '+' : ''}${m.oiChangePct}%/1h + funding ${m.fundingPct > 0 ? '+' : ''}${m.fundingPct}% (${crowd})`
       } else if (s.type === 'liq_sweep' && m.sweptLevel) {
         const dir = s.direction === 'LONG' ? 'Bullish' : 'Bearish'
         const lvl = (m.levelType || '').replace('_', ' ')
@@ -679,6 +831,8 @@ function getSignalTypes() {
   return [
     { id: 'volume_spike', label: 'Volume Spike', icon: '📊', color: '#3b82f6' },
     { id: 'oi_cvd', label: 'OI + CVD', icon: '🔮', color: '#8b5cf6' },
+    { id: 'oi_divergence', label: 'OI Divergence', icon: '🔀', color: '#f59e0b' },
+    { id: 'oi_funding_squeeze', label: 'Funding Squeeze', icon: '⚡', color: '#f97316' },
     { id: 'liq_sweep', label: 'Liq Sweep', icon: '🎯', color: '#ef4444' },
   ]
 }

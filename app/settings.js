@@ -51,7 +51,7 @@ const settingsPanel = (() => {
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
-    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation', 'liq_sweep'], // enabled signal types for push
+    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep'], // enabled signal types for push
 
     // Liq Sweep
     sweepLevelSwing: true,        // show signals from swing high/low levels
@@ -690,6 +690,40 @@ const settingsPanel = (() => {
                 <span>${t.label}</span>
               </label>
             `).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- OI Divergence -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>🔀 OI Divergence</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <p class="sp-hint">Price/OI divergence — detects exhaustion or hidden accumulation</p>
+            <label class="sp-toggle">
+              <input type="checkbox" ${types.includes('oi_divergence') ? 'checked' : ''} data-signal-type="oi_divergence" />
+              <span>Push notifications</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Funding Squeeze -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>⚡ Funding Squeeze</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <p class="sp-hint">Contrarian — trades against overcrowded leverage (OI spike + extreme funding)</p>
+            <label class="sp-toggle">
+              <input type="checkbox" ${types.includes('oi_funding_squeeze') ? 'checked' : ''} data-signal-type="oi_funding_squeeze" />
+              <span>Push notifications</span>
+            </label>
           </div>
         </div>
       </div>
