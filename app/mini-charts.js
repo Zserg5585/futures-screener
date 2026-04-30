@@ -2693,6 +2693,7 @@ function wsUnsubscribeAll() {
     // New connection will be created by wsSubscribe() when charts reload
     mc._wsClosing = true;
     if (mc.ws) {
+        mc.ws.onclose = null; // prevent async zombie reconnect
         try { mc.ws.close(); } catch(_) {}
         mc.ws = null;
     }
@@ -3286,10 +3287,14 @@ let drawIdCounter = 0;
 // Persistent drawing storage (localStorage)
 const drawStore = (() => {
     const KEY = 'mc_drawings';
+    let _cache = null; // in-memory cache to avoid localStorage parse on every WS tick
     function loadAll() {
-        try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { return {}; }
+        if (_cache) return _cache;
+        try { _cache = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { _cache = {}; }
+        return _cache;
     }
     function saveAll(store) {
+        _cache = store;
         lsSet(KEY, JSON.stringify(store));
     }
     return {
@@ -3306,6 +3311,7 @@ const drawStore = (() => {
             return store[sym] || [];
         },
         loadAll,
+        invalidateCache() { _cache = null; },
         remove(sym) {
             const store = loadAll();
             delete store[sym];

@@ -98,7 +98,7 @@ function storeCandles(symbol, interval, rawKlines) {
             s.upsert.run(symbol, interval, time,
                 parseFloat(k[1]), parseFloat(k[2]),
                 parseFloat(k[3]), parseFloat(k[4]),
-                parseFloat(k[5])
+                parseFloat(k[7])
             );
         }
     });

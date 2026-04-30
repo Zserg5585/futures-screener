@@ -759,7 +759,7 @@ fastify.get('/depth/:symbol', async (req) => {
 })
 
 // NEW: simple flat output for UI (scoring, sorting, cache)
-fastify.get('/densities/simple', async (req) => {
+fastify.get('/densities/simple', async (req, reply) => {
   const minNotional = Number(req.query.minNotional || 0)
   const depthLimit = Number(req.query.depthLimit || 100)
   const mmMode = req.query.mmMode === 'true'
@@ -1215,7 +1215,7 @@ fastify.get('/api/signals/test', async (req, reply) => {
 })
 
 // OI history — proxied from Binance /futures/data/openInterestHist
-fastify.get('/api/oi-history', async (req) => {
+fastify.get('/api/oi-history', async (req, reply) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const period = String(req.query.period || '5m')
   const limit = Math.min(Number(req.query.limit || 500), 500)
@@ -1461,9 +1461,12 @@ async function warmupDensitySubscriptions() {
     const ITEM_DELAY = 300   // 300ms between items
     console.log(`[warmup] ${allSymbols.length} symbols, ${BATCH}/batch, ${BATCH_PAUSE/1000}s pause`)
     let subscribed = 0
+    let batchRetries = 0
+    const MAX_BATCH_RETRIES = 3
 
     for (let i = 0; i < allSymbols.length; i += BATCH) {
       const batch = allSymbols.slice(i, i + BATCH)
+      let batchFailed = false
       for (const sym of batch) {
         if (wsManager.callbacks.has(sym)) { subscribed++; continue }
         try {
@@ -1472,13 +1475,21 @@ async function warmupDensitySubscriptions() {
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
         } catch (err) {
-          console.log(`[warmup] Error ${sym}: ${err.message.slice(0, 60)}, pausing 60s...`)
+          console.log(`[warmup] Error ${sym}: ${err.message.slice(0, 60)}, pausing 60s... (retry ${batchRetries + 1}/${MAX_BATCH_RETRIES})`)
           await new Promise(r => setTimeout(r, 60000))
-          i -= BATCH // retry this batch
+          if (batchRetries < MAX_BATCH_RETRIES) {
+            batchRetries++
+            i -= BATCH // retry this batch
+          } else {
+            console.log(`[warmup] Skipping batch after ${MAX_BATCH_RETRIES} retries`)
+            batchRetries = 0
+          }
+          batchFailed = true
           break
         }
         await new Promise(r => setTimeout(r, ITEM_DELAY))
       }
+      if (!batchFailed) batchRetries = 0
 
       // After every 5 batches (50 symbols), rebuild density cache
       const batchNum = Math.floor(i / BATCH) + 1

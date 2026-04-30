@@ -265,7 +265,7 @@ function selectSignal(id) {
   if (meta.buySellRatio !== undefined) metaItems.push({ key: 'Buy/Sell', val: `${meta.buySellRatio}x`, color: meta.buySellRatio > 1 ? '#22c55e' : '#ef4444' })
   if (meta.subType) metaItems.push({ key: 'Pattern', val: { oi_longs: 'Longs Accumulating', oi_shorts: 'Shorts Accumulating', oi_squeeze: 'Short Squeeze', oi_liquidation: 'Long Liquidation', oi_divergence: 'OI Divergence', oi_funding_squeeze: 'Funding Squeeze' }[meta.subType] || meta.subType })
   if (meta.oiTrendPct !== undefined) metaItems.push({ key: 'OI Trend', val: `${meta.oiTrendPct > 0 ? '+' : ''}${meta.oiTrendPct}%`, color: meta.oiTrendPct > 0 ? '#3b82f6' : '#ef4444' })
-  if (meta.fundingPct !== undefined && sig.type !== 'oi_cvd') metaItems.push({ key: 'Funding', val: `${meta.fundingPct > 0 ? '+' : ''}${meta.fundingPct}%`, color: meta.fundingPct > 0 ? '#22c55e' : '#ef4444' })
+  if (meta.fundingPct !== undefined && s.type !== 'oi_cvd') metaItems.push({ key: 'Funding', val: `${meta.fundingPct > 0 ? '+' : ''}${meta.fundingPct}%`, color: meta.fundingPct > 0 ? '#22c55e' : '#ef4444' })
 
   // Liq Sweep metadata
   if (meta.sweptLevel !== undefined) metaItems.push({ key: 'Swept Level', val: formatPrice(meta.sweptLevel), color: '#ef4444' })
@@ -275,10 +275,10 @@ function selectSignal(id) {
   if (meta.levelsSwept !== undefined && meta.levelsSwept > 1) metaItems.push({ key: 'Levels Swept', val: meta.levelsSwept, color: '#f59e0b' })
   if (meta.bodyRatio !== undefined) metaItems.push({ key: 'Body Ratio', val: `${(meta.bodyRatio * 100).toFixed(0)}%` })
   if (meta.volumeRatio !== undefined && meta.volumeRatio !== null) metaItems.push({ key: 'Volume Ratio', val: `${meta.volumeRatio}x`, color: meta.volumeRatio >= 2 ? '#22c55e' : '#94a3b8' })
-  if (meta.wallNotional !== undefined && meta.wallNotional !== null) metaItems.push({ key: 'Wall Size', val: '$' + fmtVol(meta.wallNotional) })
+  if (meta.wallNotional !== undefined && meta.wallNotional !== null) metaItems.push({ key: 'Wall Size', val: fmtVol(meta.wallNotional) })
 
   // Market context metadata (new enriched fields)
-  if (meta.volume24h !== undefined) metaItems.push({ key: 'Volume 24h', val: '$' + fmtVol(meta.volume24h) })
+  if (meta.volume24h !== undefined) metaItems.push({ key: 'Volume 24h', val: fmtVol(meta.volume24h) })
   if (meta.natr !== undefined && meta.natr !== null) metaItems.push({ key: 'NATR', val: `${meta.natr}%`, color: meta.natr >= 2 ? '#f59e0b' : meta.natr >= 1 ? '#22c55e' : '#94a3b8' })
   if (meta.trades24h !== undefined && meta.trades24h > 0) metaItems.push({ key: 'Trades 24h', val: meta.trades24h >= 1e6 ? (meta.trades24h / 1e6).toFixed(1) + 'M' : meta.trades24h >= 1e3 ? (meta.trades24h / 1e3).toFixed(0) + 'K' : meta.trades24h.toString() })
   if (meta.fundingRate !== undefined && meta.fundingRate !== null) metaItems.push({ key: 'Funding', val: `${meta.fundingRate > 0 ? '+' : ''}${meta.fundingRate}%`, color: meta.fundingRate > 0.01 ? '#22c55e' : meta.fundingRate < -0.01 ? '#ef4444' : '#94a3b8' })
@@ -521,7 +521,9 @@ function notifyNewSignals(newList) {
   // Play sound if enabled (push notification is handled by SW from server push)
   if (sp?.get('signalSound') && sp?.get('signalNotifications')) {
     try {
-      const ac = new (window.AudioContext || window.webkitAudioContext)()
+      if (!window._sigAudioCtx) window._sigAudioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      const ac = window._sigAudioCtx
+      if (ac.state === 'suspended') ac.resume()
       const osc = ac.createOscillator()
       const gain = ac.createGain()
       osc.connect(gain)
