@@ -2840,6 +2840,27 @@ body.theme-amoled {
     gap: 12px; flex-wrap: wrap;
 }
 .sig-filters { display: flex; gap: 8px; align-items: center; }
+
+/* Multi-select signal type dropdown */
+.sig-type-multi { position: relative; }
+.sig-type-btn { white-space: nowrap; min-width: 100px; text-align: left; }
+.sig-type-dropdown {
+    display: none; position: absolute; top: 100%; left: 0; z-index: 999;
+    margin-top: 4px; padding: 6px 0; min-width: 190px;
+    background: var(--bg-card, #1e1e2e); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.sig-type-dropdown.open { display: block; }
+.sig-type-opt {
+    display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+    font-size: 12px; color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+    transition: background 0.1s;
+}
+.sig-type-opt:hover { background: rgba(255,255,255,0.06); }
+.sig-type-opt input[type="checkbox"] {
+    accent-color: #3b82f6; width: 14px; height: 14px; cursor: pointer; margin: 0;
+}
+.sig-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .sig-summary { display: flex; gap: 12px; font-size: 12px; color: var(--text-muted); }
 .sig-summary-item { display: flex; align-items: center; gap: 4px; }
 .sig-summary-dot { width: 8px; height: 8px; border-radius: 50%; }

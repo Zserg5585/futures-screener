@@ -125,12 +125,14 @@ async function getFundingMap() {
     }
     _setProxyCached('funding_rates', map)
     return map
-  } catch { return {} }
+  } catch (e) { console.warn('[Signals] getFundingMap failed:', e.message); return {} }
 }
 
 /** Get NATR map from cache (computed by /api/natr endpoint, 5min TTL) */
 function getNatrMap() {
-  return _getProxyCached('natr:15m', 300_000) || {}
+  const map = _getProxyCached('natr:15m', 300_000)
+  if (!map) console.warn('[Signals] NATR cache empty — OI signal metadata will have natr:null')
+  return map || {}
 }
 
 /** Compute NATR(14) from klines array (any TF). Returns number or null */
@@ -176,7 +178,10 @@ async function getMarketRegime() {
 
   try {
     const klines = await _bgetWithRetry('/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=25')
-    if (!Array.isArray(klines) || klines.length < 21) return _marketRegime
+    if (!Array.isArray(klines) || klines.length < 21) {
+      if (!_marketRegime.direction) console.warn('[Signals] Market regime: BTC klines insufficient, regime=null — trend adjustments disabled')
+      return _marketRegime
+    }
 
     // EMA20 calculation
     const closes = klines.map(k => parseFloat(k[4]))
@@ -224,6 +229,7 @@ async function scan() {
 
     const now = Date.now()
     let signalCount = 0
+    let errCount = 0
 
     for (let idx = 0; idx < liquid.length; idx++) {
       const t = liquid[idx]
@@ -288,7 +294,7 @@ async function scan() {
           signalCount++
         }
       } catch (e) {
-        // skip symbol on error
+        errCount++
       }
 
       await new Promise(r => setTimeout(r, VOL_SCAN_DELAY_MS))
@@ -299,7 +305,7 @@ async function scan() {
       if (now - ts > COOLDOWN_MS) cooldowns.delete(key)
     }
 
-    console.log(`[Signals] Volume scan: ${liquid.length} symbols, ${signalCount} spikes (>=${VOL_MIN_RATIO}x)`)
+    console.log(`[Signals] Volume scan: ${liquid.length} symbols, ${signalCount} spikes (>=${VOL_MIN_RATIO}x)${errCount ? ` [${errCount} errors]` : ''}`)
   } catch (err) {
     console.error('[Signals] Volume scan error:', err.message)
   }
@@ -329,6 +335,7 @@ async function scanOiCvd() {
 
     const now = Date.now()
     let signalCount = 0
+    let errCount = 0
 
     console.log(`[Signals] OI+CVD scan: ${top.length} symbols, regime=${regime.direction}, BTC=${regime.btcPrice} vs EMA20=${regime.ema20}`)
 
@@ -607,13 +614,13 @@ async function scanOiCvd() {
         }
 
       } catch (e) {
-        if (signalCount === 0 && idx < 3) console.log(`[Signals] OI+CVD ${symbol} error: ${e.message}`)
+        errCount++
       }
 
       await new Promise(r => setTimeout(r, OI_CVD_DELAY_MS))
     }
 
-    console.log(`[Signals] OI+CVD scan done: ${top.length} symbols, ${signalCount} signals`)
+    console.log(`[Signals] OI+CVD scan done: ${top.length} symbols, ${signalCount} signals${errCount ? ` [${errCount} errors]` : ''}`)
   } catch (err) {
     console.error('[Signals] OI+CVD scan error:', err.message)
   }
@@ -626,7 +633,14 @@ async function checkOutcomes() {
     const pending = _auth.stmts.getPendingSignals.all()
     if (!pending || pending.length === 0) return
 
-    const ticker = _getProxyCached('ticker24hr', 60_000)
+    // Try cache first, then fetch fresh if stale (fixes: no tracking when UI is idle)
+    let ticker = _getProxyCached('ticker24hr', 60_000)
+    if (!Array.isArray(ticker)) {
+      try {
+        ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr')
+        if (Array.isArray(ticker)) _setProxyCached('ticker24hr', ticker)
+      } catch (e) { /* will retry next cycle */ }
+    }
     if (!Array.isArray(ticker)) return
 
     const priceMap = new Map()
@@ -694,7 +708,7 @@ async function checkOutcomes() {
           parseFloat(track.mae.toFixed(3)),
           sig.id
         )
-      } catch (e) { /* ignore */ }
+      } catch (e) { console.error('[Signals] Outcome update failed for signal', sig.id, e.message) }
     }
 
     // Cleanup stale MFE trackers (older than 25h)
@@ -722,7 +736,7 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
       "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
     ).get(type, symbol, Math.floor(COOLDOWN_MS / 60_000))
     if (recent) { cooldowns.set(key, now); return }
-  } catch {}
+  } catch (e) { console.warn('[Signals] DB dedup check failed:', e.message) }
 
   cooldowns.set(key, now)
 
@@ -818,7 +832,10 @@ function getLiveSignals(filters = {}) {
     result = [...liveSignals]
   }
 
-  if (filters.type) result = result.filter(s => s.type === filters.type)
+  if (filters.type) {
+    const types = filters.type.includes(',') ? new Set(filters.type.split(',')) : null
+    result = types ? result.filter(s => types.has(s.type)) : result.filter(s => s.type === filters.type)
+  }
   if (filters.symbol) result = result.filter(s => s.symbol.includes(filters.symbol.toUpperCase()))
   if (filters.direction) result = result.filter(s => s.direction === filters.direction.toUpperCase())
   if (filters.minConfidence) result = result.filter(s => s.confidence >= Number(filters.minConfidence))

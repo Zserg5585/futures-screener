@@ -239,12 +239,16 @@
             <div id="tab-signals" class="tab-content" style="display:none;">
                 <div class="sig-toolbar">
                     <div class="sig-filters">
-                        <select id="sigTypeFilter" class="mc-select">
-                            <option value="">All Types</option>
-                            <option value="volume_spike">📊 Volume Spike</option>
-                            <option value="oi_cvd">🔮 OI + CVD</option>
-                            <option value="liq_sweep">🎯 Liq Sweep</option>
-                        </select>
+                        <div class="sig-type-multi" id="sigTypeFilter">
+                            <button class="sig-type-btn mc-select" id="sigTypeBtn">All Types ▾</button>
+                            <div class="sig-type-dropdown" id="sigTypeDropdown">
+                                <label class="sig-type-opt"><input type="checkbox" value="volume_spike" checked /><span class="sig-dot" style="background:#3b82f6"></span>📊 Volume Spike</label>
+                                <label class="sig-type-opt"><input type="checkbox" value="oi_cvd" checked /><span class="sig-dot" style="background:#8b5cf6"></span>🔮 OI + CVD</label>
+                                <label class="sig-type-opt"><input type="checkbox" value="oi_divergence" checked /><span class="sig-dot" style="background:#f59e0b"></span>🔀 OI Divergence</label>
+                                <label class="sig-type-opt"><input type="checkbox" value="oi_funding_squeeze" checked /><span class="sig-dot" style="background:#f97316"></span>⚡ Funding Squeeze</label>
+                                <label class="sig-type-opt"><input type="checkbox" value="liq_sweep" checked /><span class="sig-dot" style="background:#ef4444"></span>🎯 Liq Sweep</label>
+                            </div>
+                        </div>
                         <select id="sigDirFilter" class="mc-select">
                             <option value="">All Directions</option>
                             <option value="LONG">🟢 Long</option>

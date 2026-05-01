@@ -556,6 +556,11 @@ function mergeLevels(allLevels) {
 const LIQ_SWEEP_SCAN_DELAY_MS = 150
 const MIN_VOL_24H = 30_000_000
 
+// In-memory 1h klines cache for sweep scanner (avoids 72 API calls per scan)
+// Refreshed every 30min per symbol (1h candles don't change fast)
+const _1hCache = new Map() // symbol → { candles, ts }
+const _1H_CACHE_TTL = 30 * 60_000
+
 /**
  * Main scan function — called on a timer from signals.js.
  * Examines the latest closed 5m candle per liquid symbol for sweep + pin bar.
@@ -589,6 +594,7 @@ async function scanLiqSweep(deps) {
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
 
     let signalCount = 0
+    let errCount = 0
 
     for (const t of liquid) {
       const symbol = t.symbol
@@ -597,8 +603,8 @@ async function scanLiqSweep(deps) {
 
       try {
         // --- 1. Get 5m candles (cache first, API fallback) ---
-        let candles5m = klinesCache ? klinesCache.getCandles(symbol, '5m', 50) : null
-        if (!candles5m || candles5m.length < 10) {
+        let candles5m = klinesCache ? klinesCache.getCandles(symbol, '5m', 50) : []
+        if (candles5m.length < 10) {
           // Fallback: fetch from Binance API (raw format)
           const raw = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=5m&limit=50`)
           if (!Array.isArray(raw) || raw.length < 10) continue
@@ -620,11 +626,27 @@ async function scanLiqSweep(deps) {
         if (!pinBar) continue
 
         // --- 3. Gather liquidity levels ---
-        // 3a. Swing levels from 1h candles
+        // 3a. Swing levels from 1h candles (SQLite cache → memory cache → API)
         let candles1h = klinesCache ? klinesCache.getCandles(symbol, '1h', 200) : null
         if (!candles1h || candles1h.length < 20) {
-          // Skip 1h fetch via API to save rate limit — swing levels are "nice to have"
-          candles1h = null
+          // Check in-memory 1h cache
+          const cached1h = _1hCache.get(symbol)
+          if (cached1h && Date.now() - cached1h.ts < _1H_CACHE_TTL) {
+            candles1h = cached1h.candles
+          } else {
+            try {
+              const raw1h = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=200`)
+              if (Array.isArray(raw1h) && raw1h.length >= 20) {
+                candles1h = raw1h.map(k => ({
+                  time: Math.floor(k[0] / 1000),
+                  open: parseFloat(k[1]), high: parseFloat(k[2]),
+                  low: parseFloat(k[3]), close: parseFloat(k[4]),
+                  volume: parseFloat(k[7]),
+                }))
+                _1hCache.set(symbol, { candles: candles1h, ts: Date.now() })
+              } else { candles1h = null }
+            } catch { candles1h = null }
+          }
         }
         const swingLevels = candles1h ? findSwingLevels(candles1h, 5, 3) : []
 
@@ -698,13 +720,13 @@ async function scanLiqSweep(deps) {
         signalCount++
 
       } catch (e) {
-        // Skip symbol on error — don't break the scan
+        errCount++
       }
 
       await new Promise(r => setTimeout(r, LIQ_SWEEP_SCAN_DELAY_MS))
     }
 
-    console.log(`[LiqSweep] Scan done: ${liquid.length} symbols, ${signalCount} sweep signals`)
+    console.log(`[LiqSweep] Scan done: ${liquid.length} symbols, ${signalCount} sweep signals${errCount ? ` [${errCount} errors]` : ''}`)
   } catch (err) {
     console.error('[LiqSweep] Scan error:', err.message)
   }

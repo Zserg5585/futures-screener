@@ -472,8 +472,7 @@ async function getKlinesWithStats(symbol) {
     return result
 
   } catch (err) {
-    // Если не удалось получить K-lines, возвращаем нули
-    return { vol1: 0, vol2: 0, vol3: 0, vol4: 0, vol5: 0, natr: 0 }
+    return null // caller must handle null (skip symbol)
   }
 }
 
@@ -828,6 +827,7 @@ fastify.get('/densities/simple', async (req, reply) => {
 
     // Получить K-lines для объёмов и ATR
     const klinesStats = await getKlinesWithStats(sym)
+    if (!klinesStats) return [] // skip symbol if klines unavailable
 
     // 3. Binning & Density Analysis v2 (x-multiplier based)
     const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5;
@@ -1247,12 +1247,19 @@ fastify.post('/api/klines-batch', async (req) => {
   const result = {}
   const needFetch = []
 
-  // Try SQLite cache first for each symbol
+  // Try SQLite cache first for each symbol (with 60s freshness check)
+  const nowSec = Math.floor(Date.now() / 1000)
   for (const symbol of syms) {
     const cachedCount = klinesCache.getCount(symbol, interval)
     if (cachedCount >= limit) {
-      const rows = klinesCache.getCandles(symbol, interval, limit)
-      result[symbol] = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+      const latestTime = klinesCache.getLatestTime(symbol, interval)
+      const age = latestTime ? nowSec - latestTime : Infinity
+      if (age <= 60) {
+        const rows = klinesCache.getCandles(symbol, interval, limit)
+        result[symbol] = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+      } else {
+        needFetch.push(symbol) // stale cache — refetch
+      }
     } else {
       needFetch.push(symbol)
     }
@@ -1540,6 +1547,10 @@ async function warmupKlinesCache() {
         try {
           const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`)
           setProxyCached(key, data)
+          // Persist to SQLite so data survives proxy cache expiry and PM2 restarts
+          if (klinesCache && Array.isArray(data)) {
+            try { klinesCache.storeCandles(sym, tf, data) } catch (_) {}
+          }
           done++
         } catch (err) {
           // Rate limit — pause 30s and continue
@@ -1571,6 +1582,7 @@ async function rebuildDensityCache(allSymbols) {
 
   const subscribedSyms = allSymbols.filter(s => wsManager.callbacks.has(s))
   const allWalls = []
+  let skipped = 0
 
   for (const sym of subscribedSyms) {
     const price = markMap.get(sym)
@@ -1579,8 +1591,8 @@ async function rebuildDensityCache(allSymbols) {
     const bidLevelsRaw = stateManager.getTopLevels(sym, 'bid', price, 0, 100, 5.0)
     const askLevelsRaw = stateManager.getTopLevels(sym, 'ask', price, 0, 100, 5.0)
 
-    let klinesStats
-    try { klinesStats = await getKlinesWithStats(sym) } catch (_) { continue }
+    const klinesStats = await getKlinesWithStats(sym)
+    if (!klinesStats) { skipped++; continue }
     const avg5mVol = (klinesStats.vol1 + klinesStats.vol2 + klinesStats.vol3 + klinesStats.vol4 + klinesStats.vol5) / 5
 
     const processSide = (levels, sideKey) => {
@@ -1619,6 +1631,7 @@ async function rebuildDensityCache(allSymbols) {
   const meta = { count: finalData.length, minNotional: 0, depthLimit: 100, concurrency: 0, mmMode: false, windowPct: 5, mmMultiplier: 4 }
   densityCache = { data: finalData, meta, ts: Date.now() }
   saveDensityToDisk(finalData, meta)
+  if (skipped) console.warn(`[density] Rebuild: ${skipped}/${subscribedSyms.length} symbols skipped (klines unavailable)`)
 }
 
 start()

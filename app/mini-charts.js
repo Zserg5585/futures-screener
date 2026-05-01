@@ -1350,7 +1350,7 @@ function extractVolume(data) {
 
 // ======================== SIGNAL MARKERS ON CHARTS ========================
 
-const _sigTypeLabel = { oi_cvd: '🔮 OI+CVD', volume_spike: '📊 Vol', big_mover: '🚀 Mover', liq_sweep: '🎯 Sweep' };
+const _sigTypeLabel = { oi_cvd: '🔮 OI+CVD', volume_spike: '📊 Vol', big_mover: '🚀 Mover', liq_sweep: '🎯 Sweep', oi_divergence: '🔀 OI Div', oi_funding_squeeze: '⚡ Squeeze' };
 
 /**
  * Place signal markers on a chart series (works for both mini-charts and modal).
@@ -1369,8 +1369,10 @@ function applySignalMarkers(sym, series, candles, modalRef, force) {
     if (!series || !candles || candles.length === 0) return;
     if (typeof sigState === 'undefined' || !sigState.signals) return;
 
-    // Get signals for this symbol
-    const signals = sigState.signals.filter(s => s.symbol === sym);
+    // Get signals for this symbol, filtered by selected types
+    const activeTypes = (typeof sigState !== 'undefined' && sigState.typeFilter instanceof Set && sigState.typeFilter.size > 0)
+        ? sigState.typeFilter : null;
+    const signals = sigState.signals.filter(s => s.symbol === sym && (!activeTypes || activeTypes.has(s.type)));
     if (signals.length === 0) return;
 
     const firstTime = candles[0].time;
@@ -1420,6 +1422,21 @@ function applySignalMarkers(sym, series, candles, modalRef, force) {
         target._sigMarkers = LightweightCharts.createSeriesMarkers(series, unique);
     } catch (e) {
         // Silently fail — chart may have been disposed
+    }
+}
+
+/** Refresh signal markers on all visible mini-charts + open modal (called when type filter changes) */
+function refreshSignalMarkers() {
+    // Mini-charts
+    for (const [sym, c] of Object.entries(mc.charts)) {
+        if (!c || !c.series || !c.candleData) continue;
+        if (c._sigMarkers) { try { c._sigMarkers.setMarkers([]) } catch(_){} c._sigMarkers = null; }
+        applySignalMarkers(sym, c.series, c.candleData);
+    }
+    // Open modal
+    if (typeof modal !== 'undefined' && modal.chart && modal.series && modal.candleData && modal.currentSym) {
+        if (modal._sigMarkers) { try { modal._sigMarkers.setMarkers([]) } catch(_){} modal._sigMarkers = null; }
+        applySignalMarkers(modal.currentSym, modal.series, modal.candleData, modal);
     }
 }
 

@@ -13,11 +13,14 @@ if (navigator.serviceWorker) {
   })
 }
 
+const ALL_SIG_TYPES = ['volume_spike', 'oi_cvd', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep']
+const SIG_TYPE_LABELS = { volume_spike:'Vol Spike', oi_cvd:'OI+CVD', oi_divergence:'OI Div', oi_funding_squeeze:'Fund Squeeze', liq_sweep:'Liq Sweep' }
+
 const sigState = {
   signals: [],
   selected: null,
   outcomes: [],
-  typeFilter: '',
+  typeFilter: new Set(ALL_SIG_TYPES), // multi-select, all enabled by default
   dirFilter: '',
   search: '',
   minRatio: 3,  // user-configurable: show volume spikes >= Nx
@@ -28,6 +31,12 @@ const sigState = {
 }
 
 // Pre-load signals on page load (for chart markers, before Signals tab is opened)
+// Always fetch ALL types — type filtering is purely client-side (single source of truth)
+// Restore saved type filter for display only
+try {
+  const saved = localStorage.getItem('sig_type_filter')
+  if (saved) { const arr = JSON.parse(saved); if (Array.isArray(arr)) sigState.typeFilter = new Set(arr) }
+} catch {}
 fetch(`${SIG_API}/api/signals/live?limit=500&hours=24`)
   .then(r => r.json())
   .then(d => { if (d?.success && d.data) sigState.signals = d.data })
@@ -35,16 +44,81 @@ fetch(`${SIG_API}/api/signals/live?limit=500&hours=24`)
 
 const sigEl = (id) => document.getElementById(id)
 
+// ---- Multi-select type dropdown ----
+function _initSigTypeDropdown() {
+  const btn = sigEl('sigTypeBtn')
+  const dropdown = sigEl('sigTypeDropdown')
+  if (!btn || !dropdown) return
+
+  // Restore from localStorage
+  try {
+    const saved = localStorage.getItem('sig_type_filter')
+    if (saved) {
+      const arr = JSON.parse(saved)
+      if (Array.isArray(arr)) {
+        sigState.typeFilter = new Set(arr)
+        dropdown.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = sigState.typeFilter.has(cb.value)
+        })
+      }
+    }
+  } catch {}
+
+  // Toggle dropdown
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    dropdown.classList.toggle('open')
+  })
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (!dropdown.contains(e.target) && e.target !== btn) dropdown.classList.remove('open')
+  })
+
+  // Checkbox change
+  dropdown.addEventListener('change', (e) => {
+    if (e.target.type !== 'checkbox') return
+    if (e.target.checked) {
+      sigState.typeFilter.add(e.target.value)
+    } else {
+      sigState.typeFilter.delete(e.target.value)
+    }
+    localStorage.setItem('sig_type_filter', JSON.stringify([...sigState.typeFilter]))
+    _updateSigTypeBtn()
+    // Rerender table + markers (data already in sigState.signals, no need to refetch)
+    renderSignals()
+    if (typeof refreshSignalMarkers === 'function') refreshSignalMarkers()
+  })
+
+  _updateSigTypeBtn()
+}
+
+function _updateSigTypeBtn() {
+  const btn = sigEl('sigTypeBtn')
+  if (!btn) return
+  const n = sigState.typeFilter.size
+  if (n === 0) {
+    btn.textContent = 'No Types \u25be'
+  } else if (n === ALL_SIG_TYPES.length) {
+    btn.textContent = 'All Types \u25be'
+  } else if (n <= 2) {
+    btn.textContent = [...sigState.typeFilter].map(t => SIG_TYPE_LABELS[t] || t).join(', ') + ' \u25be'
+  } else {
+    btn.textContent = n + ' Types \u25be'
+  }
+}
+
 // ---- Init / Stop ----
 function initSignals() {
   if (sigState.active) { loadSignals(); return }
   sigState.active = true
 
-  const typeF = sigEl('sigTypeFilter')
   const dirF = sigEl('sigDirFilter')
   const searchF = sigEl('sigSearch')
 
-  if (typeF) typeF.onchange = () => { sigState.typeFilter = typeF.value; loadSignals() }
+  // Multi-select type filter
+  _initSigTypeDropdown()
+
   if (dirF) dirF.onchange = () => { sigState.dirFilter = dirF.value; loadSignals() }
   if (searchF) searchF.oninput = () => { sigState.search = searchF.value; renderSignals() }
 
@@ -82,7 +156,8 @@ function stopSignals() {
 async function loadSignals() {
   try {
     const params = new URLSearchParams({ limit: '500', hours: '24' })
-    if (sigState.typeFilter) params.set('type', sigState.typeFilter)
+    // Always fetch ALL types — type filtering is client-side only
+    // Direction filter stays server-side (simple, no sync issues)
     if (sigState.dirFilter) params.set('direction', sigState.dirFilter)
 
     const [liveRes, summaryRes, outcomesRes] = await Promise.allSettled([
@@ -95,6 +170,8 @@ async function loadSignals() {
       const newSignals = liveRes.value.data || []
       notifyNewSignals(newSignals)
       sigState.signals = newSignals
+      // Refresh markers on mini-charts + modal to match current filter
+      if (typeof refreshSignalMarkers === 'function') refreshSignalMarkers()
     }
     if (outcomesRes.status === 'fulfilled' && outcomesRes.value?.success) sigState.outcomes = outcomesRes.value.stats || []
     if (summaryRes.status === 'fulfilled' && summaryRes.value?.success) renderSummary(summaryRes.value)
@@ -161,6 +238,13 @@ function renderSignals() {
   if (!tbody) return
 
   let list = [...sigState.signals]
+
+  // Filter by selected signal types (multi-select)
+  if (sigState.typeFilter.size > 0 && sigState.typeFilter.size < ALL_SIG_TYPES.length) {
+    list = list.filter(s => sigState.typeFilter.has(s.type))
+  } else if (sigState.typeFilter.size === 0) {
+    list = [] // nothing selected
+  }
 
   // Filter volume spikes by min ratio
   if (sigState.minRatio > 0) {

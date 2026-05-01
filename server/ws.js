@@ -118,16 +118,15 @@ class BinanceWSConnection {
       const oldWs = this.ws;
       this.ws = null;
       oldWs.removeAllListeners();
-      oldWs.on('error', () => {}); // swallow async errors from terminate
+      oldWs.on('error', () => {}); // swallow async errors
       try {
-        if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CLOSING) {
+        if (oldWs.readyState === WebSocket.OPEN) {
           oldWs.terminate();
-        } else if (oldWs.readyState === WebSocket.CONNECTING) {
-          // Can't terminate CONNECTING socket safely — close it and let 'close' event fire
+        } else if (oldWs.readyState === WebSocket.CONNECTING || oldWs.readyState === WebSocket.CLOSING) {
           oldWs.close();
         }
         // CLOSED state — nothing to do
-      } catch (_) {}
+      } catch (_) { /* safe — socket may already be dead */ }
     }
   }
 
