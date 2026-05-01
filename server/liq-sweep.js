@@ -485,8 +485,10 @@ function scoreConfidence({
   volumeRatio = null,
   oiChangePct = null,
   wallAbsorbed = false,
+  trendContext = null, // 'counter' | 'with' | null
+  fundingContext = null, // 'extreme' | null
 }) {
-  let score = 40 // base
+  let score = 35 // base (lowered from 40 to make room for trend+funding)
 
   // --- Wick quality (0–15) ---
   // 0.60 → 0, 0.70 → 5, 0.80 → 10, 0.90+ → 15
@@ -513,6 +515,21 @@ function scoreConfidence({
     const drop = Math.abs(oiChangePct)
     // 0.5% → 2, 1% → 4, 2%+ → 8
     score += Math.min(8, drop * 4)
+  }
+
+  // --- Trend context (0–10) ---
+  // Counter-trend sweep = exhaustion/reversal, much stronger signal
+  // With-trend sweep = less reliable (might just be a pullback)
+  if (trendContext === 'counter') {
+    score += 10
+  } else if (trendContext === 'with') {
+    score += 2
+  }
+
+  // --- Funding extreme (0–5) ---
+  // Sweep against overcrowded side = smart money liquidating the crowd
+  if (fundingContext === 'extreme') {
+    score += 5
   }
 
   // --- Wall absorbed (0–5) ---
@@ -555,6 +572,7 @@ function mergeLevels(allLevels) {
 
 const LIQ_SWEEP_SCAN_DELAY_MS = 150
 const MIN_VOL_24H = 30_000_000
+const MIN_VOLUME_RATIO = 5 // sweep candle volume must be >= 5x average
 
 // In-memory 1h klines cache for sweep scanner (avoids 72 API calls per scan)
 // Refreshed every 30min per symbol (1h candles don't change fast)
@@ -578,6 +596,7 @@ async function scanLiqSweep(deps) {
   const {
     getProxyCached, bgetWithRetry, klinesCache,
     stateManager, densityV2, persistenceMap, emitSignal,
+    getMarketRegime, getFundingMap,
   } = deps
 
   try {
@@ -593,8 +612,18 @@ async function scanLiqSweep(deps) {
       .filter(t => parseFloat(t.quoteVolume) >= MIN_VOL_24H)
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
 
+    // Get market regime once per scan (cached 5min)
+    const regime = getMarketRegime ? await getMarketRegime() : { direction: null }
+
+    // Funding rate map — reuse cached getFundingMap from signals.js (5min TTL)
+    // Values are raw decimals (e.g. 0.0003), multiply by 100 for percentage when comparing
+    const fundingRates = getFundingMap ? await getFundingMap() : {}
+
     let signalCount = 0
     let errCount = 0
+    let pinBarCount = 0
+    let sweepCount = 0
+    let volGateSkipped = 0
 
     for (const t of liquid) {
       const symbol = t.symbol
@@ -624,6 +653,7 @@ async function scanLiqSweep(deps) {
         // --- 2. Detect pin bar ---
         const pinBar = detectPinBar(targetCandle, prevCandles)
         if (!pinBar) continue
+        pinBarCount++
 
         // --- 3. Gather liquidity levels ---
         // 3a. Swing levels from 1h candles (SQLite cache → memory cache → API)
@@ -669,14 +699,56 @@ async function scanLiqSweep(deps) {
         // --- 4. Confirm sweep ---
         const sweep = confirmSweep(targetCandle, pinBar, allLevels)
         if (!sweep) continue
+        sweepCount++
 
         // --- 5. Volume ratio (candle vol vs SMA of prior candles) ---
+        // Gate: real sweeps ALWAYS have volume (stops/liquidations trigger).
+        // Skip anything below MIN_VOLUME_RATIO — it's just noise.
         let volumeRatio = null
         if (prevCandles.length >= 5) {
           const avgVol = prevCandles.reduce((s, c) => s + (c.volume || 0), 0) / prevCandles.length
           if (avgVol > 0 && targetCandle.volume) {
             volumeRatio = targetCandle.volume / avgVol
           }
+        }
+        if (volumeRatio == null || volumeRatio < MIN_VOLUME_RATIO) { volGateSkipped++; continue }
+
+        // --- 5b. OI change — confirms liquidations/stop hunts ---
+        // Only fetched for signals that passed all gates (saves API calls)
+        let oiChangePct = null
+        try {
+          const oiHist = await bgetWithRetry(
+            `/futures/data/openInterestHist?symbol=${symbol}&period=5min&limit=3`
+          )
+          if (Array.isArray(oiHist) && oiHist.length >= 2) {
+            const oiPrev = parseFloat(oiHist[oiHist.length - 2].sumOpenInterest)
+            const oiCurr = parseFloat(oiHist[oiHist.length - 1].sumOpenInterest)
+            if (oiPrev > 0) {
+              oiChangePct = ((oiCurr - oiPrev) / oiPrev) * 100
+            }
+          }
+        } catch { /* OI data unavailable — score without it */ }
+
+        // --- 5c. Trend context — counter-trend sweeps are stronger ---
+        // LONG sweep in BEARISH market = counter-trend exhaustion → strongest
+        // SHORT sweep in BULLISH market = counter-trend exhaustion → strongest
+        let trendContext = null
+        if (regime.direction) {
+          const isCounter =
+            (pinBar.direction === 'LONG' && regime.direction === 'BEARISH') ||
+            (pinBar.direction === 'SHORT' && regime.direction === 'BULLISH')
+          trendContext = isCounter ? 'counter' : 'with'
+        }
+
+        // --- 5d. Funding rate context ---
+        // Extreme funding + sweep against the crowd = smart money
+        // fundingRates values are raw decimals (0.0003 = 0.03%)
+        const rawFunding = fundingRates[symbol]
+        const fundingPct = rawFunding != null ? rawFunding * 100 : null
+        let fundingContext = null
+        if (fundingPct != null) {
+          if (fundingPct > 0.03 && pinBar.direction === 'SHORT') fundingContext = 'extreme'
+          else if (fundingPct < -0.02 && pinBar.direction === 'LONG') fundingContext = 'extreme'
         }
 
         // --- 6. Score confidence ---
@@ -686,9 +758,10 @@ async function scanLiqSweep(deps) {
           levelsSwept: sweep.levelsSwept,
           levelSource: sweep.levelSource,
           volumeRatio,
-          // OI and wallAbsorbed require extra API calls — will add in future enhancement
-          oiChangePct: null,
+          oiChangePct,
           wallAbsorbed: false,
+          trendContext,
+          fundingContext,
         })
 
         // --- 7. Emit signal ---
@@ -712,6 +785,11 @@ async function scanLiqSweep(deps) {
             bodyRatio: pinBar.bodyRatio,
             candleRange: parseFloat(pinBar.range.toFixed(4)),
             volumeRatio: volumeRatio ? parseFloat(volumeRatio.toFixed(1)) : null,
+            oiChangePct: oiChangePct != null ? parseFloat(oiChangePct.toFixed(2)) : null,
+            trendContext: trendContext || 'unknown',
+            fundingContext: fundingContext || 'normal',
+            fundingPct: fundingPct != null ? parseFloat(fundingPct.toFixed(4)) : null,
+            marketRegime: regime.direction || 'UNKNOWN',
             wallNotional: sweep.notional,
             change24h: parseFloat(t.priceChangePercent),
             volume24h: Math.round(parseFloat(t.quoteVolume)),
@@ -721,12 +799,13 @@ async function scanLiqSweep(deps) {
 
       } catch (e) {
         errCount++
+        if (errCount <= 3) console.warn(`[LiqSweep] ${symbol} error:`, e.message)
       }
 
       await new Promise(r => setTimeout(r, LIQ_SWEEP_SCAN_DELAY_MS))
     }
 
-    console.log(`[LiqSweep] Scan done: ${liquid.length} symbols, ${signalCount} sweep signals${errCount ? ` [${errCount} errors]` : ''}`)
+    console.log(`[LiqSweep] Scan done: ${liquid.length} symbols | pinBars: ${pinBarCount}, sweeps: ${sweepCount}, volGate(<${MIN_VOLUME_RATIO}x): ${volGateSkipped}, signals: ${signalCount}${errCount ? ` [${errCount} errors]` : ''}`)
   } catch (err) {
     console.error('[LiqSweep] Scan error:', err.message)
   }

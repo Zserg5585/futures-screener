@@ -100,6 +100,8 @@ function _runLiqSweep() {
     densityV2: _densityV2,
     persistenceMap: _persistenceMap,
     emitSignal,
+    getMarketRegime,
+    getFundingMap,
   }).catch(err => console.error('[Signals] liq_sweep wrapper error:', err.message))
 }
 
