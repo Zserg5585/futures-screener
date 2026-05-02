@@ -59,6 +59,26 @@ function init() {
     } else {
         loadDensities(true)
     }
+    // Prefetch top coins klines for instant modal open
+    prefetchTopKlines();
+}
+
+// Client-side kline cache for instant modal open
+const modalKlineCache = {};
+
+function prefetchTopKlines() {
+    const TOP_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+    const tf = mc.globalTF || '5m';
+    TOP_COINS.forEach(sym => {
+        fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`)
+            .then(r => r.ok ? r.json() : null)
+            .then(json => {
+                if (Array.isArray(json) && json.length) {
+                    modalKlineCache[`${sym}_${tf}`] = { data: json, ts: Date.now() };
+                }
+            })
+            .catch(() => {});
+    });
 }
 
 function setupEventListeners() {
@@ -1158,34 +1178,108 @@ function openCoinModal(sym) {
     // Attach ruler to modal chart
     attachRuler(chartEl, modal.chart, modal.series);
 
+    // Show loader
+    const loader = el('cmChartLoader');
+    if (loader) {
+        loader.innerHTML = '<div class="cm-spinner"></div><span>Loading chart...</span>';
+        loader.classList.remove('hidden');
+    }
+
     loadModalChart(sym, modal.currentTF);
 }
 
 async function loadModalChart(sym, tf) {
-    try {
-        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`);
-        const json = await res.json();
-        if (!Array.isArray(json) || !modal.chart) return;
+    const loader = el('cmChartLoader');
+    const showLoader = () => {
+        if (loader) {
+            loader.innerHTML = '<div class="cm-spinner"></div><span>Loading chart...</span>';
+            loader.classList.remove('hidden');
+        }
+    };
+    const hideLoader = () => { if (loader) loader.classList.add('hidden'); };
+    const showError = (msg) => {
+        if (loader) {
+            loader.innerHTML = `<div class="cm-chart-error">
+                <div>${msg}</div>
+                <button onclick="loadModalChart('${sym}','${tf}')">Retry</button>
+            </div>`;
+            loader.classList.remove('hidden');
+        }
+    };
 
-        const data = json.map(k => ({
-            time: k[0] / 1000,
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-            highRaw: parseFloat(k[2]),
-            lowRaw: parseFloat(k[3])
-        }));
+    const cacheKey = `${sym}_${tf}`;
+    const cached = modalKlineCache[cacheKey];
+    const CACHE_TTL = 60000; // 60s — use cache if fresh
 
+    // Parse raw klines to chart format
+    const parseKlines = (json) => json.map(k => ({
+        time: k[0] / 1000,
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        highRaw: parseFloat(k[2]),
+        lowRaw: parseFloat(k[3])
+    }));
+
+    // Render data to chart
+    const renderData = (data) => {
+        if (!modal.chart || !modal.series) return;
         modal.series.setData(data);
         modal.chart.timeScale().fitContent();
         setTimeout(() => { if (modal.chart) modal.chart.timeScale().fitContent(); }, 150);
+    };
 
-        // Auto-levels disabled for now
-        // modal.lines.forEach(l => modal.series.removePriceLine(l));
-        // modal.lines = [];
-        // drawModalLevels(data);
+    // If cache is fresh — instant render, no spinner
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
+        hideLoader();
+        renderData(parseKlines(cached.data));
+        // Background refresh
+        fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`)
+            .then(r => r.ok ? r.json() : null)
+            .then(json => {
+                if (Array.isArray(json) && json.length) {
+                    modalKlineCache[cacheKey] = { data: json, ts: Date.now() };
+                    if (modal.currentSym === sym && modal.currentTF === tf) {
+                        renderData(parseKlines(json));
+                    }
+                }
+            })
+            .catch(() => {});
+        return;
+    }
+
+    showLoader();
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+
+        const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=500`, { signal: controller.signal });
+        clearTimeout(timeout);
+
+        if (!res.ok) {
+            showError(`Server error (${res.status})`);
+            return;
+        }
+
+        const json = await res.json();
+        if (!Array.isArray(json) || !json.length || !modal.chart) {
+            showError('No data received');
+            return;
+        }
+
+        // Cache for future use
+        modalKlineCache[cacheKey] = { data: json, ts: Date.now() };
+
+        renderData(parseKlines(json));
+        hideLoader();
     } catch (e) {
+        if (e.name === 'AbortError') {
+            showError('Timeout — Binance is slow');
+        } else {
+            showError('Failed to load chart');
+        }
         console.error('Modal chart error:', e);
     }
 }
