@@ -521,6 +521,52 @@ async function initMiniCharts() {
             });
         }
 
+        // Channels dropdown (multi-select per channel type)
+        const chBtn = el('mcChannelsBtn');
+        const chDrop = el('mcChannelsDrop');
+        if (chBtn && chDrop) {
+            chBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                chDrop.classList.toggle('open');
+            });
+            document.addEventListener('click', () => chDrop.classList.remove('open'));
+            chDrop.addEventListener('click', (e) => e.stopPropagation());
+
+            // Channel type map: key → { apply, remove, applyModal, removeModal }
+            const chTypes = {
+                keltner:    { apply: applyKeltnerChannel,    remove: removeKeltnerChannel,    applyModal: applyModalKeltnerChannel,    removeModal: removeModalKeltnerChannel },
+                parallel:   { apply: applyParallelChannel,   remove: removeParallelChannel,   applyModal: applyModalParallelChannel,   removeModal: removeModalParallelChannel },
+                regression: { apply: applyRegressionChannel, remove: removeRegressionChannel, applyModal: applyModalRegressionChannel, removeModal: removeModalRegressionChannel },
+                gaussian:   { apply: applyGaussianChannel,   remove: removeGaussianChannel,   applyModal: applyModalGaussianChannel,   removeModal: removeModalGaussianChannel },
+                donchian:   { apply: applyDonchianChannel,   remove: removeDonchianChannel,   applyModal: applyModalDonchianChannel,   removeModal: removeModalDonchianChannel },
+            };
+
+            const chBoxes = chDrop.querySelectorAll('input[data-ch]');
+            chBoxes.forEach(cb => {
+                const chKey = cb.dataset.ch;
+                cb.checked = spGet('ch_' + chKey, false);
+                cb.addEventListener('change', () => {
+                    const sp = _sp();
+                    if (sp) sp.set('ch_' + chKey, cb.checked);
+                    const fns = chTypes[chKey];
+                    if (!fns) return; // not implemented yet
+                    if (cb.checked) {
+                        Object.keys(mc.charts).forEach(sym => fns.apply(sym));
+                        if (modal.chart && modal.currentSym) fns.applyModal();
+                    } else {
+                        Object.keys(mc.charts).forEach(sym => fns.remove(sym));
+                        fns.removeModal();
+                    }
+                    // Update button glow
+                    const anyActive = [...chBoxes].some(c => c.checked);
+                    chBtn.classList.toggle('has-active', anyActive);
+                });
+            });
+            // Init button glow
+            const anyActive = [...chBoxes].some(c => c.checked);
+            chBtn.classList.toggle('has-active', anyActive);
+        }
+
         // Sort by trendline proximity button
         const sortTLBtn = el('mcSortTL');
         if (sortTLBtn) {
@@ -1213,9 +1259,14 @@ function applyDataToChart(sym, parsed, tf) {
     wsSubscribe(sym);
     // Save to IndexedDB in background (fire-and-forget)
     IDB.put(sym, tf, parsed);
-    // Auto S/R levels + trendlines
+    // Auto S/R levels + trendlines + channels
     applyAutoLevels(sym);
     applyAutoTrendlines(sym);
+    applyKeltnerChannel(sym);
+    applyParallelChannel(sym);
+    applyRegressionChannel(sym);
+    applyGaussianChannel(sym);
+    applyDonchianChannel(sym);
     // Infinite scroll on mini-charts — load history when user scrolls left
     if (mc.charts[sym] && !mc.charts[sym]._infiniteUnsub) {
         const c = mc.charts[sym];
@@ -2479,6 +2530,641 @@ function removeModalAutoTrendlines() {
     modal.autoTrendlines = [];
 }
 
+// ── Parallel Channel (swing pivots + parallel offset) ─────────────
+// Takes the best trendline from computeAutoTrendlines() and builds
+// a parallel channel by measuring max deviation on the opposite side.
+// Result: ascending/descending channel that wraps price action.
+
+function computeParallelChannel(candles) {
+    if (!candles || candles.length < 40) return null;
+
+    const lines = computeAutoTrendlines(candles);
+    if (lines.length === 0) return null;
+
+    // Pick the best non-broken line (highest score)
+    const best = lines.filter(l => !l.broken).sort((a, b) => b.score - a.score)[0]
+        || lines.sort((a, b) => b.score - a.score)[0];
+    if (!best) return null;
+
+    const totalCandles = candles.length;
+    const isSupport = best.type === 'support';
+
+    // Reconstruct slope: (p2.price - p1.price) / (p2.idx - p1.idx)
+    const dx = best.p2.idx - best.p1.idx;
+    if (dx === 0) return null;
+    const slope = (best.p2.price - best.p1.price) / dx;
+
+    // Find max deviation on the OPPOSITE side to build parallel line
+    // Support line → measure max distance to highs above it
+    // Resistance line → measure max distance to lows below it
+    let maxOffset = 0;
+    for (let i = best.p1.idx; i <= best.p2.idx && i < totalCandles; i++) {
+        const linePrice = best.p1.price + slope * (i - best.p1.idx);
+        const candlePrice = isSupport ? candles[i].high : candles[i].low;
+        const offset = isSupport
+            ? candlePrice - linePrice   // high above support
+            : linePrice - candlePrice;  // low below resistance
+        if (offset > maxOffset) maxOffset = offset;
+    }
+
+    if (maxOffset <= 0) return null;
+
+    // Use 95th percentile instead of absolute max to reduce outlier stretch
+    const offsets = [];
+    for (let i = best.p1.idx; i <= best.p2.idx && i < totalCandles; i++) {
+        const linePrice = best.p1.price + slope * (i - best.p1.idx);
+        const candlePrice = isSupport ? candles[i].high : candles[i].low;
+        const offset = isSupport ? candlePrice - linePrice : linePrice - candlePrice;
+        if (offset > 0) offsets.push(offset);
+    }
+    offsets.sort((a, b) => a - b);
+    const p95 = offsets.length > 2 ? offsets[Math.floor(offsets.length * 0.95)] : maxOffset;
+
+    // Build data points for base line + parallel line + optional midline
+    const result = [];
+    const startIdx = best.p1.idx;
+    const endIdx = best.p2.idx;
+
+    for (let i = startIdx; i <= endIdx && i < totalCandles; i++) {
+        const basePrice = best.p1.price + slope * (i - startIdx);
+        const parallelPrice = isSupport ? basePrice + p95 : basePrice - p95;
+        const midPrice = (basePrice + parallelPrice) / 2;
+        result.push({
+            time: candles[i].time,
+            base: basePrice,
+            parallel: parallelPrice,
+            mid: midPrice,
+        });
+    }
+
+    return { data: result, type: best.type, slope, touches: best.touches, score: best.score };
+}
+
+// Apply Parallel Channel to a mini-chart
+function applyParallelChannel(sym) {
+    if (!spGet('ch_parallel', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+
+    removeParallelChannel(sym);
+
+    const ch = computeParallelChannel(chartObj.candleData);
+    if (!ch || ch.data.length < 2) return;
+
+    chartObj.parallelCh = [];
+    const clr = ch.type === 'support' ? 'rgba(34,197,94,' : 'rgba(239,68,68,';
+
+    // Base line (solid)
+    const baseLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.6)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    baseLs.setData(ch.data.map(d => ({ time: d.time, value: d.base })));
+    chartObj.parallelCh.push(baseLs);
+
+    // Parallel line (solid)
+    const parLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.6)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    parLs.setData(ch.data.map(d => ({ time: d.time, value: d.parallel })));
+    chartObj.parallelCh.push(parLs);
+
+    // Midline (dashed, faint)
+    const midLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.25)', lineWidth: 1, lineStyle: 2,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    midLs.setData(ch.data.map(d => ({ time: d.time, value: d.mid })));
+    chartObj.parallelCh.push(midLs);
+}
+
+function removeParallelChannel(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.parallelCh) return;
+    chartObj.parallelCh.forEach(ls => { try { chartObj.chart.removeSeries(ls); } catch(e) {} });
+    chartObj.parallelCh = [];
+}
+
+// Apply Parallel Channel to modal chart
+function applyModalParallelChannel() {
+    if (!spGet('ch_parallel', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+
+    removeModalParallelChannel();
+
+    const ch = computeParallelChannel(modal.candleData);
+    if (!ch || ch.data.length < 2) return;
+
+    modal.parallelCh = [];
+    const clr = ch.type === 'support' ? 'rgba(34,197,94,' : 'rgba(239,68,68,';
+
+    const baseLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.7)', lineWidth: 2, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    baseLs.setData(ch.data.map(d => ({ time: d.time, value: d.base })));
+    modal.parallelCh.push(baseLs);
+
+    const parLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.7)', lineWidth: 2, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    parLs.setData(ch.data.map(d => ({ time: d.time, value: d.parallel })));
+    modal.parallelCh.push(parLs);
+
+    const midLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: clr + '0.3)', lineWidth: 1, lineStyle: 2,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    midLs.setData(ch.data.map(d => ({ time: d.time, value: d.mid })));
+    modal.parallelCh.push(midLs);
+}
+
+function removeModalParallelChannel() {
+    if (!modal.parallelCh) return;
+    modal.parallelCh.forEach(ls => { try { modal.chart.removeSeries(ls); } catch(e) {} });
+    modal.parallelCh = [];
+}
+
+// ── Linear Regression Channel (auto-period via R²) ───────────────
+// Scans lookback 20-200, picks best R²×log(length).
+// Center = regression line, bands = ±2σ (standard deviation).
+
+function computeRegressionChannel(candles, mult = 2.0) {
+    if (!candles || candles.length < 30) return [];
+
+    const n = candles.length;
+    const closes = candles.map(c => c.close);
+
+    // Scan multiple lookback periods, pick best by R² × log(length)
+    let bestScore = -Infinity, bestPeriod = 50;
+    const periods = [20, 30, 50, 75, 100, 150, 200].filter(p => p <= n);
+
+    for (const period of periods) {
+        const start = n - period;
+        // Linear regression on [start..n-1]
+        let sx = 0, sy = 0, sxy = 0, sxx = 0, syy = 0;
+        for (let i = start; i < n; i++) {
+            const x = i - start;
+            const y = closes[i];
+            sx += x; sy += y; sxy += x * y; sxx += x * x; syy += y * y;
+        }
+        const denom = period * sxx - sx * sx;
+        if (denom === 0) continue;
+        const slope = (period * sxy - sx * sy) / denom;
+        const intercept = (sy - slope * sx) / period;
+
+        // R² = 1 - SS_res / SS_tot
+        let ssRes = 0, ssTot = 0;
+        const meanY = sy / period;
+        for (let i = start; i < n; i++) {
+            const x = i - start;
+            const predicted = intercept + slope * x;
+            ssRes += (closes[i] - predicted) ** 2;
+            ssTot += (closes[i] - meanY) ** 2;
+        }
+        const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+        const score = r2 * Math.log(period);
+        if (score > bestScore) { bestScore = score; bestPeriod = period; }
+    }
+
+    // Compute regression for best period
+    const start = n - bestPeriod;
+    let sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (let i = start; i < n; i++) {
+        const x = i - start; const y = closes[i];
+        sx += x; sy += y; sxy += x * y; sxx += x * x;
+    }
+    const denom = bestPeriod * sxx - sx * sx;
+    if (denom === 0) return [];
+    const slope = (bestPeriod * sxy - sx * sy) / denom;
+    const intercept = (sy - slope * sx) / bestPeriod;
+
+    // Standard deviation from regression line
+    let sumSqDev = 0;
+    for (let i = start; i < n; i++) {
+        const x = i - start;
+        const dev = closes[i] - (intercept + slope * x);
+        sumSqDev += dev * dev;
+    }
+    const sigma = Math.sqrt(sumSqDev / bestPeriod);
+
+    // Build data
+    const result = [];
+    for (let i = start; i < n; i++) {
+        const x = i - start;
+        const mid = intercept + slope * x;
+        result.push({
+            time: candles[i].time,
+            mid,
+            upper: mid + sigma * mult,
+            lower: mid - sigma * mult,
+        });
+    }
+    return result;
+}
+
+// Apply Regression Channel to mini-chart
+function applyRegressionChannel(sym) {
+    if (!spGet('ch_regression', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+    removeRegressionChannel(sym);
+    const data = computeRegressionChannel(chartObj.candleData);
+    if (data.length < 2) return;
+    chartObj.regressionCh = [];
+    const addLine = (field, clr, dash) => {
+        const ls = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+            color: clr, lineWidth: 1, lineStyle: dash ? 2 : 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        chartObj.regressionCh.push(ls);
+    };
+    addLine('upper', 'rgba(56,189,248,0.5)', false);
+    addLine('mid',   'rgba(56,189,248,0.35)', true);
+    addLine('lower', 'rgba(56,189,248,0.5)', false);
+}
+
+function removeRegressionChannel(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.regressionCh) return;
+    chartObj.regressionCh.forEach(ls => { try { chartObj.chart.removeSeries(ls); } catch(e) {} });
+    chartObj.regressionCh = [];
+}
+
+function applyModalRegressionChannel() {
+    if (!spGet('ch_regression', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+    removeModalRegressionChannel();
+    const data = computeRegressionChannel(modal.candleData);
+    if (data.length < 2) return;
+    modal.regressionCh = [];
+    const addLine = (field, clr, dash) => {
+        const ls = modal.chart.addSeries(LightweightCharts.LineSeries, {
+            color: clr, lineWidth: dash ? 1 : 2, lineStyle: dash ? 2 : 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        modal.regressionCh.push(ls);
+    };
+    addLine('upper', 'rgba(56,189,248,0.6)', false);
+    addLine('mid',   'rgba(56,189,248,0.4)', true);
+    addLine('lower', 'rgba(56,189,248,0.6)', false);
+}
+
+function removeModalRegressionChannel() {
+    if (!modal.regressionCh) return;
+    modal.regressionCh.forEach(ls => { try { modal.chart.removeSeries(ls); } catch(e) {} });
+    modal.regressionCh = [];
+}
+
+// ── Gaussian Channel (Ehlers multi-pole filter) ──────────────────
+// Applies EMA N times (poles=4) for ultra-smooth center line.
+// Bands: ±ATR mult. Gray/faint when slope is flat = NO TRADE zone.
+
+function computeGaussianChannel(candles, poles = 4, period = 144, atrMult = 2.0) {
+    if (!candles || candles.length < period + 10) return [];
+
+    // Adapt period to candle count: use min(period, length/3) so it works on shorter data
+    const effPeriod = Math.min(period, Math.floor(candles.length / 3));
+    if (effPeriod < 10) return [];
+
+    const closes = candles.map(c => c.close);
+    const n = candles.length;
+
+    // Multi-pole EMA: apply EMA `poles` times for Gaussian-like smoothing
+    const emaK = 2 / (effPeriod + 1);
+    let smoothed = [...closes];
+    for (let p = 0; p < poles; p++) {
+        const next = new Array(n);
+        next[0] = smoothed[0];
+        for (let i = 1; i < n; i++) {
+            next[i] = smoothed[i] * emaK + next[i - 1] * (1 - emaK);
+        }
+        smoothed = next;
+    }
+
+    // ATR for bands
+    const trs = [0];
+    for (let i = 1; i < n; i++) {
+        const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    // Running ATR(14)
+    const atrArr = new Array(n).fill(0);
+    for (let i = 14; i < n; i++) {
+        let s = 0; for (let j = i - 13; j <= i; j++) s += trs[j];
+        atrArr[i] = s / 14;
+    }
+
+    const result = [];
+    const warmup = Math.max(effPeriod, 14);
+    for (let i = warmup; i < n; i++) {
+        const mid = smoothed[i];
+        const atr = atrArr[i];
+        // Slope: normalized change over 5 bars
+        const prevMid = smoothed[Math.max(0, i - 5)];
+        const slopeNorm = mid !== 0 ? (mid - prevMid) / mid * 100 : 0;
+        // flat = |slope| < 0.02% per bar
+        const isFlat = Math.abs(slopeNorm) < 0.1;
+        result.push({
+            time: candles[i].time,
+            mid,
+            upper: mid + atr * atrMult,
+            lower: mid - atr * atrMult,
+            flat: isFlat,
+        });
+    }
+    return result;
+}
+
+function applyGaussianChannel(sym) {
+    if (!spGet('ch_gaussian', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+    removeGaussianChannel(sym);
+    const data = computeGaussianChannel(chartObj.candleData);
+    if (data.length < 2) return;
+    chartObj.gaussianCh = [];
+    // Split into flat/trending segments for color coding
+    const addLine = (field, trendClr, flatClr) => {
+        // Simple: use trending color, flat zones will be apparent from narrowing
+        const ls = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+            color: trendClr, lineWidth: 1, lineStyle: 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        chartObj.gaussianCh.push(ls);
+    };
+    addLine('upper', 'rgba(192,132,252,0.5)');
+    addLine('mid',   'rgba(192,132,252,0.3)');
+    addLine('lower', 'rgba(192,132,252,0.5)');
+}
+
+function removeGaussianChannel(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.gaussianCh) return;
+    chartObj.gaussianCh.forEach(ls => { try { chartObj.chart.removeSeries(ls); } catch(e) {} });
+    chartObj.gaussianCh = [];
+}
+
+function applyModalGaussianChannel() {
+    if (!spGet('ch_gaussian', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+    removeModalGaussianChannel();
+    const data = computeGaussianChannel(modal.candleData);
+    if (data.length < 2) return;
+    modal.gaussianCh = [];
+    const addLine = (field, clr, w) => {
+        const ls = modal.chart.addSeries(LightweightCharts.LineSeries, {
+            color: clr, lineWidth: w, lineStyle: 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        modal.gaussianCh.push(ls);
+    };
+    addLine('upper', 'rgba(192,132,252,0.6)', 1);
+    addLine('mid',   'rgba(192,132,252,0.35)', 1);
+    addLine('lower', 'rgba(192,132,252,0.6)', 1);
+}
+
+function removeModalGaussianChannel() {
+    if (!modal.gaussianCh) return;
+    modal.gaussianCh.forEach(ls => { try { modal.chart.removeSeries(ls); } catch(e) {} });
+    modal.gaussianCh = [];
+}
+
+// ── Donchian Channel (Highest High / Lowest Low) ─────────────────
+// N-bar high/low channel. Squeeze detection: width narrows before breakout.
+
+function computeDonchianChannel(candles, period = 20) {
+    if (!candles || candles.length < period + 1) return [];
+
+    const result = [];
+    for (let i = period; i < candles.length; i++) {
+        let high = -Infinity, low = Infinity;
+        for (let j = i - period; j < i; j++) {
+            if (candles[j].high > high) high = candles[j].high;
+            if (candles[j].low < low) low = candles[j].low;
+        }
+        result.push({
+            time: candles[i].time,
+            upper: high,
+            lower: low,
+            mid: (high + low) / 2,
+        });
+    }
+    return result;
+}
+
+function applyDonchianChannel(sym) {
+    if (!spGet('ch_donchian', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+    removeDonchianChannel(sym);
+    const data = computeDonchianChannel(chartObj.candleData);
+    if (data.length < 2) return;
+    chartObj.donchianCh = [];
+    const addLine = (field, clr, dash) => {
+        const ls = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+            color: clr, lineWidth: 1, lineStyle: dash ? 2 : 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        chartObj.donchianCh.push(ls);
+    };
+    addLine('upper', 'rgba(250,204,21,0.5)', false);
+    addLine('mid',   'rgba(250,204,21,0.25)', true);
+    addLine('lower', 'rgba(250,204,21,0.5)', false);
+}
+
+function removeDonchianChannel(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.donchianCh) return;
+    chartObj.donchianCh.forEach(ls => { try { chartObj.chart.removeSeries(ls); } catch(e) {} });
+    chartObj.donchianCh = [];
+}
+
+function applyModalDonchianChannel() {
+    if (!spGet('ch_donchian', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+    removeModalDonchianChannel();
+    const data = computeDonchianChannel(modal.candleData);
+    if (data.length < 2) return;
+    modal.donchianCh = [];
+    const addLine = (field, clr, dash) => {
+        const ls = modal.chart.addSeries(LightweightCharts.LineSeries, {
+            color: clr, lineWidth: dash ? 1 : 2, lineStyle: dash ? 2 : 0,
+            crosshairMarkerVisible: false, lastValueVisible: false,
+            priceLineVisible: false, pointMarkersVisible: false,
+        });
+        ls.setData(data.map(d => ({ time: d.time, value: d[field] })));
+        modal.donchianCh.push(ls);
+    };
+    addLine('upper', 'rgba(250,204,21,0.6)', false);
+    addLine('mid',   'rgba(250,204,21,0.3)', true);
+    addLine('lower', 'rgba(250,204,21,0.6)', false);
+}
+
+function removeModalDonchianChannel() {
+    if (!modal.donchianCh) return;
+    modal.donchianCh.forEach(ls => { try { modal.chart.removeSeries(ls); } catch(e) {} });
+    modal.donchianCh = [];
+}
+
+// ── Keltner Channel (EMA + ATR bands) ─────────────────────────────
+// EMA(20) center line ± ATR(10) × multiplier = upper/lower bands
+// Mean-reversion channel: price at edge = potential bounce
+
+function computeKeltnerChannel(candles, emaPeriod = 20, atrPeriod = 10, mult = 1.5) {
+    if (!candles || candles.length < Math.max(emaPeriod, atrPeriod) + 1) return [];
+
+    // 1. EMA of close prices
+    const closes = candles.map(c => c.close);
+    const emaK = 2 / (emaPeriod + 1);
+    const ema = new Array(candles.length);
+    // Seed EMA with SMA of first emaPeriod candles
+    let sum = 0;
+    for (let i = 0; i < emaPeriod; i++) sum += closes[i];
+    ema[emaPeriod - 1] = sum / emaPeriod;
+    for (let i = emaPeriod; i < candles.length; i++) {
+        ema[i] = closes[i] * emaK + ema[i - 1] * (1 - emaK);
+    }
+
+    // 2. ATR (True Range → SMA)
+    const trs = [0]; // first candle has no prev close
+    for (let i = 1; i < candles.length; i++) {
+        const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    }
+    // Rolling SMA of TR
+    const atr = new Array(candles.length);
+    const startIdx = Math.max(emaPeriod - 1, atrPeriod);
+    for (let i = startIdx; i < candles.length; i++) {
+        let s = 0;
+        for (let j = i - atrPeriod + 1; j <= i; j++) s += trs[j];
+        atr[i] = s / atrPeriod;
+    }
+
+    // 3. Build data points (time, mid, upper, lower)
+    const result = [];
+    for (let i = startIdx; i < candles.length; i++) {
+        if (ema[i] == null || atr[i] == null) continue;
+        result.push({
+            time: candles[i].time,
+            mid: ema[i],
+            upper: ema[i] + atr[i] * mult,
+            lower: ema[i] - atr[i] * mult,
+        });
+    }
+    return result;
+}
+
+// Apply Keltner Channel to a mini-chart
+function applyKeltnerChannel(sym) {
+    if (!spGet('ch_keltner', false)) return;
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.series || !chartObj.candleData) return;
+
+    removeKeltnerChannel(sym);
+
+    const data = computeKeltnerChannel(chartObj.candleData);
+    if (data.length < 2) return;
+
+    chartObj.keltner = [];
+
+    // Upper band — orange, thin
+    const upperLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.5)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    upperLs.setData(data.map(d => ({ time: d.time, value: d.upper })));
+    chartObj.keltner.push(upperLs);
+
+    // Mid EMA — orange, dashed
+    const midLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.35)', lineWidth: 1, lineStyle: 2,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    midLs.setData(data.map(d => ({ time: d.time, value: d.mid })));
+    chartObj.keltner.push(midLs);
+
+    // Lower band — orange, thin
+    const lowerLs = chartObj.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.5)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    lowerLs.setData(data.map(d => ({ time: d.time, value: d.lower })));
+    chartObj.keltner.push(lowerLs);
+}
+
+// Remove Keltner Channel from a mini-chart
+function removeKeltnerChannel(sym) {
+    const chartObj = mc.charts[sym];
+    if (!chartObj || !chartObj.keltner) return;
+    chartObj.keltner.forEach(ls => { try { chartObj.chart.removeSeries(ls); } catch(e) {} });
+    chartObj.keltner = [];
+}
+
+// Apply Keltner Channel to modal chart
+function applyModalKeltnerChannel() {
+    if (!spGet('ch_keltner', false)) return;
+    if (!modal.chart || !modal.series || !modal.candleData) return;
+
+    removeModalKeltnerChannel();
+
+    const data = computeKeltnerChannel(modal.candleData);
+    if (data.length < 2) return;
+
+    modal.keltner = [];
+
+    const upperLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.6)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    upperLs.setData(data.map(d => ({ time: d.time, value: d.upper })));
+    modal.keltner.push(upperLs);
+
+    const midLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.4)', lineWidth: 1, lineStyle: 2,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    midLs.setData(data.map(d => ({ time: d.time, value: d.mid })));
+    modal.keltner.push(midLs);
+
+    const lowerLs = modal.chart.addSeries(LightweightCharts.LineSeries, {
+        color: 'rgba(251,146,60,0.6)', lineWidth: 1, lineStyle: 0,
+        crosshairMarkerVisible: false, lastValueVisible: false,
+        priceLineVisible: false, pointMarkersVisible: false,
+    });
+    lowerLs.setData(data.map(d => ({ time: d.time, value: d.lower })));
+    modal.keltner.push(lowerLs);
+}
+
+function removeModalKeltnerChannel() {
+    if (!modal.keltner) return;
+    modal.keltner.forEach(ls => { try { modal.chart.removeSeries(ls); } catch(e) {} });
+    modal.keltner = [];
+}
+
 // ==========================================
 // Live WebSocket — Binance kline stream
 // ==========================================
@@ -3117,9 +3803,14 @@ async function loadModalChart(sym, tf) {
         // Apply density walls to modal
         applyDensityToModal();
 
-        // Apply auto S/R levels + trendlines to modal
+        // Apply auto S/R levels + trendlines + channels to modal
         applyModalAutoLevels();
         applyModalAutoTrendlines();
+        applyModalKeltnerChannel();
+        applyModalParallelChannel();
+        applyModalRegressionChannel();
+        applyModalGaussianChannel();
+        applyModalDonchianChannel();
 
         // Apply OI overlay if enabled
         applyOIOverlay(modal.chart, sym);
@@ -5475,6 +6166,86 @@ async function loadSlotChart(slotIndex) {
                 ]);
                 slot.autoTrendlines.push({ lineSeries: ls });
             });
+        }
+
+        // Channels on slot (each type individually toggled)
+        // Keltner
+        if (slot.keltner) slot.keltner.forEach(ls => { try { slot.chart.removeSeries(ls); } catch(e){} });
+        slot.keltner = [];
+        if (spGet('ch_keltner', false) && slot.candleData) {
+            const kd = computeKeltnerChannel(slot.candleData);
+            if (kd.length >= 2) {
+                const addBand = (field, style) => {
+                    const ls = slot.chart.addSeries(LightweightCharts.LineSeries, {
+                        color: style.color, lineWidth: 1, lineStyle: style.dash ? 2 : 0,
+                        crosshairMarkerVisible: false, lastValueVisible: false,
+                        priceLineVisible: false, pointMarkersVisible: false,
+                    });
+                    ls.setData(kd.map(d => ({ time: d.time, value: d[field] })));
+                    slot.keltner.push(ls);
+                };
+                addBand('upper', { color: 'rgba(251,146,60,0.6)' });
+                addBand('mid',   { color: 'rgba(251,146,60,0.35)', dash: true });
+                addBand('lower', { color: 'rgba(251,146,60,0.6)' });
+            }
+        }
+        // Parallel Channel
+        if (slot.parallelCh) slot.parallelCh.forEach(ls => { try { slot.chart.removeSeries(ls); } catch(e){} });
+        slot.parallelCh = [];
+        if (spGet('ch_parallel', false) && slot.candleData) {
+            const pch = computeParallelChannel(slot.candleData);
+            if (pch && pch.data.length >= 2) {
+                const clr = pch.type === 'support' ? 'rgba(34,197,94,' : 'rgba(239,68,68,';
+                const addLine = (field, style) => {
+                    const ls = slot.chart.addSeries(LightweightCharts.LineSeries, {
+                        color: style.color, lineWidth: style.width || 1, lineStyle: style.dash ? 2 : 0,
+                        crosshairMarkerVisible: false, lastValueVisible: false,
+                        priceLineVisible: false, pointMarkersVisible: false,
+                    });
+                    ls.setData(pch.data.map(d => ({ time: d.time, value: d[field] })));
+                    slot.parallelCh.push(ls);
+                };
+                addLine('base', { color: clr + '0.6)', width: 2 });
+                addLine('parallel', { color: clr + '0.6)', width: 2 });
+                addLine('mid', { color: clr + '0.25)', dash: true });
+            }
+        }
+
+        // Regression Channel on slot
+        if (slot.regressionCh) slot.regressionCh.forEach(ls => { try { slot.chart.removeSeries(ls); } catch(e){} });
+        slot.regressionCh = [];
+        if (spGet('ch_regression', false) && slot.candleData) {
+            const rd = computeRegressionChannel(slot.candleData);
+            if (rd.length >= 2) {
+                const addL = (f, c, d) => { const ls = slot.chart.addSeries(LightweightCharts.LineSeries, { color: c, lineWidth: 1, lineStyle: d ? 2 : 0, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }); ls.setData(rd.map(p => ({ time: p.time, value: p[f] }))); slot.regressionCh.push(ls); };
+                addL('upper', 'rgba(56,189,248,0.5)', false);
+                addL('mid', 'rgba(56,189,248,0.35)', true);
+                addL('lower', 'rgba(56,189,248,0.5)', false);
+            }
+        }
+        // Gaussian Channel on slot
+        if (slot.gaussianCh) slot.gaussianCh.forEach(ls => { try { slot.chart.removeSeries(ls); } catch(e){} });
+        slot.gaussianCh = [];
+        if (spGet('ch_gaussian', false) && slot.candleData) {
+            const gd = computeGaussianChannel(slot.candleData);
+            if (gd.length >= 2) {
+                const addL = (f, c) => { const ls = slot.chart.addSeries(LightweightCharts.LineSeries, { color: c, lineWidth: 1, lineStyle: 0, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }); ls.setData(gd.map(p => ({ time: p.time, value: p[f] }))); slot.gaussianCh.push(ls); };
+                addL('upper', 'rgba(192,132,252,0.5)');
+                addL('mid', 'rgba(192,132,252,0.3)');
+                addL('lower', 'rgba(192,132,252,0.5)');
+            }
+        }
+        // Donchian Channel on slot
+        if (slot.donchianCh) slot.donchianCh.forEach(ls => { try { slot.chart.removeSeries(ls); } catch(e){} });
+        slot.donchianCh = [];
+        if (spGet('ch_donchian', false) && slot.candleData) {
+            const dd = computeDonchianChannel(slot.candleData);
+            if (dd.length >= 2) {
+                const addL = (f, c, d) => { const ls = slot.chart.addSeries(LightweightCharts.LineSeries, { color: c, lineWidth: 1, lineStyle: d ? 2 : 0, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }); ls.setData(dd.map(p => ({ time: p.time, value: p[f] }))); slot.donchianCh.push(ls); };
+                addL('upper', 'rgba(250,204,21,0.5)', false);
+                addL('mid', 'rgba(250,204,21,0.25)', true);
+                addL('lower', 'rgba(250,204,21,0.5)', false);
+            }
         }
 
         // OI indicator
