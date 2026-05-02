@@ -78,10 +78,7 @@ const settingsPanel = (() => {
 
     // Channel overlays
     ch_keltner: false,
-    ch_parallel: false,
     ch_regression: false,
-    ch_gaussian: false,
-    ch_donchian: false,
 
     // Drawing defaults
     drawLineStyle: 'solid',       // solid, dashed, dotted
