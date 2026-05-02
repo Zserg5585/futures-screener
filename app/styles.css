@@ -733,6 +733,8 @@ body.theme-amoled {
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-wrap: wrap;
     z-index: 40;
+    position: relative;
+    overflow: visible;
 }
 
 .mc-toolbar-group {
@@ -2846,7 +2848,7 @@ body.theme-amoled {
 .ch-type-btn { white-space: nowrap; }
 .ch-type-btn.has-active { box-shadow: 0 0 6px rgba(251,146,60,0.5); border-color: rgba(251,146,60,0.4); }
 .ch-type-dropdown {
-    display: none; position: absolute; top: 100%; left: 0; z-index: 999;
+    display: none; position: absolute; top: 100%; left: 0; z-index: 99999;
     margin-top: 4px; padding: 6px 0; min-width: 190px;
     background: var(--bg-card, #1e1e2e); border: 1px solid rgba(255,255,255,0.1);
     border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);

@@ -549,7 +549,7 @@ async function initMiniCharts() {
                     const sp = _sp();
                     if (sp) sp.set('ch_' + chKey, cb.checked);
                     const fns = chTypes[chKey];
-                    if (!fns) return; // not implemented yet
+                    if (!fns) return;
                     if (cb.checked) {
                         Object.keys(mc.charts).forEach(sym => fns.apply(sym));
                         if (modal.chart && modal.currentSym) fns.applyModal();
