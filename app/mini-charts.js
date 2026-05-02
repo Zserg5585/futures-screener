@@ -1450,12 +1450,31 @@ function applySignalMarkers(sym, series, candles, modalRef, force) {
         if (sp && !sp.get('showSignalsOnCharts')) return;
     }
     if (!series || !candles || candles.length === 0) return;
-    if (typeof sigState === 'undefined' || !sigState.signals) return;
 
     // Get signals for this symbol, filtered by selected types
-    const activeTypes = (typeof sigState !== 'undefined' && sigState.typeFilter instanceof Set && sigState.typeFilter.size > 0)
+    const hasSigState = typeof sigState !== 'undefined' && sigState.signals;
+    const activeTypes = (hasSigState && sigState.typeFilter instanceof Set && sigState.typeFilter.size > 0)
         ? sigState.typeFilter : null;
-    const signals = sigState.signals.filter(s => s.symbol === sym && (!activeTypes || activeTypes.has(s.type)));
+    const signals = hasSigState
+        ? sigState.signals.filter(s => s.symbol === sym && (!activeTypes || activeTypes.has(s.type)))
+        : [];
+
+    // Also consume pending signal marker (from push notification click)
+    const pending = window._pendingSignalMarker;
+    if (pending && modalRef) {
+        // Inject pending marker as a synthetic signal so it always shows
+        signals.push({
+            symbol: sym,
+            created_at: new Date(pending.time * 1000).toISOString(),
+            price: pending.price,
+            direction: pending.direction,
+            type: pending.type,
+            description: pending.description,
+        });
+        window._pendingSignalMarker = null;
+        console.log(`[Signal] Consumed pending marker for ${sym}: ${pending.type} ${pending.direction} @ ${pending.price}`);
+    }
+
     if (signals.length === 0) return;
 
     const firstTime = candles[0].time;
@@ -3491,9 +3510,7 @@ async function loadModalChart(sym, tf) {
         // Signal markers on modal chart
         // Show all signals for this symbol (not just pending one)
         const isSignalsTab = document.getElementById('tab-signals')?.style.display !== 'none';
-        applySignalMarkers(sym, modal.series, data1, modal, isSignalsTab);
-        // Also consume pending marker (from Signals tab "Open Chart") — already handled by applySignalMarkers
-        window._pendingSignalMarker = null;
+        applySignalMarkers(sym, modal.series, data1, modal, isSignalsTab || !!window._pendingSignalMarker);
 
         // Apply density walls to modal
         applyDensityToModal();
@@ -5379,7 +5396,7 @@ function closeCoinModal() {
     // Stop countdown timer
     if (modal._countdownTimer) { clearInterval(modal._countdownTimer); modal._countdownTimer = null; }
     // Clear signal markers
-    if (modal._markers) { modal._markers.setMarkers([]); modal._markers = null; }
+    if (modal._sigMarkers) { try { modal._sigMarkers.setMarkers([]); } catch(_){} modal._sigMarkers = null; }
     window._pendingSignalMarker = null;
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
