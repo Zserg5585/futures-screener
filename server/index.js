@@ -1129,15 +1129,21 @@ fastify.get('/api/klines', async (req) => {
     return data
   }
 
-  // Latest candles — try SQLite cache (only if fresh enough)
+  // Latest candles — try SQLite cache (fresh or stale with background refresh)
   const cachedCount = klinesCache.getCount(symbol, interval)
   if (cachedCount >= limit) {
     const latestTime = klinesCache.getLatestTime(symbol, interval)
     const age = Date.now() / 1000 - (latestTime || 0)
-    // Use cache only if last candle is less than 60s old (background updater keeps it fresh)
-    if (age < 60) {
+    if (age < 300) {
       const rows = klinesCache.getCandles(symbol, interval, limit)
-      return rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+      const result = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+      // Stale cache (>60s) — return immediately but trigger background refresh
+      if (age >= 60) {
+        bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=3`)
+          .then(data => { if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data) })
+          .catch(() => {})
+      }
+      return result
     }
   }
 
@@ -1247,22 +1253,31 @@ fastify.post('/api/klines-batch', async (req) => {
   const result = {}
   const needFetch = []
 
-  // Try SQLite cache first for each symbol (with 60s freshness check)
+  // Try SQLite cache first for each symbol (fresh <60s instant, stale <300s with bg refresh)
   const nowSec = Math.floor(Date.now() / 1000)
+  const bgRefresh = [] // symbols with stale cache — refresh in background
   for (const symbol of syms) {
     const cachedCount = klinesCache.getCount(symbol, interval)
     if (cachedCount >= limit) {
       const latestTime = klinesCache.getLatestTime(symbol, interval)
       const age = latestTime ? nowSec - latestTime : Infinity
-      if (age <= 60) {
+      if (age <= 300) {
         const rows = klinesCache.getCandles(symbol, interval, limit)
         result[symbol] = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+        if (age > 60) bgRefresh.push(symbol) // schedule background update
       } else {
-        needFetch.push(symbol) // stale cache — refetch
+        needFetch.push(symbol) // too stale (>5min) — must refetch
       }
     } else {
       needFetch.push(symbol)
     }
+  }
+  // Background refresh for stale-but-usable cache (non-blocking)
+  if (bgRefresh.length > 0) {
+    Promise.allSettled(bgRefresh.map(symbol =>
+      bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=3`)
+        .then(data => { if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data) })
+    )).catch(() => {})
   }
 
   // Fetch uncached from Binance in parallel
@@ -1424,11 +1439,16 @@ const start = async () => {
     setTimeout(async () => {
       try {
         console.log('[startup] Pre-warming NATR cache (15m)...')
-        const fakeReq = { query: { interval: '15m' } }
         await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
         console.log('[startup] NATR cache warmed ✓')
       } catch (e) { console.warn('[startup] NATR warmup failed:', e.message) }
     }, 5_000) // 5s after start — let ticker cache populate first
+    // Periodic NATR refresh every 5 min (cache TTL is 5min, so re-compute before expiry)
+    setInterval(async () => {
+      try {
+        await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
+      } catch (e) { console.warn('[NATR-refresh] failed:', e.message) }
+    }, 270_000) // 4.5 min (slightly before 5min TTL expiry)
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {

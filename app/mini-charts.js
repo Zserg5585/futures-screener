@@ -369,6 +369,10 @@ async function initMiniCharts() {
                 btn.classList.add('active');
                 mc.globalTF = btn.dataset.tf;
                 console.log('[TF-SWITCH] Switching to', mc.globalTF, 'charts:', Object.keys(mc.charts).length, 'wsStreams:', mc.wsStreams.size);
+                // Cancel any pending destroy timers before TF switch
+                Object.keys(mc.charts).forEach(s => {
+                    if (mc.charts[s]?._destroyTimer) { clearTimeout(mc.charts[s]._destroyTimer); mc.charts[s]._destroyTimer = null; }
+                });
                 // Unsubscribe old TF streams — critical! Otherwise old TF data
                 // keeps arriving and new TF streams may not subscribe properly
                 wsUnsubscribeAll();
@@ -681,6 +685,11 @@ async function initMiniCharts() {
                 const sym = entry.target.dataset.symbol;
                 if (!sym) return;
                 if (entry.isIntersecting) {
+                    // Card scrolled back into view — cancel pending destroy
+                    if (mc.charts[sym] && mc.charts[sym]._destroyTimer) {
+                        clearTimeout(mc.charts[sym]._destroyTimer);
+                        mc.charts[sym]._destroyTimer = null;
+                    }
                     // Card scrolled into view — create chart & queue for batch load
                     if (!mc.charts[sym]) {
                         createChartInstance(sym);
@@ -688,35 +697,38 @@ async function initMiniCharts() {
                         added++;
                     }
                 } else {
-                    // Card scrolled out — destroy chart instance but KEEP cached data
-                    if (mc.charts[sym]) {
-                        // Save candle data to cache before destroying chart
-                        if (mc.charts[sym].candleData && mc.charts[sym].candleData.length > 0) {
-                            mc.dataCache[sym] = {
-                                candles: mc.charts[sym].candleData,
-                                volume: extractVolume(mc.charts[sym].candleData),
-                                tf: mc.globalTF
-                            };
-                        }
-                        if (mc.charts[sym]._infiniteUnsub) {
-                            mc.charts[sym]._infiniteUnsub();
-                        }
-                        mc.charts[sym].chart.remove();
-                        delete mc.charts[sym];
-                        delete mc.loadedData[sym];
-                        // Unsub this symbol's stream (debounced)
-                        const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
-                        mc.wsStreams.delete(stream);
-                        _wsPendingSub.delete(stream); // cancel pending sub if any
-                        if (!mc._wsUnsubPending) mc._wsUnsubPending = new Set();
-                        mc._wsUnsubPending.add(stream);
-                        clearTimeout(mc._wsUnsubTimer);
-                        mc._wsUnsubTimer = setTimeout(() => {
-                            if (mc._wsUnsubPending.size > 0 && mc.ws && mc.ws.readyState === WebSocket.OPEN) {
-                                mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc._wsUnsubPending], id: Date.now() }));
+                    // Card scrolled out — delay destruction (avoids jerk on scroll-back)
+                    if (mc.charts[sym] && !mc.charts[sym]._destroyTimer) {
+                        mc.charts[sym]._destroyTimer = setTimeout(() => {
+                            if (!mc.charts[sym]) return;
+                            // Save candle data to cache before destroying chart
+                            if (mc.charts[sym].candleData && mc.charts[sym].candleData.length > 0) {
+                                mc.dataCache[sym] = {
+                                    candles: mc.charts[sym].candleData,
+                                    volume: extractVolume(mc.charts[sym].candleData),
+                                    tf: mc.globalTF
+                                };
                             }
-                            mc._wsUnsubPending.clear();
-                        }, 200);
+                            if (mc.charts[sym]._infiniteUnsub) {
+                                mc.charts[sym]._infiniteUnsub();
+                            }
+                            mc.charts[sym].chart.remove();
+                            delete mc.charts[sym];
+                            delete mc.loadedData[sym];
+                            // Unsub this symbol's stream (debounced)
+                            const stream = `${sym.toLowerCase()}@kline_${mc.globalTF}`;
+                            mc.wsStreams.delete(stream);
+                            _wsPendingSub.delete(stream);
+                            if (!mc._wsUnsubPending) mc._wsUnsubPending = new Set();
+                            mc._wsUnsubPending.add(stream);
+                            clearTimeout(mc._wsUnsubTimer);
+                            mc._wsUnsubTimer = setTimeout(() => {
+                                if (mc._wsUnsubPending.size > 0 && mc.ws && mc.ws.readyState === WebSocket.OPEN) {
+                                    mc.ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [...mc._wsUnsubPending], id: Date.now() }));
+                                }
+                                mc._wsUnsubPending.clear();
+                            }, 200);
+                        }, 5000); // 5s grace period before destroy
                     }
                 }
             });
@@ -864,8 +876,9 @@ function rebuildGrid() {
     // Unsubscribe all WS streams
     wsUnsubscribeAll();
 
-    // Destroy all existing charts
+    // Destroy all existing charts (cancel pending destroy timers first)
     Object.keys(mc.charts).forEach(sym => {
+        if (mc.charts[sym]._destroyTimer) clearTimeout(mc.charts[sym]._destroyTimer);
         mc.charts[sym].chart.remove();
         delete mc.charts[sym];
     });
@@ -1143,7 +1156,7 @@ function createChartInstance(sym) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -1238,8 +1251,17 @@ function setupInfiniteScroll(chartObj, seriesObj, volSeriesObj, sym, tf, getCand
                 if (filtered.length === 0) return;
                 const newData = [...filtered, ...freshData];
                 setCandleData(newData);
+                // Save viewport before setData, restore shifted by prepend count
+                const rangeBefore = chartObj.timeScale().getVisibleLogicalRange();
+                const prependCount = filtered.length;
                 seriesObj.setData(newData);
                 if (volSeriesObj) volSeriesObj.setData(extractVolume(newData));
+                if (rangeBefore) {
+                    chartObj.timeScale().setVisibleLogicalRange({
+                        from: rangeBefore.from + prependCount,
+                        to: rangeBefore.to + prependCount
+                    });
+                }
                 console.log(`[InfiniteScroll] ${sym} ${tf}: +${filtered.length} → ${newData.length}`);
             })
             .catch(() => {})
@@ -1264,16 +1286,19 @@ function applyDataToChart(sym, parsed, tf) {
     mc.dataCache[sym] = { candles: parsed, volume: extractVolume(parsed), tf };
     const realNatr = calcNATR(parsed);
     if (realNatr > 0) updateCardNATR(sym, realNatr);
-    applyDrawingsToMiniChart(sym);
-    applySignalMarkers(sym, mc.charts[sym].series, parsed);
     wsSubscribe(sym);
     // Save to IndexedDB in background (fire-and-forget)
     IDB.put(sym, tf, parsed);
-    // Auto S/R levels + trendlines + channels
-    applyAutoLevels(sym);
-    applyAutoTrendlines(sym);
-    applyKeltnerChannel(sym);
-    applyRegressionChannel(sym);
+    // Defer overlays to next animation frame (single batch render, no jerk)
+    requestAnimationFrame(() => {
+        if (!mc.charts[sym]) return;
+        applyDrawingsToMiniChart(sym);
+        applySignalMarkers(sym, mc.charts[sym].series, parsed);
+        applyAutoLevels(sym);
+        applyAutoTrendlines(sym);
+        applyKeltnerChannel(sym);
+        applyRegressionChannel(sym);
+    });
     // Infinite scroll on mini-charts — load history when user scrolls left
     if (mc.charts[sym] && !mc.charts[sym]._infiniteUnsub) {
         const c = mc.charts[sym];
@@ -2904,15 +2929,18 @@ function wsConnect() {
                 const lastUpdate = mc.charts[sym]._lastWsUpdate || 0;
                 if (now - lastUpdate >= 250) {
                     mc.charts[sym]._lastWsUpdate = now;
+                    // Detect new bar (candle boundary) for smooth scroll
+                    const cd = mc.charts[sym].candleData;
+                    const isNewBar = cd && cd.length > 0 && candle.time > cd[cd.length - 1].time;
                     mc.charts[sym].series.update(candle);
                     mc.charts[sym].volSeries.update({
                         time: candle.time,
                         value: vol,
                         color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                     });
+                    // New bar scroll handled by shiftVisibleRangeOnNewBar: true
                     // Keep dataCache in sync with live candles
-                    if (mc.charts[sym].candleData) {
-                        const cd = mc.charts[sym].candleData;
+                    if (cd) {
                         if (cd.length > 0 && cd[cd.length - 1].time === candle.time) {
                             cd[cd.length - 1] = { ...candle, volume: vol };
                         } else if (cd.length === 0 || candle.time > cd[cd.length - 1].time) {
@@ -2928,19 +2956,16 @@ function wsConnect() {
                     const slotStream = `${sym.toLowerCase()}@kline_${slot.tf}`;
                     const incomingStream = msg.stream || '';
                     if (incomingStream === slotStream) {
-                        // Prevent auto-scroll if user has panned away from right edge
-                        const slotTs = slot.chart.timeScale();
-                        const slotRange = slotTs.getVisibleLogicalRange();
-                        const slotScroll = slotTs.scrollPosition();
+                        // Detect new bar for smooth scroll
+                        const isSlotNewBar = slot._lastTime && candle.time > slot._lastTime;
                         slot.series.update(candle);
                         if (slot.volSeries) slot.volSeries.update({
                             time: candle.time,
                             value: vol,
                             color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                         });
-                        if (slotRange && slotScroll < 5) {
-                            slotTs.setVisibleLogicalRange(slotRange);
-                        }
+                        slot._lastTime = candle.time;
+                        // New bar scroll handled by shiftVisibleRangeOnNewBar: true
                         // Update header price/change
                         const pair = mc.allPairs.find(p => p.symbol === sym);
                         if (pair) {
@@ -2957,10 +2982,9 @@ function wsConnect() {
                 const modalStream = `${sym.toLowerCase()}@kline_${modal.currentTF}`;
                 const incomingStream = msg.stream || '';
                 if (incomingStream === modalStream || modal.wsStream === `${sym.toLowerCase()}@kline_${k.i}`) {
-                    // Prevent auto-scroll if user has panned away from right edge
-                    const ts = modal.chart.timeScale();
-                    const rangeBefore = ts.getVisibleLogicalRange();
-                    const scrollPos = ts.scrollPosition();
+                    // Detect new bar for smooth scroll
+                    const mcd = modal.candleData;
+                    const isNewBar = mcd && mcd.length > 0 && candle.time > mcd[mcd.length - 1].time;
                     modal.series.update(candle);
                     if (modal.volSeries) modal.volSeries.update({
                         time: candle.time,
@@ -2968,18 +2992,14 @@ function wsConnect() {
                         color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
                     });
                     // Keep modal.candleData in sync with live candles
-                    if (modal.candleData) {
-                        const cd = modal.candleData;
-                        if (cd.length > 0 && cd[cd.length - 1].time === candle.time) {
-                            cd[cd.length - 1] = { ...candle, volume: vol };
-                        } else if (cd.length === 0 || candle.time > cd[cd.length - 1].time) {
-                            cd.push({ ...candle, volume: vol });
+                    if (mcd) {
+                        if (mcd.length > 0 && mcd[mcd.length - 1].time === candle.time) {
+                            mcd[mcd.length - 1] = { ...candle, volume: vol };
+                        } else if (mcd.length === 0 || candle.time > mcd[mcd.length - 1].time) {
+                            mcd.push({ ...candle, volume: vol });
                         }
                     }
-                    // If user was scrolled left (scrollPos < rightOffset threshold), restore position
-                    if (rangeBefore && scrollPos < 5) {
-                        ts.setVisibleLogicalRange(rangeBefore);
-                    }
+                    // New bar scroll handled by shiftVisibleRangeOnNewBar: true
                 }
             }
         } catch (e) { console.error('[MC-WS] onmessage error:', e.message, e.stack?.split('\n')[1]); }
@@ -3264,7 +3284,7 @@ function openCoinModal(sym) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
@@ -3290,13 +3310,16 @@ function openCoinModal(sym) {
         borderVisible: false,
     });
 
-    // ResizeObserver for window resize + safety net for initial render
+    // ResizeObserver for window resize + safety net for initial render (debounced to prevent jerk)
     if (modal._resizeObserver) modal._resizeObserver.disconnect();
+    let _resizeTimer = 0;
     modal._resizeObserver = new ResizeObserver(entries => {
         const { width, height } = entries[0].contentRect;
         if (width > 0 && height > 0 && modal.chart) {
-            console.log('[modal] ResizeObserver:', width, 'x', height);
-            modal.chart.resize(width, height);
+            clearTimeout(_resizeTimer);
+            _resizeTimer = setTimeout(() => {
+                if (modal.chart) modal.chart.resize(width, height);
+            }, 100);
         }
     });
     modal._resizeObserver.observe(chartEl);
@@ -3526,8 +3549,17 @@ async function loadModalChart(sym, tf) {
                     const newData = [...filtered, ...fresh];
                     modal.candleData = newData;
                     if (drawCtx.source === 'modal') drawCtx.candleData = newData;
+                    // Save viewport, restore shifted by prepend count
+                    const mRangeBefore = modal.chart.timeScale().getVisibleLogicalRange();
+                    const mPrepend = filtered.length;
                     modal.series.setData(newData);
                     if (modal.volSeries) modal.volSeries.setData(extractVolume(newData));
+                    if (mRangeBefore) {
+                        modal.chart.timeScale().setVisibleLogicalRange({
+                            from: mRangeBefore.from + mPrepend,
+                            to: mRangeBefore.to + mPrepend
+                        });
+                    }
                     console.log(`[Modal] ${sym} prepend +${filtered.length} → ${newData.length}`);
                     attempts++;
                     await new Promise(r => setTimeout(r, 100));
@@ -5709,7 +5741,7 @@ function createSlotChart(slotIndex) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
