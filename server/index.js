@@ -48,7 +48,7 @@ const klinesCache = require('./klines-cache');
 // WS connects lazily on first subscribe() — no eager connect needed
 
 // ---- helpers ----
-const FETCH_TIMEOUT_MS = 10000 // 10s timeout for all Binance requests
+const FETCH_TIMEOUT_MS = 15000 // 15s timeout for all Binance requests
 
 // ---- Global Binance Rate Limiter ----
 const rateLimiter = {
@@ -1083,7 +1083,7 @@ function setProxyCached(key, data) {
 
 // 24hr ticker — cached 30s (all pairs, heavy endpoint)
 fastify.get('/api/ticker24hr', async () => {
-  const cached = getProxyCached('ticker24hr', 30000)
+  const cached = getProxyCached('ticker24hr', 60000)
   if (cached) return cached
   const data = await bgetWithRetry('/fapi/v1/ticker/24hr')
   setProxyCached('ticker24hr', data)
@@ -1420,6 +1420,15 @@ const start = async () => {
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
+    // Pre-warm NATR cache so signals scanner has data from first scan
+    setTimeout(async () => {
+      try {
+        console.log('[startup] Pre-warming NATR cache (15m)...')
+        const fakeReq = { query: { interval: '15m' } }
+        await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
+        console.log('[startup] NATR cache warmed ✓')
+      } catch (e) { console.warn('[startup] NATR warmup failed:', e.message) }
+    }, 5_000) // 5s after start — let ticker cache populate first
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {

@@ -131,9 +131,13 @@ async function getFundingMap() {
 }
 
 /** Get NATR map from cache (computed by /api/natr endpoint, 5min TTL) */
+let _natrWarnedAt = 0
 function getNatrMap() {
   const map = _getProxyCached('natr:15m', 300_000)
-  if (!map) console.warn('[Signals] NATR cache empty — OI signal metadata will have natr:null')
+  if (!map && Date.now() - _natrWarnedAt > 300_000) {
+    console.warn('[Signals] NATR cache empty — OI signal metadata will have natr:null')
+    _natrWarnedAt = Date.now()
+  }
   return map || {}
 }
 
