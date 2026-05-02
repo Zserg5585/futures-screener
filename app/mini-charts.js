@@ -779,6 +779,9 @@ async function refreshMiniCharts() {
 
         // Fetch real NATR from server (background)
         fetchServerNATR(mc.globalTF);
+
+        // Prefetch top-3 klines (BTC/ETH/SOL) — warm server cache for instant modal open
+        prefetchTopKlines(mc.globalTF);
     } catch (e) {
         console.error('Mini-Charts fetch error:', e);
         if (status) status.textContent = 'Error';
@@ -833,6 +836,16 @@ async function fetchServerNATR(tf) {
     } catch(e) {
         console.error('NATR fetch error:', e);
     }
+}
+
+const PREFETCH_SYMS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+function prefetchTopKlines(tf) {
+    // Fire-and-forget: warm server klines cache for top coins so modal opens instantly
+    PREFETCH_SYMS.forEach(sym => {
+        fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000`)
+            .then(r => r.ok && console.log(`[prefetch] ${sym} ${tf} warmed`))
+            .catch(() => {}); // silent — prefetch is best-effort
+    });
 }
 
 function applyFiltersAndRebuild() {
@@ -3230,6 +3243,13 @@ function openCoinModal(sym) {
     // Clean up stale DOM children (legend, ruler, toolbar) left from previous chart
     chartEl.innerHTML = '';
 
+    // Re-create loader overlay (innerHTML cleared it)
+    const loader = document.createElement('div');
+    loader.id = 'cmChartLoader';
+    loader.className = 'cm-chart-loader';
+    loader.innerHTML = '<div class="cm-spinner"></div><span>Loading chart…</span>';
+    chartEl.appendChild(loader);
+
     const cw = chartEl.clientWidth, ch = chartEl.clientHeight;
     console.log('[modal] chartEl dimensions:', cw, 'x', ch, '| children cleared');
 
@@ -3372,6 +3392,21 @@ async function loadModalChart(sym, tf) {
     _modalLoadController = new AbortController();
     const signal = _modalLoadController.signal;
 
+    // Loader helpers
+    const loaderEl = document.getElementById('cmChartLoader');
+    const showLoader = () => { if (loaderEl) { loaderEl.innerHTML = '<div class="cm-spinner"></div><span>Loading chart…</span>'; loaderEl.classList.remove('hidden'); } };
+    const hideLoader = () => { if (loaderEl) loaderEl.classList.add('hidden'); };
+    const showError = (msg) => {
+        if (loaderEl) {
+            loaderEl.innerHTML = `<div class="cm-chart-error">
+                <div style="margin-bottom:8px">⚠ ${msg}</div>
+                <button onclick="loadModalChart('${sym}','${tf}')">Retry</button>
+            </div>`;
+            loaderEl.classList.remove('hidden');
+        }
+    };
+    showLoader();
+
     // Unsubscribe previous modal WS stream
     if (modal.wsStream) {
         if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
@@ -3384,9 +3419,12 @@ async function loadModalChart(sym, tf) {
     try {
         // Phase 1: fast — 1000 candles (pre-warmed in server cache)
         const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1000`, { signal });
+        if (!res1.ok) throw new Error(`HTTP ${res1.status}`);
         const json1 = await res1.json();
         if (signal.aborted || !Array.isArray(json1) || !modal.chart) return;
+        if (json1.length === 0) { showError('No data for ' + sym); return; }
 
+        hideLoader();
         const data1 = parseKlines(json1);
         modal.candleData = data1;
         if (drawCtx.source === 'modal') drawCtx.candleData = data1;
@@ -3500,6 +3538,7 @@ async function loadModalChart(sym, tf) {
     } catch (e) {
         if (e.name === 'AbortError') return; // Cancelled by new TF click — expected
         console.error('Modal chart error:', e);
+        showError('Failed to load chart');
     }
 }
 
