@@ -8,12 +8,11 @@
  */
 
 const { scanLiqSweep } = require('./liq-sweep')
-const { scanChannelSignals } = require('./channel-signal')
+const { initChannelScanners, stopChannelScanners } = require('./channel-signal')
 
 const SCAN_INTERVAL_MS = 60_000
 const OI_CVD_INTERVAL_MS = 5 * 60_000
 const LIQ_SWEEP_INTERVAL_MS = 60_000
-const CHANNEL_SCAN_INTERVAL_MS = 60_000
 const OUTCOME_CHECK_MS = 30_000
 
 // Volume spike: current 5m candle vs SMA(20) of 5m candles
@@ -57,7 +56,6 @@ let _push = null
 let _scanTimer = null
 let _oiCvdTimer = null
 let _liqSweepTimer = null
-let _channelTimer = null
 let _outcomeTimer = null
 
 // Extra deps for liq_sweep (optional — passed from index.js)
@@ -89,11 +87,17 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
     setTimeout(_runLiqSweep, 20_000) // first run 20s after start
   }
 
-  // Channel Signal scanner (regression channel reversion + breakout)
-  _channelTimer = setInterval(_runChannelScan, CHANNEL_SCAN_INTERVAL_MS)
-  setTimeout(_runChannelScan, 35_000) // first run 35s after start (stagger with others)
+  // Channel Signal scanner (multi-TF: 5m/15m/1h with confluence)
+  initChannelScanners({
+    getProxyCached: _getProxyCached,
+    bgetWithRetry: _bgetWithRetry,
+    klinesCache: _klinesCache,
+    emitSignal,
+    getMarketRegime,
+    getFundingMap,
+  })
 
-  console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${LIQ_SWEEP_INTERVAL_MS / 1000}s liq_sweep, ${CHANNEL_SCAN_INTERVAL_MS / 1000}s channel, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)
+  console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${LIQ_SWEEP_INTERVAL_MS / 1000}s liq_sweep, channel 5m/15m/1h, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)
 }
 
 /** Wrapper to call scanLiqSweep with injected deps */
@@ -115,20 +119,8 @@ function stop() {
   if (_scanTimer) clearInterval(_scanTimer)
   if (_oiCvdTimer) clearInterval(_oiCvdTimer)
   if (_liqSweepTimer) clearInterval(_liqSweepTimer)
-  if (_channelTimer) clearInterval(_channelTimer)
   if (_outcomeTimer) clearInterval(_outcomeTimer)
-}
-
-/** Wrapper to call scanChannelSignals with injected deps */
-function _runChannelScan() {
-  scanChannelSignals({
-    getProxyCached: _getProxyCached,
-    bgetWithRetry: _bgetWithRetry,
-    klinesCache: _klinesCache,
-    emitSignal,
-    getMarketRegime,
-    getFundingMap,
-  }).catch(err => console.error('[Signals] channel scan wrapper error:', err.message))
+  stopChannelScanners()
 }
 
 // ======================== MARKET CONTEXT HELPERS ========================
@@ -851,12 +843,15 @@ function getLiveSignals(filters = {}) {
         const wick = m.wickRatio ? `${(m.wickRatio * 100).toFixed(0)}% wick` : ''
         s.description = `🎯 ${dir} sweep — took ${lvl} at ${m.sweptLevel}${wick ? ', ' + wick : ''}`
       } else if (s.type === 'channel' && m.subType) {
-        const icon = m.subType === 'channel_reversion' ? '↩️' : '🚀'
-        const action = m.subType === 'channel_reversion' ? 'Reversion' : 'Breakout'
-        const r2 = m.r2 ? `R²=${m.r2.toFixed(2)}` : ''
-        const vol = m.volumeRatio ? `vol ${m.volumeRatio.toFixed(1)}x` : ''
-        const target = m.targetPct ? ` → mid (${m.targetPct.toFixed(1)}%)` : ''
-        s.description = `${icon} Channel ${action} — ${m.reason || ''}${r2 ? ' (' + r2 : ''}${vol ? ', ' + vol : ''}${r2 ? ')' : ''}${target}`
+        const icons = { channel_bounce: '↩️', channel_reversal: '🔄', channel_acceleration: '🚀' }
+        const labels = { channel_bounce: 'Bounce', channel_reversal: 'Reversal', channel_acceleration: 'Acceleration' }
+        const icon = icons[m.subType] || '📐'
+        const label = labels[m.subType] || m.subType
+        const stars = m.confluence >= 3 ? ' ★★★' : m.confluence >= 2 ? ' ★★' : ''
+        const tfStr = m.timeframes && m.timeframes.length > 1 ? ` [${m.timeframes.join(',')}]` : m.interval ? ` [${m.interval}]` : ''
+        const touchStr = m.touchCount > 1 ? ` ${m.touchCount}${m.touchCount===2?'nd':m.touchCount===3?'rd':'th'} touch` : ''
+        const r2 = m.r2 ? ` R²=${m.r2.toFixed(2)}` : ''
+        s.description = `${icon} Channel ${label}${stars} — ${m.slopeDir || ''} ${m.reason || ''}${touchStr}${tfStr}${r2}`
       }
     }
   } catch (err) {
