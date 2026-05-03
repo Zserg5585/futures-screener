@@ -190,7 +190,7 @@ function renderSummary(data) {
   const types = data.types || []
   const byType = data.by_type || {}
 
-  el.innerHTML = types.map(t => {
+  el.innerHTML = types.filter(t => (byType[t.id] || 0) > 0).map(t => {
     const count = byType[t.id] || 0
     return `<span class="sig-summary-item">
       <span class="sig-summary-dot" style="background:${t.color}"></span>
@@ -374,8 +374,27 @@ function selectSignal(id) {
   if (meta.volumeRatio !== undefined && meta.volumeRatio !== null) metaItems.push({ key: 'Volume Ratio', val: `${meta.volumeRatio}x`, color: meta.volumeRatio >= 2 ? '#22c55e' : '#94a3b8' })
   if (meta.wallNotional !== undefined && meta.wallNotional !== null) metaItems.push({ key: 'Wall Size', val: fmtVol(meta.wallNotional) })
 
+  // Channel signal metadata
+  if (s.type === 'channel') {
+    const subLabels = { channel_bounce: '↩️ Bounce', channel_reversal: '🔄 Reversal', channel_acceleration: '🚀 Acceleration' }
+    const slopeLabels = { up: '📈 Ascending', down: '📉 Descending', flat: '➡️ Flat' }
+    if (meta.subType) metaItems.push({ key: 'Pattern', val: subLabels[meta.subType] || meta.subType, color: '#06b6d4' })
+    if (meta.interval) metaItems.push({ key: 'Timeframe', val: meta.interval.toUpperCase(), color: '#94a3b8' })
+    if (meta.slopeDir) metaItems.push({ key: 'Channel', val: slopeLabels[meta.slopeDir] || meta.slopeDir })
+    if (meta.slopePct !== undefined) metaItems.push({ key: 'Slope', val: `${meta.slopePct > 0 ? '+' : ''}${meta.slopePct.toFixed(3)}%/candle`, color: meta.slopePct > 0 ? '#22c55e' : meta.slopePct < 0 ? '#ef4444' : '#94a3b8' })
+    if (meta.r2 !== undefined) metaItems.push({ key: 'R² (fit)', val: meta.r2.toFixed(3), color: meta.r2 >= 0.85 ? '#22c55e' : meta.r2 >= 0.7 ? '#f59e0b' : '#ef4444' })
+    if (meta.period) metaItems.push({ key: 'Period', val: `${meta.period} candles` })
+    if (meta.bandWidthPct !== undefined) metaItems.push({ key: 'Band Width', val: `${meta.bandWidthPct.toFixed(2)}%` })
+    if (meta.touchCount !== undefined && meta.touchCount > 0) metaItems.push({ key: 'Touch #', val: `${meta.touchCount}${meta.touchCount >= 4 ? ' ⚠️' : meta.touchCount >= 2 ? ' ✓' : ''}`, color: meta.touchCount >= 4 ? '#f59e0b' : meta.touchCount >= 2 ? '#22c55e' : '#94a3b8' })
+    if (meta.wickRejection) metaItems.push({ key: 'Wick Rejection', val: '✓ Yes', color: '#22c55e' })
+    if (meta.penetrationPct > 0) metaItems.push({ key: 'Penetration', val: `${meta.penetrationPct.toFixed(2)}%` })
+    if (meta.volumeRatio !== undefined) metaItems.push({ key: 'Volume', val: `${meta.volumeRatio}x avg`, color: meta.volumeRatio >= 3 ? '#22c55e' : '#94a3b8' })
+    if (meta.confluence > 1) metaItems.push({ key: 'Confluence', val: `${'★'.repeat(meta.confluence)} ${meta.timeframes?.join(',')}`, color: '#f59e0b' })
+    if (meta.channelUpper && meta.channelLower) metaItems.push({ key: 'Channel Range', val: `${formatPrice(meta.channelLower)} — ${formatPrice(meta.channelUpper)}` })
+  }
+
   // Market context metadata (new enriched fields)
-  if (meta.volume24h !== undefined) metaItems.push({ key: 'Volume 24h', val: fmtVol(meta.volume24h) })
+  if (meta.volume24h !== undefined && s.type !== 'channel') metaItems.push({ key: 'Volume 24h', val: fmtVol(meta.volume24h) })
   if (meta.natr !== undefined && meta.natr !== null) metaItems.push({ key: 'NATR', val: `${meta.natr}%`, color: meta.natr >= 2 ? '#f59e0b' : meta.natr >= 1 ? '#22c55e' : '#94a3b8' })
   if (meta.trades24h !== undefined && meta.trades24h > 0) metaItems.push({ key: 'Trades 24h', val: meta.trades24h >= 1e6 ? (meta.trades24h / 1e6).toFixed(1) + 'M' : meta.trades24h >= 1e3 ? (meta.trades24h / 1e3).toFixed(0) + 'K' : meta.trades24h.toString() })
   if (meta.fundingRate !== undefined && meta.fundingRate !== null) metaItems.push({ key: 'Funding', val: `${meta.fundingRate > 0 ? '+' : ''}${meta.fundingRate}%`, color: meta.fundingRate > 0.01 ? '#22c55e' : meta.fundingRate < -0.01 ? '#ef4444' : '#94a3b8' })

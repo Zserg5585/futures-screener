@@ -1494,12 +1494,21 @@ function applySignalMarkers(sym, series, candles, modalRef, force) {
         }
 
         const isLong = sig.direction === 'LONG';
+        // Build marker text — show extra detail for channel signals
+        let markerText = `${_sigTypeLabel[sig.type] || sig.type} ${sig.direction}`;
+        if (sig.type === 'channel' && sig.metadata) {
+            const m = sig.metadata;
+            const sub = (m.subType || '').replace('channel_', '');
+            const tf = m.interval || '';
+            const stars = m.confluence > 1 ? '★'.repeat(m.confluence) : '';
+            markerText = `📐 ${sub}${tf ? ' ' + tf : ''}${stars ? ' ' + stars : ''}`;
+        }
         markers.push({
             time: best.time,
             position: isLong ? 'belowBar' : 'aboveBar',
             color: isLong ? '#22c55e' : '#ef4444',
             shape: isLong ? 'arrowUp' : 'arrowDown',
-            text: `${_sigTypeLabel[sig.type] || sig.type} ${sig.direction}`,
+            text: markerText,
         });
     }
 
