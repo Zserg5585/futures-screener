@@ -95,6 +95,7 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
     emitSignal,
     getMarketRegime,
     getFundingMap,
+    getNatrMap,
   })
 
   console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${LIQ_SWEEP_INTERVAL_MS / 1000}s liq_sweep, channel 5m/15m/1h, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)

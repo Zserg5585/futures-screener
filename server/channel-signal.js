@@ -33,8 +33,11 @@ const SLOPE_STRONG_THRESHOLD = 0.06  // |slope| > 0.06% = strong trend
 
 // Volume gates
 const VOL_GATE_BOUNCE = 1.2          // bounce needs some interest
-const VOL_GATE_REVERSAL = 3.0        // counter-trend break needs conviction
+const VOL_GATE_REVERSAL = 2.0        // counter-trend break needs conviction (was 3.0, lowered for 5m/15m)
 const VOL_GATE_ACCELERATION = 2.5    // with-trend break needs momentum
+
+// Quality filters
+const MIN_NATR_PCT = 0.5             // skip low-volatility coins (NATR < 0.5%)
 
 // Signal detection
 const MIN_PENETRATION_PCT = 0.1      // min % beyond band for breakout
@@ -440,7 +443,7 @@ function buildDescription(sig, touchCount, confluence, interval) {
 
 // ======================== SCANNER ========================
 
-async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, emitSignal, getMarketRegime, getFundingMap }, tfConfig) {
+async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, emitSignal, getMarketRegime, getFundingMap, getNatrMap }, tfConfig) {
   const { interval, label } = tfConfig
   const scanStart = Date.now()
   let signalCount = 0, skipped = 0, errors = 0
@@ -459,11 +462,16 @@ async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, 
 
     const fundingMap = await getFundingMap()
     const regime = await getMarketRegime()
+    const natrMap = getNatrMap ? getNatrMap() : {}
 
     for (const t of liquid) {
       const symbol = t.symbol
       const price = parseFloat(t.lastPrice)
       if (!price) continue
+
+      // NATR filter — skip low-volatility coins
+      const natr = natrMap[symbol]
+      if (natr != null && natr < MIN_NATR_PCT) { skipped++; continue }
 
       try {
         // Fetch klines (cache first, API fallback)
@@ -524,6 +532,7 @@ async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, 
           confluence: confluence.count,
           timeframes: confluence.timeframes,
           fundingRate: fundingMap[symbol] != null ? parseFloat((fundingMap[symbol] * 100).toFixed(4)) : null,
+          natr: natrMap[symbol] || null,
           volume24h: Math.round(parseFloat(t.quoteVolume)),
         }
 
