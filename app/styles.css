@@ -2960,6 +2960,7 @@ body.theme-amoled {
 .sig-type-badge.natr_spike { background: rgba(239,68,68,0.12); color: #f87171; }
 .sig-type-badge.oi_cvd { background: rgba(139,92,246,0.12); color: #a78bfa; }
 .sig-type-badge.density_break { background: rgba(139,92,246,0.12); color: #a78bfa; }
+.sig-type-badge.channel { background: rgba(6,182,212,0.12); color: #22d3ee; }
 
 .sig-dir { font-weight: 600; font-size: 11px; }
 .sig-dir.LONG { color: #22c55e; }

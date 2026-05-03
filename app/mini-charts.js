@@ -1433,7 +1433,7 @@ function extractVolume(data) {
 
 // ======================== SIGNAL MARKERS ON CHARTS ========================
 
-const _sigTypeLabel = { oi_cvd: '🔮 OI+CVD', volume_spike: '📊 Vol', big_mover: '🚀 Mover', liq_sweep: '🎯 Sweep', oi_divergence: '🔀 OI Div', oi_funding_squeeze: '⚡ Squeeze' };
+const _sigTypeLabel = { oi_cvd: '🔮 OI+CVD', volume_spike: '📊 Vol', big_mover: '🚀 Mover', liq_sweep: '🎯 Sweep', oi_divergence: '🔀 OI Div', oi_funding_squeeze: '⚡ Squeeze', channel: '📐 Channel' };
 
 /**
  * Place signal markers on a chart series (works for both mini-charts and modal).

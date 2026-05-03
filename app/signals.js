@@ -13,8 +13,8 @@ if (navigator.serviceWorker) {
   })
 }
 
-const ALL_SIG_TYPES = ['volume_spike', 'oi_cvd', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep']
-const SIG_TYPE_LABELS = { volume_spike:'Vol Spike', oi_cvd:'OI+CVD', oi_divergence:'OI Div', oi_funding_squeeze:'Fund Squeeze', liq_sweep:'Liq Sweep' }
+const ALL_SIG_TYPES = ['volume_spike', 'oi_cvd', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep', 'channel']
+const SIG_TYPE_LABELS = { volume_spike:'Vol Spike', oi_cvd:'OI+CVD', oi_divergence:'OI Div', oi_funding_squeeze:'Fund Squeeze', liq_sweep:'Liq Sweep', channel:'Channel' }
 
 const sigState = {
   signals: [],
