@@ -78,8 +78,8 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
   _scanTimer = setInterval(scan, SCAN_INTERVAL_MS)
   _oiCvdTimer = setInterval(scanOiCvd, OI_CVD_INTERVAL_MS)
   _outcomeTimer = setInterval(checkOutcomes, OUTCOME_CHECK_MS)
-  setTimeout(scan, 10_000)
-  setTimeout(scanOiCvd, 30_000)
+  setTimeout(scan, 45_000)       // 45s — wait for NATR warmup (starts at 5s, takes ~30s)
+  setTimeout(scanOiCvd, 50_000)  // 50s — after first volume scan + NATR ready
 
   // Liq Sweep scanner (only if klinesCache available)
   if (_klinesCache) {
@@ -126,7 +126,7 @@ function stop() {
 
 // ======================== MARKET CONTEXT HELPERS ========================
 
-/** Build a map of funding rates (cached 5min) */
+/** Build a map of funding rates (cached 5min, stale fallback 10min on API error) */
 async function getFundingMap() {
   const cached = _getProxyCached('funding_rates', 300_000)
   if (cached) return cached
@@ -139,13 +139,24 @@ async function getFundingMap() {
     }
     _setProxyCached('funding_rates', map)
     return map
-  } catch (e) { console.warn('[Signals] getFundingMap failed:', e.message); return {} }
+  } catch (e) {
+    // On API failure, return stale data (10min TTL) instead of empty map
+    const stale = _getProxyCached('funding_rates', 600_000)
+    if (stale) {
+      console.warn(`[Signals] getFundingMap failed, using stale cache: ${e.message}`)
+      return stale
+    }
+    console.warn(`[Signals] getFundingMap failed, no cache: ${e.message}`)
+    return {}
+  }
 }
 
-/** Get NATR map from cache (computed by /api/natr endpoint, 5min TTL) */
+/** Get NATR map from cache (computed by /api/natr endpoint, refreshed every 4.5min)
+ *  Read TTL 600s (10min) > refresh interval (4.5min) to avoid race condition:
+ *  refresh takes 30-60s to compute 200 symbols, old cache must survive during that window */
 let _natrWarnedAt = 0
 function getNatrMap() {
-  const map = _getProxyCached('natr:15m', 300_000)
+  const map = _getProxyCached('natr:15m', 600_000)
   if (!map && Date.now() - _natrWarnedAt > 300_000) {
     console.warn('[Signals] NATR cache empty — OI signal metadata will have natr:null')
     _natrWarnedAt = Date.now()

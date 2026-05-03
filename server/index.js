@@ -1062,7 +1062,7 @@ fastify.get('/_cache/stats', async () => ({
 
 // ---- Binance Proxy for Mini-Charts (cached) ----
 const proxyCache = new Map()
-const PROXY_MAX_TTL_MS = 300000 // 5 min max TTL for cleanup
+const PROXY_MAX_TTL_MS = 600000 // 10 min max TTL for cleanup (NATR read TTL is 600s, must survive refresh gaps)
 // Cleanup expired proxy cache entries every 30 seconds
 setInterval(() => {
   const now = Date.now()
@@ -1209,12 +1209,15 @@ fastify.get('/api/signals/test', async (req, reply) => {
     metadata: { ratio: 5.2, currentVol: 12000000, avgVol: 2300000 },
     created_at: new Date().toISOString(),
   }
-  // Remove any old test signals first
-  signals.liveSignals = signals.liveSignals.filter(s => !String(s.id).startsWith('test-'))
+  // Remove any old test signals first (splice to keep array reference — don't reassign!)
+  for (let i = signals.liveSignals.length - 1; i >= 0; i--) {
+    if (String(signals.liveSignals[i].id).startsWith('test-')) signals.liveSignals.splice(i, 1)
+  }
   signals.liveSignals.unshift(sig)
-  // Auto-remove after 60s
+  // Auto-remove after 60s (splice to keep reference)
   setTimeout(() => {
-    signals.liveSignals = signals.liveSignals.filter(s => s.id !== sig.id)
+    const idx = signals.liveSignals.indexOf(sig)
+    if (idx >= 0) signals.liveSignals.splice(idx, 1)
   }, 60_000)
   // Test signals do NOT trigger push — only real signals do
   return { success: true, signal: sig, pushEnabled: push.isEnabled() }

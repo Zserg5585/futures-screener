@@ -29,6 +29,43 @@ function init({ stmts }) {
 }
 
 /**
+ * Send notification with retry for transient network errors.
+ * Fire-and-forget: runs in background, never blocks caller.
+ * Retries: 2 attempts with 1s/3s backoff. Only retries network errors (no statusCode).
+ * 410/404 = expired subscription → delete. Other 4xx = permanent, don't retry.
+ */
+async function sendWithRetry(pushSub, payload, endpoint, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      await webpush.sendNotification(pushSub, payload, { TTL: 300, timeout: 10000 })
+      try { _stmts.resetPushFail.run(endpoint) } catch {}
+      return // success
+    } catch (err) {
+      if (err.statusCode === 410 || err.statusCode === 404) {
+        try { _stmts.deletePushSub.run(endpoint) } catch {}
+        console.log('[Push] Removed expired subscription')
+        return
+      }
+      // Network error (no statusCode) — retry
+      const isTransient = !err.statusCode
+      if (isTransient && attempt < maxRetries) {
+        const delay = (attempt + 1) * 2000 // 2s, 4s
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      // Give up
+      try { _stmts.incrementPushFail.run(endpoint) } catch {}
+      if (attempt === maxRetries && isTransient) {
+        console.warn(`[Push] Failed after ${maxRetries + 1} attempts: ${err.message}`)
+      } else {
+        console.error(`[Push] Send error (${err.statusCode}): ${err.message}`)
+      }
+      return
+    }
+  }
+}
+
+/**
  * Send push notification for a signal — called immediately from emitSignal()
  * Fire-and-forget: never blocks signal emission
  */
@@ -81,20 +118,7 @@ function sendPushForSignal(signal) {
     }
 
     sent++
-    webpush.sendNotification(pushSub, payload, { TTL: 300 })
-      .then(() => {
-        try { _stmts.resetPushFail.run(sub.endpoint) } catch {}
-      })
-      .catch(err => {
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          // Subscription expired / unsubscribed — clean up
-          try { _stmts.deletePushSub.run(sub.endpoint) } catch {}
-          console.log(`[Push] Removed expired subscription`)
-        } else {
-          try { _stmts.incrementPushFail.run(sub.endpoint) } catch {}
-          console.error(`[Push] Send error (${err.statusCode}): ${err.message}`)
-        }
-      })
+    sendWithRetry(pushSub, payload, sub.endpoint)
   }
 
   if (sent > 0) {
