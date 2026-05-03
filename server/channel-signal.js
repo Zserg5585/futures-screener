@@ -25,6 +25,7 @@ const MIN_VOLUME_24H = 30_000_000
 const MIN_R2 = 0.65
 const BAND_MULT = 2.0
 const TOP_N_SYMBOLS = 80
+const MIN_BANDWIDTH_PCT = 0.5         // skip channels narrower than 0.5% (noise, not tradeable)
 
 // Slope thresholds (% per candle, normalized)
 const SLOPE_FLAT_THRESHOLD = 0.015   // |slope| < 0.015% = flat
@@ -180,6 +181,7 @@ function detectChannelSignal(candles, volumeSma, tf) {
   const closes = candles.map(c => c.close)
   const channel = computeRegressionChannel(closes)
   if (!channel) return null
+  if (channel.bandWidthPct < MIN_BANDWIDTH_PCT) return null // too narrow, noise
 
   const last = candles[candles.length - 1]
   const prev = candles[candles.length - 2]
