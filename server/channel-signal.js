@@ -20,7 +20,7 @@ const TIMEFRAMES = [
   { interval: '1h', scanMs: 5 * 60_000, startDelay: 60_000, label: '1h' },
 ]
 
-const KLINES_LIMIT = 150
+const KLINES_LIMIT = 220  // must cover max regression period (200) + buffer
 const MIN_VOLUME_24H = 30_000_000
 const MIN_R2 = 0.65
 const BAND_MULT = 2.0
@@ -77,7 +77,7 @@ function computeRegressionChannel(closes, mult = BAND_MULT) {
   if (n < 30) return null
 
   let bestScore = -Infinity, bestPeriod = 50, bestR2 = 0
-  const periods = [20, 30, 50, 75, 100, 150].filter(p => p <= n)
+  const periods = [20, 30, 50, 75, 100, 150, 200].filter(p => p <= n)
 
   for (const period of periods) {
     const start = n - period
