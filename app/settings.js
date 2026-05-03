@@ -51,7 +51,12 @@ const settingsPanel = (() => {
     signalSound: false,           // sound on new signal
     signalCooldown: 5,            // minutes between same-symbol alerts (1, 5, 15, 30)
     signalWatchlistOnly: false,   // only show signals for watchlist coins
-    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep'], // enabled signal types for push
+    signalTypes: ['volume_spike', 'oi_longs', 'oi_shorts', 'oi_squeeze', 'oi_liquidation', 'oi_divergence', 'oi_funding_squeeze', 'liq_sweep', 'channel'], // enabled signal types for push
+
+    // Channel Signal
+    channelTf5m: true,            // show/push 5m channel signals
+    channelTf15m: true,           // show/push 15m channel signals
+    channelTf1h: true,            // show/push 1h channel signals
 
     // Liq Sweep
     sweepLevelSwing: true,        // show signals from swing high/low levels
@@ -772,6 +777,39 @@ const settingsPanel = (() => {
         </div>
       </div>
 
+      <!-- Channel Signal -->
+      <div class="sp-group open">
+        <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>📐 Channel Signal</span>
+          <span class="sp-group-arrow">▶</span>
+        </div>
+        <div class="sp-group-body">
+          <div class="sp-section">
+            <div class="sp-section-title">Timeframes</div>
+            <p class="sp-hint">Uncheck to hide from feed & push (still saved to DB for stats)</p>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('channelTf5m') ? 'checked' : ''} data-key="channelTf5m" />
+              <span>5m <span style="color:var(--text-muted);font-size:11px;">— scan every 60s</span></span>
+            </label>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('channelTf15m') ? 'checked' : ''} data-key="channelTf15m" />
+              <span>15m <span style="color:var(--text-muted);font-size:11px;">— scan every 90s</span></span>
+            </label>
+            <label class="sp-toggle">
+              <input type="checkbox" ${get('channelTf1h') ? 'checked' : ''} data-key="channelTf1h" />
+              <span>1h <span style="color:var(--text-muted);font-size:11px;">— scan every 5min</span></span>
+            </label>
+          </div>
+          <div class="sp-section">
+            <div class="sp-section-title">Signal Sub-types</div>
+            <label class="sp-toggle">
+              <input type="checkbox" ${types.includes('channel') ? 'checked' : ''} data-signal-type="channel" />
+              <span>Push notifications</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
       <!-- Notifications -->
       <div class="sp-group">
         <div class="sp-group-header" onclick="this.parentElement.classList.toggle('open')">
@@ -847,6 +885,11 @@ const settingsPanel = (() => {
           } else {
             if (typeof unsubscribeFromPush === 'function') unsubscribeFromPush()
           }
+        }
+        // Channel TF toggles: re-sync push + re-render signal list
+        if (el.dataset.key.startsWith('channelTf')) {
+          if (typeof subscribeToPush === 'function' && get('signalPush')) subscribeToPush()
+          if (typeof renderSignalList === 'function') renderSignalList()
         }
       })
     })

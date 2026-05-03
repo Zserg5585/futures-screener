@@ -43,7 +43,7 @@ function sendPushForSignal(signal) {
 
   const ticker = signal.symbol.replace('USDT', '')
   const dir = signal.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'
-  const iconMap = { volume_spike: '📊', liq_sweep: '🎯', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡' }
+  const iconMap = { volume_spike: '📊', liq_sweep: '🎯', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡', channel: '📐' }
   const icon = iconMap[signal.type] || '🔮'
   const confStr = `Conf ${signal.confidence}%`
 
@@ -68,6 +68,11 @@ function sendPushForSignal(signal) {
       if (filters.types?.length && !filters.types.includes(signal.type)) continue
       if (filters.watchlistOnly && filters.watchlist?.length &&
           !filters.watchlist.includes(signal.symbol)) continue
+      // Channel TF filter: skip if user disabled this timeframe
+      if (signal.type === 'channel' && filters.channelTimeframes?.length) {
+        const sigTf = signal.metadata?.interval
+        if (sigTf && !filters.channelTimeframes.includes(sigTf)) continue
+      }
     } catch {}
 
     const pushSub = {

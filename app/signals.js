@@ -283,6 +283,19 @@ function renderSignals() {
     })
   }
 
+  // Filter channel signals by timeframe settings
+  if (typeof settingsPanel !== 'undefined') {
+    list = list.filter(s => {
+      if (s.type !== 'channel') return true
+      const tf = s.metadata?.interval
+      if (!tf) return true
+      if (tf === '5m' && !settingsPanel.get('channelTf5m')) return false
+      if (tf === '15m' && !settingsPanel.get('channelTf15m')) return false
+      if (tf === '1h' && !settingsPanel.get('channelTf1h')) return false
+      return true
+    })
+  }
+
   if (sigState.search) {
     const q = sigState.search.toUpperCase()
     list = list.filter(s => s.symbol.includes(q))
@@ -530,6 +543,7 @@ async function subscribeToPush() {
       watchlistOnly: sp ? sp.get('signalWatchlistOnly') : false,
       watchlist: sp?.watchlist ? [...sp.watchlist] : [],
       types: sp ? (sp.get('signalTypes') || []) : [],
+      channelTimeframes: sp ? ['5m', '15m', '1h'].filter(tf => sp.get('channelTf' + tf)) : ['5m', '15m', '1h'],
     }
 
     await fetch(`${SIG_API}/api/push/subscribe`, {
