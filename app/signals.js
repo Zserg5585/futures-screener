@@ -309,7 +309,7 @@ function renderSignals() {
   tbody.innerHTML = list.map(s => {
     const isActive = sigState.selected?.id === s.id ? ' sig-active' : ''
     const confColor = s.confidence >= 80 ? '#22c55e' : s.confidence >= 60 ? '#f59e0b' : '#ef4444'
-    const typeLabel = formatType(s.type)
+    const typeLabel = formatType(s.type, s.metadata)
 
     return `<tr class="${isActive}" data-sig-id="${escAttr(s.id)}" onclick="selectSignal('${escAttr(s.id)}')">
       <td class="sig-time">${formatTime(s.created_at)}</td>
@@ -404,7 +404,7 @@ function selectSignal(id) {
   panel.innerHTML = `
     <button class="sig-detail-back" onclick="document.getElementById('sigDetail').classList.remove('mobile-open')">← Back</button>
     <div class="sig-detail-header">
-      <span class="sig-type-badge ${s.type}" style="font-size:13px;">${formatType(s.type)}</span>
+      <span class="sig-type-badge ${s.type}" style="font-size:13px;">${formatType(s.type, s.metadata)}</span>
       <span class="sig-detail-symbol">${s.symbol.replace('USDT', '')}</span>
       <span class="sig-dir ${s.direction}" style="font-size:13px;">${s.direction}</span>
     </div>
@@ -472,13 +472,21 @@ function openSignalChart(symbol) {
 }
 
 // ---- Formatters ----
-function formatType(type) {
+function formatType(type, metadata) {
   const map = {
     volume_spike: '📊 Vol Spike',
     oi_cvd: '🔮 OI+CVD',
     oi_divergence: '🔀 OI Diver',
     oi_funding_squeeze: '⚡ Fund Squeeze',
     liq_sweep: '🎯 Liq Sweep',
+  }
+  if (type === 'channel' && metadata) {
+    const subIcons = { channel_bounce: '↩️', channel_reversal: '🔄', channel_acceleration: '🚀' }
+    const subShort = { channel_bounce: 'Bounce', channel_reversal: 'Reversal', channel_acceleration: 'Accel' }
+    const icon = subIcons[metadata.subType] || '📐'
+    const sub = subShort[metadata.subType] || 'Ch'
+    const tf = metadata.interval ? metadata.interval.toUpperCase() : ''
+    return `${icon} ${sub} ${tf}`
   }
   return map[type] || type
 }
