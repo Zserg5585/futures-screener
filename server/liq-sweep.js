@@ -578,6 +578,20 @@ const MIN_VOLUME_RATIO = 5 // sweep candle volume must be >= 5x average
 // Refreshed every 30min per symbol (1h candles don't change fast)
 const _1hCache = new Map() // symbol → { candles, ts }
 const _1H_CACHE_TTL = 30 * 60_000
+const _1H_CACHE_MAX_AGE = 60 * 60_000 // evict entries older than 60min
+
+// Periodic cleanup of stale 1h cache entries (every 10min)
+setInterval(() => {
+  const now = Date.now()
+  let evicted = 0
+  for (const [symbol, entry] of _1hCache) {
+    if (now - entry.ts > _1H_CACHE_MAX_AGE) {
+      _1hCache.delete(symbol)
+      evicted++
+    }
+  }
+  if (evicted > 0) console.log(`[liq-sweep] Cache cleanup: evicted ${evicted} stale entries, ${_1hCache.size} remaining`)
+}, 10 * 60_000)
 
 /**
  * Main scan function — called on a timer from signals.js.

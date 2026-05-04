@@ -12,29 +12,34 @@ async function get24hStats(symbol) {
     .then(r => r.json());
 }
 
-/* ---------- NEW: cached mark price ---------- */
-let cachedMark = { price: null, ts: 0 };
+/* ---------- NEW: cached mark price (per-symbol) ---------- */
+const markCache = new Map(); // symbol → { price, ts }
 async function getMarkPrice(symbol) {
   const now = Date.now();
-  if (cachedMark.price && now - cachedMark.ts < 2000) {
-    return cachedMark;
+  const cached = markCache.get(symbol);
+  if (cached && cached.price && now - cached.ts < 2000) {
+    return cached;
   }
   try {
     const res = await fetch(`${BINANCE_FAPI}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(symbol)}`);
     const data = await res.json();
     const markPrice = data.markPrice ? parseFloat(data.markPrice) : null;
     if (markPrice) {
-      cachedMark = { price: markPrice, ts: now };
+      const entry = { price: markPrice, ts: now };
+      markCache.set(symbol, entry);
+      return entry;
     }
-    return cachedMark;
+    return cached || { price: null, ts: 0 };
   } catch (_) {
     // fallback to lastPrice from 24h ticker
     const stats = await get24hStats(symbol);
     const lastPrice = stats && stats.lastPrice ? parseFloat(stats.lastPrice) : null;
     if (lastPrice) {
-      cachedMark = { price: lastPrice, ts: now };
+      const entry = { price: lastPrice, ts: now };
+      markCache.set(symbol, entry);
+      return entry;
     }
-    return cachedMark;
+    return cached || { price: null, ts: 0 };
   }
 }
 

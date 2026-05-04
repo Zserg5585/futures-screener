@@ -311,28 +311,31 @@ function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifeti
   return score;
 }
 
+// Track all intervals for graceful shutdown cleanup
+const _intervals = []
+
 // In-memory cache (TTL: 3 seconds)
 const cache = new Map()
 const CACHE_TTL_MS = 3000
 // Cleanup expired cache entries every 10 seconds
-setInterval(() => {
+_intervals.push(setInterval(() => {
   const now = Date.now()
   for (const [key, entry] of cache.entries()) {
     if (now - entry.ts > CACHE_TTL_MS) cache.delete(key)
   }
-}, 10000)
+}, 10000))
 
 // --- Level History State ---
 const levelHistory = new Map()
 // Очистка старых уровней (TTL: 1 минута без обновлений)
-setInterval(() => {
+_intervals.push(setInterval(() => {
   const now = Date.now()
   for (const [key, val] of levelHistory.entries()) {
     if (now - val.lastUpdate > 60000) {
       levelHistory.delete(key)
     }
   }
-}, 30000)
+}, 30000))
 
 // --- Telegram Alerts Scaffold ---
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || ''
@@ -410,6 +413,19 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
 const klinesStatsCache = new Map()
 const KLINES_STATS_TTL = 60000
 
+// Periodic cleanup of stale klinesStats entries (every 5min)
+_intervals.push(setInterval(() => {
+  const now = Date.now()
+  let evicted = 0
+  for (const [symbol, entry] of klinesStatsCache) {
+    if (now - entry.ts > KLINES_STATS_TTL * 5) { // 5x TTL = 5min
+      klinesStatsCache.delete(symbol)
+      evicted++
+    }
+  }
+  if (evicted > 0) console.log(`[klines-stats] Cache cleanup: evicted ${evicted}, ${klinesStatsCache.size} remaining`)
+}, 5 * 60_000))
+
 // Получить K-lines и рассчитать объёмы + ATR
 async function getKlinesWithStats(symbol) {
   const cached = klinesStatsCache.get(symbol)
@@ -472,6 +488,7 @@ async function getKlinesWithStats(symbol) {
     return result
 
   } catch (err) {
+    console.warn(`[klines-stats] ${symbol} failed: ${err.message}`)
     return null // caller must handle null (skip symbol)
   }
 }
@@ -947,7 +964,7 @@ let densityV2Cache = { data: null, ts: 0 }
 const DENSITY_V2_CACHE_TTL = 15000 // 15 seconds
 
 // Cleanup persistence every 60s
-setInterval(() => densityV2.cleanupPersistence(densityV2PersistenceMap), 60000)
+_intervals.push(setInterval(() => densityV2.cleanupPersistence(densityV2PersistenceMap), 60000))
 
 fastify.get('/densities/v2', async (req) => {
   const windowPct = Number(req.query.windowPct || 2)
@@ -1064,12 +1081,12 @@ fastify.get('/_cache/stats', async () => ({
 const proxyCache = new Map()
 const PROXY_MAX_TTL_MS = 600000 // 10 min max TTL for cleanup (NATR read TTL is 600s, must survive refresh gaps)
 // Cleanup expired proxy cache entries every 30 seconds
-setInterval(() => {
+_intervals.push(setInterval(() => {
   const now = Date.now()
   for (const [key, entry] of proxyCache.entries()) {
     if (now - entry.ts > PROXY_MAX_TTL_MS) proxyCache.delete(key)
   }
-}, 30000)
+}, 30000))
 
 function getProxyCached(key, ttlMs) {
   const entry = proxyCache.get(key)
@@ -1447,11 +1464,11 @@ const start = async () => {
       } catch (e) { console.warn('[startup] NATR warmup failed:', e.message) }
     }, 5_000) // 5s after start — let ticker cache populate first
     // Periodic NATR refresh every 5 min (cache TTL is 5min, so re-compute before expiry)
-    setInterval(async () => {
+    _intervals.push(setInterval(async () => {
       try {
         await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
       } catch (e) { console.warn('[NATR-refresh] failed:', e.message) }
-    }, 270_000) // 4.5 min (slightly before 5min TTL expiry)
+    }, 270_000)) // 4.5 min (slightly before 5min TTL expiry)
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     warmupDensitySubscriptions()
   } catch (err) {
@@ -1464,11 +1481,23 @@ const start = async () => {
 async function gracefulShutdown(signal) {
   console.log(`[shutdown] ${signal} received, closing gracefully...`)
   try {
+    // Stop all intervals
+    for (const id of _intervals) clearInterval(id)
+    if (_klinesUpdaterInterval) clearInterval(_klinesUpdaterInterval)
+    // Stop signal scanners
+    try { signals.stop() } catch (_) {}
+    console.log(`[shutdown] Cleared ${_intervals.length + 1} interval(s) + signal scanners`)
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()
     // Close WebSocket connections
-    if (wsManager.ws) {
-      wsManager.ws.close()
+    if (wsManager.connections && wsManager.connections.length > 0) {
+      console.log(`[shutdown] Closing ${wsManager.connections.length} WS connection(s)...`)
+      for (const conn of wsManager.connections) {
+        conn.destroy()
+      }
+      wsManager.connections = []
+      wsManager.streamToConn.clear()
+      wsManager.callbacks.clear()
     }
     // Save density cache to disk before exit
     if (densityCache.data) {
@@ -1576,20 +1605,29 @@ async function warmupKlinesCache() {
         // Skip if already cached
         if (getProxyCached(key, 300000)) { done++; cached++; continue }
 
-        try {
-          const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`)
-          setProxyCached(key, data)
-          // Persist to SQLite so data survives proxy cache expiry and PM2 restarts
-          if (klinesCache && Array.isArray(data)) {
-            try { klinesCache.storeCandles(sym, tf, data) } catch (_) {}
+        const MAX_SYMBOL_RETRIES = 3
+        let symbolRetries = 0
+        let success = false
+        while (!success && symbolRetries <= MAX_SYMBOL_RETRIES) {
+          try {
+            const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`)
+            setProxyCached(key, data)
+            // Persist to SQLite so data survives proxy cache expiry and PM2 restarts
+            if (klinesCache && Array.isArray(data)) {
+              try { klinesCache.storeCandles(sym, tf, data) } catch (_) {}
+            }
+            done++
+            success = true
+          } catch (err) {
+            symbolRetries++
+            if (symbolRetries > MAX_SYMBOL_RETRIES) {
+              console.log(`[klines-warmup] Skipping ${sym}:${tf} after ${MAX_SYMBOL_RETRIES} retries`)
+              done++
+              break
+            }
+            console.log(`[klines-warmup] Rate limited at ${done}/${total} (${sym} retry ${symbolRetries}/${MAX_SYMBOL_RETRIES}), pausing 30s...`)
+            await new Promise(r => setTimeout(r, 30000))
           }
-          done++
-        } catch (err) {
-          // Rate limit — pause 30s and continue
-          console.log(`[klines-warmup] Rate limited at ${done}/${total}, pausing 30s...`)
-          await new Promise(r => setTimeout(r, 30000))
-          i-- // retry this symbol
-          continue
         }
 
         // Throttle: 150ms between requests (concurrency 1, ~400 req/min safe)

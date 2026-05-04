@@ -63,9 +63,6 @@ const CONFLUENCE_WINDOW_MS = 60 * 60_000 // 1 hour
 
 // ======================== STATE ========================
 
-// Touch tracking: symbol → { upper: [{time, tf}], lower: [{time, tf}] }
-const touchHistory = new Map()
-
 // Recent signals for confluence: [{symbol, direction, subType, interval, time}]
 const recentChannelSignals = []
 const MAX_RECENT_SIGNALS = 500
@@ -151,10 +148,6 @@ function computeRegressionChannel(closes, mult = BAND_MULT) {
 // ======================== TOUCH COUNT ========================
 
 function getTouchCount(symbol, side, tf, channel, candles) {
-  const key = `${symbol}:${tf}`
-  if (!touchHistory.has(key)) touchHistory.set(key, { upper: [], lower: [] })
-  const hist = touchHistory.get(key)
-
   // Count approaches within the channel's period window
   const periodCandles = candles.slice(-channel.period)
   const band = side === 'upper' ? channel.upper : channel.lower

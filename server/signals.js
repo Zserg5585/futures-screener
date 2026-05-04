@@ -489,7 +489,12 @@ async function scanOiCvd() {
 
         // --- Divergence detection: OI direction vs Price direction ---
         let divAdj = 0
-        const priceChange1h = change // 24h change as proxy; we use 1h ticker change if available
+        // Derive 1h price change from OI candles: price ≈ sumOpenInterestValue / sumOpenInterest
+        const oiValPrev = parseFloat(oiHist[lastIdx - 1].sumOpenInterestValue || 0)
+        const oiValCurr = parseFloat(oiHist[lastIdx].sumOpenInterestValue || 0)
+        const pricePrev1h = oiPrev > 0 ? oiValPrev / oiPrev : 0
+        const priceCurr1h = oiCurr > 0 ? oiValCurr / oiCurr : 0
+        const priceChange1h = pricePrev1h > 0 ? ((priceCurr1h - pricePrev1h) / pricePrev1h) * 100 : change // fallback to 24h if no data
         // Divergence: OI up but price down, or OI down but price up
         const priceMoveDir = priceChange1h > PRICE_DIVERGENCE_PCT ? 'UP' : priceChange1h < -PRICE_DIVERGENCE_PCT ? 'DOWN' : 'FLAT'
         const oiMoveDir = oiUp ? 'UP' : 'DOWN'
