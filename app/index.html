@@ -71,6 +71,10 @@
                             <option value="2.5">2.5</option>
                             <option value="3">3.0</option>
                         </select>
+                        <span class="dv2-label">Age≥ <span id="dv2MinAgeVal" class="dv2-range-val">0m</span></span>
+                        <input type="range" id="dv2MinAge" class="dv2-range" min="0" max="15" step="1" value="0" />
+                        <span class="dv2-label">Erosion≥ <span id="dv2MinErosionVal" class="dv2-range-val">0m</span></span>
+                        <input type="range" id="dv2MinErosion" class="dv2-range" min="0" max="60" step="5" value="0" />
                         <button id="dv2BlacklistBtn" class="dv2-btn dv2-bl-btn" title="Blacklist">
                             🚫<span id="dv2BlBadge" class="dv2-bl-badge" style="display:none">0</span>
                         </button>
@@ -95,10 +99,12 @@
                                 <th>Dist</th>
                                 <th>Size</th>
                                 <th>Age</th>
+                                <th>Erosion</th>
                                 <th class="sortable" data-sort="resistScore">Resistance</th>
                                 <th>Dist</th>
                                 <th>Size</th>
                                 <th>Age</th>
+                                <th>Erosion</th>
                                 <th class="sortable" data-sort="volume24h">Vol 24h</th>
                             </tr>
                         </thead>

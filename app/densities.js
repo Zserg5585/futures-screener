@@ -70,11 +70,21 @@ function setupDv2Events() {
         }
     })
 
-    // Filter changes → reload
+    // Filter changes → reload (server-side params)
     ;['dv2Window', 'dv2MinVol', 'dv2Sigma'].forEach(id => {
         const sel = el(id)
         if (sel) sel.addEventListener('change', () => loadDensitiesV2(true))
     })
+
+    // Client-side range filters → re-render only (no server reload needed)
+    ;['dv2MinAge', 'dv2MinErosion'].forEach(id => {
+        const range = el(id)
+        if (range) range.addEventListener('input', () => {
+            updateRangeLabels()
+            if (dv2.data) renderDv2Table(dv2.data)
+        })
+    })
+    updateRangeLabels()
 
     // Blacklist button
     const blBtn = el('dv2BlacklistBtn')
@@ -294,8 +304,30 @@ function renderDv2Table(entries) {
         filtered = filtered.filter(e => !isBlacklisted(e.symbol))
     }
 
+    // Apply age & erosion filters (client-side, wall-level)
+    const minAge = Number(el('dv2MinAge')?.value || 0)
+    const minErosion = Number(el('dv2MinErosion')?.value || 0)
+
+    if (minAge > 0 || minErosion > 0) {
+        filtered = filtered.map(e => {
+            const passWall = (w) => {
+                if (!w) return false
+                if (minAge > 0 && (w.ageMins || 0) < minAge) return false
+                if (minErosion > 0 && (w.erosionMins === null || w.erosionMins === undefined || w.erosionMins < minErosion)) return false
+                return true
+            }
+            return {
+                ...e,
+                _supportPass: passWall(e.support),
+                _resistPass: passWall(e.resistance)
+            }
+        }).filter(e => e._supportPass || e._resistPass)
+    } else {
+        filtered = filtered.map(e => ({ ...e, _supportPass: !!e.support, _resistPass: !!e.resistance }))
+    }
+
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--text-muted);">No walls found. Warmup in progress — try again in 30s</td></tr>'
+        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--text-muted);">No walls found. Warmup in progress — try again in 30s</td></tr>'
         return
     }
 
@@ -321,8 +353,8 @@ function renderDv2Table(entries) {
 
     tbody.innerHTML = sorted.map(entry => {
         const sym = entry.symbol.replace('USDT', '')
-        const s = entry.support
-        const r = entry.resistance
+        const s = entry._supportPass ? entry.support : null
+        const r = entry._resistPass ? entry.resistance : null
 
         return `<tr class="dv2-row" data-symbol="${entry.symbol}">
             <td class="dv2-coin">
@@ -361,6 +393,7 @@ function renderWallCells(wall, side) {
         return `<td class="dv2-wall-empty"><span style="color:var(--text-muted)">—</span></td>
                 <td class="dv2-wall-empty"><span style="color:var(--text-muted)">—</span></td>
                 <td class="dv2-wall-empty"><span style="color:var(--text-muted)">—</span></td>
+                <td class="dv2-wall-empty"><span style="color:var(--text-muted)">—</span></td>
                 <td class="dv2-wall-empty"><span style="color:var(--text-muted)">—</span></td>`
     }
 
@@ -370,6 +403,10 @@ function renderWallCells(wall, side) {
 
     const sizeBarWidth = Math.min((wall.sizeVsMedian || 0) / 30 * 100, 100)
     const sizeBarColor = side === 'bid' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'
+
+    const erosionColor = wall.erosionMins != null
+        ? (wall.erosionMins >= 20 ? '#22c55e' : wall.erosionMins >= 10 ? '#f59e0b' : '#ef4444')
+        : 'var(--text-muted)'
 
     return `<td class="dv2-wall-price">
                 <span style="color:${color};font-weight:600">${fmtPrice(wall.price)}</span>
@@ -387,6 +424,9 @@ function renderWallCells(wall, side) {
             <td class="dv2-wall-age">
                 <span style="color:${statusColor}" title="${wall.status}">${statusIcon}</span>
                 <span class="dv2-age-text">${fmtAge(wall.ageMins)}</span>
+            </td>
+            <td class="dv2-wall-erosion">
+                <span class="dv2-erosion-text" style="color:${erosionColor}">${wall.erosionMins != null ? fmtAge(wall.erosionMins) : '—'}</span>
             </td>`
 }
 
@@ -396,6 +436,26 @@ function renderDv2Cards(entries) {
     let filtered = entries || []
     if (dv2.blacklist.length > 0) {
         filtered = filtered.filter(e => !isBlacklisted(e.symbol))
+    }
+
+    // Apply age & erosion filters (same as table)
+    const minAge = Number(el('dv2MinAge')?.value || 0)
+    const minErosion = Number(el('dv2MinErosion')?.value || 0)
+
+    if (minAge > 0 || minErosion > 0) {
+        const passWall = (w) => {
+            if (!w) return false
+            if (minAge > 0 && (w.ageMins || 0) < minAge) return false
+            if (minErosion > 0 && (w.erosionMins == null || w.erosionMins < minErosion)) return false
+            return true
+        }
+        filtered = filtered.map(e => ({
+            ...e,
+            _supportPass: passWall(e.support),
+            _resistPass: passWall(e.resistance)
+        })).filter(e => e._supportPass || e._resistPass)
+    } else {
+        filtered = filtered.map(e => ({ ...e, _supportPass: !!e.support, _resistPass: !!e.resistance }))
     }
 
     if (filtered.length === 0) {
@@ -411,8 +471,8 @@ function renderDv2Cards(entries) {
 
     container.innerHTML = sorted.map(entry => {
         const sym = entry.symbol.replace('USDT', '')
-        const s = entry.support
-        const r = entry.resistance
+        const s = entry._supportPass ? entry.support : null
+        const r = entry._resistPass ? entry.resistance : null
         const pct = Math.round(entry.imbalance * 100)
         const imbColor = entry.imbalanceLabel === 'BULLISH' ? '#22c55e' : entry.imbalanceLabel === 'BEARISH' ? '#ef4444' : 'var(--text-muted)'
 
@@ -439,6 +499,16 @@ function renderDv2Cards(entries) {
             </div>
         </div>`
     }).join('')
+}
+
+// ---- Range slider labels ----
+function updateRangeLabels() {
+    const ageVal = Number(el('dv2MinAge')?.value || 0)
+    const erosionVal = Number(el('dv2MinErosion')?.value || 0)
+    const ageLabel = el('dv2MinAgeVal')
+    const erosionLabel = el('dv2MinErosionVal')
+    if (ageLabel) ageLabel.textContent = ageVal === 0 ? 'off' : `${ageVal}m`
+    if (erosionLabel) erosionLabel.textContent = erosionVal === 0 ? 'off' : `${erosionVal}m`
 }
 
 // ---- Format helpers ----

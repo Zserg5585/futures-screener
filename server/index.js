@@ -967,6 +967,46 @@ const densityV2PersistenceMap = new Map()
 let densityV2Cache = { data: null, ts: 0 }
 const DENSITY_V2_CACHE_TTL = 15000 // 15 seconds
 
+// Persistence map disk save/load (survive PM2 restarts)
+const PERSISTENCE_MAP_FILE = require('path').join(__dirname, '..', 'data', 'density-persistence.json')
+
+function savePersistenceMapToDisk() {
+  try {
+    const dir = require('path').dirname(PERSISTENCE_MAP_FILE)
+    if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
+    const obj = {}
+    for (const [key, val] of densityV2PersistenceMap.entries()) {
+      obj[key] = val
+    }
+    require('fs').promises.writeFile(PERSISTENCE_MAP_FILE, JSON.stringify({ map: obj, ts: Date.now() }))
+      .catch(e => console.log('[persistence-map] disk save error:', e.message))
+  } catch (e) { console.log('[persistence-map] disk save error:', e.message) }
+}
+
+function loadPersistenceMapFromDisk() {
+  try {
+    if (!require('fs').existsSync(PERSISTENCE_MAP_FILE)) return
+    const raw = JSON.parse(require('fs').readFileSync(PERSISTENCE_MAP_FILE, 'utf8'))
+    // Accept up to 30 minutes old (walls older than that are stale anyway)
+    if (!raw || !raw.map || (Date.now() - raw.ts) > 1800000) return
+    const now = Date.now()
+    let loaded = 0
+    for (const [key, val] of Object.entries(raw.map)) {
+      // Skip entries not seen in last 5 min (same as cleanupPersistence)
+      if (val.lastSeen && (now - val.lastSeen) > 300000) continue
+      densityV2PersistenceMap.set(key, val)
+      loaded++
+    }
+    if (loaded > 0) console.log(`[persistence-map] Loaded ${loaded} wall records from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)
+  } catch (e) { console.log('[persistence-map] disk load error:', e.message) }
+}
+
+// Load on startup
+loadPersistenceMapFromDisk()
+
+// Save every 30s (lightweight — typically a few hundred entries)
+_intervals.push(setInterval(savePersistenceMapToDisk, 30000))
+
 // Cleanup persistence every 60s
 _intervals.push(setInterval(() => densityV2.cleanupPersistence(densityV2PersistenceMap), 60000))
 
@@ -1049,6 +1089,29 @@ fastify.get('/densities/v2', async (req) => {
       if (analysis.wallCount > 0) {
         // Add volume info
         analysis.volume24h = volumeMap.get(sym) || 0
+
+        // Calculate erosion time for each wall (avg 5m volume from last 14 candles)
+        let avgVol5m = 0
+        try {
+          const candles5m = klinesCache.getCandles(sym, '5m', 14)
+          if (candles5m && candles5m.length >= 3) {
+            avgVol5m = candles5m.reduce((sum, c) => sum + c.volume, 0) / candles5m.length
+          }
+        } catch (_) {}
+
+        const addErosion = (wall) => {
+          if (!wall) return wall
+          wall.erosionMins = avgVol5m > 0
+            ? Math.round(wall.notional * 5 / avgVol5m * 10) / 10
+            : null
+          return wall
+        }
+
+        addErosion(analysis.support)
+        addErosion(analysis.resistance)
+        if (analysis.bidWalls) analysis.bidWalls.forEach(addErosion)
+        if (analysis.askWalls) analysis.askWalls.forEach(addErosion)
+
         results.push(analysis)
       }
     } catch (err) {
@@ -1503,12 +1566,15 @@ async function gracefulShutdown(signal) {
       wsManager.streamToConn.clear()
       wsManager.callbacks.clear()
     }
-    // Save density cache to disk before exit
+    // Save density cache + persistence map to disk before exit
     if (densityCache.data) {
       saveDensityToDisk(densityCache.data, densityCache.meta)
-      // Give async write a moment to flush
-      await new Promise(r => setTimeout(r, 200))
     }
+    if (densityV2PersistenceMap.size > 0) {
+      savePersistenceMapToDisk()
+    }
+    // Give async writes a moment to flush
+    await new Promise(r => setTimeout(r, 300))
     console.log(`[shutdown] Clean exit.`)
     process.exit(0)
   } catch (err) {
