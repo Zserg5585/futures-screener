@@ -523,43 +523,47 @@ const LWC_DRAWING_PATH = path.resolve(__dirname, '..', 'node_modules', 'lightwei
 let lwcDrawingBuf
 try { lwcDrawingBuf = fs.readFileSync(LWC_DRAWING_PATH) } catch (e) { console.warn('[Static] lightweight-charts-drawing UMD not found') }
 
+// Cache headers: HTML = must-revalidate (cache-buster URLs update), assets = 1 day (have ?v= buster)
+const ASSET_CACHE = 'public, max-age=86400' // 1 day
+const HTML_CACHE = 'no-cache'               // always revalidate
+
 fastify.get('/', async (req, reply) => {
-  reply.type('text/html; charset=utf-8').send(getStatic('index.html'))
+  reply.header('Cache-Control', HTML_CACHE).type('text/html; charset=utf-8').send(getStatic('index.html'))
 })
 
 fastify.get('/app.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('app.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('app.js'))
 })
 
 fastify.get('/densities.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('densities.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('densities.js'))
 })
 
 fastify.get('/mini-charts.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('mini-charts.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('mini-charts.js'))
 })
 
 fastify.get('/auth.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('auth.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('auth.js'))
 })
 
 fastify.get('/drawing-manager.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('drawing-manager.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('drawing-manager.js'))
 })
 fastify.get('/signals.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('signals.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('signals.js'))
 })
 fastify.get('/settings.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').send(getStatic('settings.js'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('settings.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
-  reply.type('text/css; charset=utf-8').send(getStatic('styles.css'))
+  reply.header('Cache-Control', ASSET_CACHE).type('text/css; charset=utf-8').send(getStatic('styles.css'))
 })
 
 fastify.get('/lightweight-charts-drawing.umd.js', async (req, reply) => {
   if (!lwcDrawingBuf) return reply.code(404).send('Not found')
-  reply.type('application/javascript; charset=utf-8').send(lwcDrawingBuf)
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(lwcDrawingBuf)
 })
 
 fastify.get('/favicon.ico', async (req, reply) => {
@@ -567,19 +571,19 @@ fastify.get('/favicon.ico', async (req, reply) => {
 })
 
 fastify.get('/manifest.json', async (req, reply) => {
-  reply.type('application/manifest+json; charset=utf-8').send(getStatic('manifest.json'))
+  reply.header('Cache-Control', ASSET_CACHE).type('application/manifest+json; charset=utf-8').send(getStatic('manifest.json'))
 })
 
 fastify.get('/sw.js', async (req, reply) => {
-  reply.type('application/javascript; charset=utf-8').header('Service-Worker-Allowed', '/').send(getStatic('sw.js'))
+  reply.header('Cache-Control', 'no-cache').type('application/javascript; charset=utf-8').header('Service-Worker-Allowed', '/').send(getStatic('sw.js'))
 })
 
 fastify.get('/icon-192.svg', async (req, reply) => {
-  reply.type('image/svg+xml').send(getStatic('icon-192.svg'))
+  reply.header('Cache-Control', ASSET_CACHE).type('image/svg+xml').send(getStatic('icon-192.svg'))
 })
 
 fastify.get('/icon-512.svg', async (req, reply) => {
-  reply.type('image/svg+xml').send(getStatic('icon-512.svg'))
+  reply.header('Cache-Control', ASSET_CACHE).type('image/svg+xml').send(getStatic('icon-512.svg'))
 })
 
 // ---- Auth routes ----
