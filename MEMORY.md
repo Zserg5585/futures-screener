@@ -46,6 +46,8 @@
 - **2026-02-20** — OpenClaw memory setup: добавлен `memorySearch` в конфиг, создана структура `memory/logs/`, `memory/projects/`, `memory/groups/`, `memory/system/`.
 - **2026-02-20** — OpenClaw backup: создан `~/openclaw-backups/openclaw-2026-02-20.tar.gz` (9.4 MB), скрипт `~/.openclaw/backup.sh`.
 - **2026-02-20** — Git commit и push: `refactor: fix vol1/2/3 order, add GitHub skill, update docs` (commit c62f8ac).
+- **2026-05-05** — Ops scripts: deploy.sh, health-check.sh, backup.sh, setup.sh, pre-commit hook, install-hooks.sh. Tests: 14→41 (vitest). vitest.config.js. Commit `b873b03`.
+- **2026-05-05** — 14-bug audit fix: persistence snapshot, bgetWithRetry safety, WS terminate, shutdown flush, symbol validation, Retry-After, HTTP 400, binHistory cap, auth null guard, renderWatchlist/initModalEvents/openCoinModal null checks, safeFetch, retry limit. Commit `59232b4`.
 
 ## Текущее состояние
 
