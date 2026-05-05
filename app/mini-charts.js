@@ -1196,11 +1196,27 @@ function createChartInstance(sym) {
     setupDrawingHandlers(chartEl);
 }
 
+// TF string → milliseconds lookup for staleness check
+const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+
 // Render chart from cached data (instant, no network)
 function renderFromCache(sym) {
     const cache = mc.dataCache[sym];
     if (!cache || !mc.charts[sym]) return false;
     if (cache.tf !== mc.globalTF) return false; // TF changed, cache stale
+
+    // Check cache freshness: if last candle is older than 2× TF, skip cache → fetch fresh
+    // This prevents gaps when returning to mini-charts after tab-away
+    if (cache.candles && cache.candles.length > 0) {
+        const lastCandleTime = cache.candles[cache.candles.length - 1].time * 1000; // LWC uses seconds
+        const tfMs = TF_MS[mc.globalTF] || 900000;
+        const age = Date.now() - lastCandleTime;
+        if (age > tfMs * 3) {
+            // Cache too stale — force server fetch to avoid gap
+            delete mc.dataCache[sym];
+            return false;
+        }
+    }
 
     const c = mc.charts[sym];
     c.candleData = cache.candles;
@@ -2974,6 +2990,26 @@ function wsConnect() {
                         } else if (cd.length === 0 || candle.time > cd[cd.length - 1].time) {
                             cd.push({ ...candle, volume: vol });
                         }
+                    }
+                }
+            } else if (mc.dataCache[sym] && mc.dataCache[sym].tf === mc.globalTF) {
+                // Chart destroyed but cache exists — keep cache updated to prevent gaps on return
+                const cd = mc.dataCache[sym].candles;
+                if (cd && cd.length > 0) {
+                    if (cd[cd.length - 1].time === candle.time) {
+                        cd[cd.length - 1] = { ...candle, volume: vol };
+                    } else if (candle.time > cd[cd.length - 1].time) {
+                        cd.push({ ...candle, volume: vol });
+                        // Also update volume cache
+                        if (mc.dataCache[sym].volume) {
+                            mc.dataCache[sym].volume.push({
+                                time: candle.time, value: vol,
+                                color: candle.close >= candle.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'
+                            });
+                        }
+                        // Cap cache size to prevent unbounded growth
+                        if (cd.length > 2000) { cd.splice(0, cd.length - 1500); }
+                        if (mc.dataCache[sym].volume?.length > 2000) { mc.dataCache[sym].volume.splice(0, mc.dataCache[sym].volume.length - 1500); }
                     }
                 }
             }
