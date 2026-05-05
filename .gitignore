@@ -12,3 +12,4 @@ data/density-cache.json
 .idea/
 .vscode/
 ecosystem.config.js
+backups/

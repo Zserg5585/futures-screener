@@ -1,7 +1,17 @@
 {
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "deploy": "./scripts/deploy.sh",
+    "deploy:restart": "./scripts/deploy.sh --restart-only",
+    "health": "./scripts/health-check.sh --verbose",
+    "backup": "./scripts/backup.sh",
+    "setup": "./scripts/setup.sh",
+    "logs": "pm2 logs futures-screener --lines 50",
+    "status": "pm2 describe futures-screener"
   },
   "dependencies": {
     "lightweight-charts-drawing": "^0.1.1",
