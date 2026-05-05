@@ -48,6 +48,7 @@
 - **2026-02-20** — Git commit и push: `refactor: fix vol1/2/3 order, add GitHub skill, update docs` (commit c62f8ac).
 - **2026-05-05** — Ops scripts: deploy.sh, health-check.sh, backup.sh, setup.sh, pre-commit hook, install-hooks.sh. Tests: 14→41 (vitest). vitest.config.js. Commit `b873b03`.
 - **2026-05-05** — 14-bug audit fix: persistence snapshot, bgetWithRetry safety, WS terminate, shutdown flush, symbol validation, Retry-After, HTTP 400, binHistory cap, auth null guard, renderWatchlist/initModalEvents/openCoinModal null checks, safeFetch, retry limit. Commit `59232b4`.
+- **2026-05-05** — Candle gap fix: renderFromCache() staleness check (3×TF), WS updates dataCache even when chart destroyed (cap 2000). Commit `f0cfa02`.
 
 ## Текущее состояние
 

@@ -1433,6 +1433,7 @@ body.theme-amoled {
     justify-content: center;
     padding: 20px;
     animation: mc-modal-in 0.2s ease-out;
+    overscroll-behavior: none;
 }
 
 @keyframes mc-modal-in {
@@ -2041,6 +2042,7 @@ body.theme-amoled {
     min-height: 0;
     position: relative;
     background: #060a12;
+    touch-action: none;
 }
 
 /* Chart loader / error overlay */

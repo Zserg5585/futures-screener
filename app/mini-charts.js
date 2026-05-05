@@ -1157,8 +1157,8 @@ function createChartInstance(sym) {
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
-        handleScale: { mouseWheel: true, pinch: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
+        handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
     });
 
     const series = addMainSeries(chart, prec, minMove);
@@ -3238,7 +3238,7 @@ function attachRuler(chartEl, chart, series) {
         if (!rulerActive) return;
         rulerActive = false;
         chart.applyOptions({
-            handleScroll: { mouseWheel: true, pressedMouseMove: true },
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
             handleScale: { mouseWheel: true, pinch: true }
         });
         // Remove after 3 seconds
@@ -3341,16 +3341,15 @@ function openCoinModal(sym) {
 
     const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
     modal.chart = LightweightCharts.createChart(chartEl, {
-        width: cw,
-        height: ch,
+        autoSize: true,
         ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
-        handleScale: { mouseWheel: true, pinch: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
+        handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
     });
 
     modal.series = addMainSeries(modal.chart, prec, minMove);
@@ -3374,19 +3373,8 @@ function openCoinModal(sym) {
         borderVisible: false,
     });
 
-    // ResizeObserver for window resize + safety net for initial render (debounced to prevent jerk)
-    if (modal._resizeObserver) modal._resizeObserver.disconnect();
-    let _resizeTimer = 0;
-    modal._resizeObserver = new ResizeObserver(entries => {
-        const { width, height } = entries[0].contentRect;
-        if (width > 0 && height > 0 && modal.chart) {
-            clearTimeout(_resizeTimer);
-            _resizeTimer = setTimeout(() => {
-                if (modal.chart) modal.chart.resize(width, height);
-            }, 100);
-        }
-    });
-    modal._resizeObserver.observe(chartEl);
+    // autoSize: true handles resize via its own internal ResizeObserver
+    if (modal._resizeObserver) { modal._resizeObserver.disconnect(); modal._resizeObserver = null; }
 
     modal.lines = [];
     modal.drawings = [];
@@ -4045,7 +4033,7 @@ function updateModalCursor() {
         if (chart) {
             chart.applyOptions({
                 handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-                handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
+                handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
             });
         }
     } else {
@@ -5804,7 +5792,7 @@ function createSlotChart(slotIndex) {
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45, mode: getPriceScaleMode() },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
         handleScale: { mouseWheel: true, pinch: true },
     });
 
