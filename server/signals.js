@@ -193,7 +193,7 @@ function buildMarketContext(t, { natrMap, fundingMap, rank }) {
   return {
     volume24h: Math.round(volume24h),
     natr: natrMap[t.symbol] || null,
-    trades24h: parseInt(t.count) || 0,
+    trades24h: Number(t.count) || 0,
     fundingRate: fundingMap[t.symbol] != null ? parseFloat((fundingMap[t.symbol] * 100).toFixed(4)) : null,
     pricePosition,
     marketRank: rank,

@@ -579,11 +579,14 @@ document.addEventListener('DOMContentLoaded', init)
 function renderWatchlist(entries) {
     const container = el('cardsContent')
     const table = el('table-container')
+    if (!container && !table) return
+
+    const isCardView = container && container.style.display !== 'none'
 
     if (!entries || entries.length === 0) {
-        if (el('cardsContent').style.display !== 'none') {
+        if (isCardView) {
             container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">Watchlist пуст. Добавьте символы, нажав на ⭐.</p>`
-        } else {
+        } else if (table) {
             table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">Watchlist пуст. Добавьте символы, нажав на ⭐.</th></tr></thead></table>`
         }
         return
@@ -593,9 +596,9 @@ function renderWatchlist(entries) {
     const watchlistEntries = entries.filter(d => state.watchlist.includes(d.symbol))
 
     if (watchlistEntries.length === 0) {
-        if (el('cardsContent').style.display !== 'none') {
+        if (isCardView) {
             container.innerHTML = `<p style="padding:40px 20px;text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</p>`
-        } else {
+        } else if (table) {
             table.innerHTML = `<table class="table"><thead><tr><th colspan="9" style="text-align:center;color:var(--text-muted);">В watchlist нет уровней с текущими фильтрами.</th></tr></thead></table>`
         }
         return
@@ -1106,6 +1109,8 @@ const modal = {
 function openCoinModal(sym) {
     const pair = mc.allPairs.find(p => p.symbol === sym);
     if (!pair) return;
+    // Guard: modal DOM elements must exist
+    if (!el('cmSymbol') || !el('cmPrice') || !el('cmChange')) return;
 
     modal.currentSym = sym;
     modal.currentTF = mc.globalTF;
@@ -1350,10 +1355,12 @@ function closeCoinModal() {
 // Init modal event listeners (called once in initMiniCharts)
 function initModalEvents() {
     // Close button
-    el('cmClose').addEventListener('click', closeCoinModal);
+    const cmClose = el('cmClose')
+    if (cmClose) cmClose.addEventListener('click', closeCoinModal);
 
     // Overlay click
-    document.querySelector('.mc-modal-overlay').addEventListener('click', closeCoinModal);
+    const overlay = document.querySelector('.mc-modal-overlay')
+    if (overlay) overlay.addEventListener('click', closeCoinModal);
 
     // Escape key
     document.addEventListener('keydown', (e) => {
@@ -1361,12 +1368,15 @@ function initModalEvents() {
     });
 
     // TF buttons in modal
-    el('cmTFButtons').addEventListener('click', (e) => {
-        const btn = e.target.closest('.mc-tf-btn');
-        if (!btn || !modal.currentSym) return;
-        el('cmTFButtons').querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        modal.currentTF = btn.dataset.tf;
-        loadModalChart(modal.currentSym, modal.currentTF);
-    });
+    const cmTF = el('cmTFButtons')
+    if (cmTF) {
+        cmTF.addEventListener('click', (e) => {
+            const btn = e.target.closest('.mc-tf-btn');
+            if (!btn || !modal.currentSym) return;
+            cmTF.querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            modal.currentTF = btn.dataset.tf;
+            loadModalChart(modal.currentSym, modal.currentTF);
+        });
+    }
 }

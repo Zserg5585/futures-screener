@@ -198,6 +198,12 @@ class StateManager {
           this.binHistory.delete(k);
         }
       }
+      // Hard cap: if map still too large, drop oldest entries
+      if (this.binHistory.size > 5000) {
+        const sorted = [...this.binHistory.entries()].sort((a, b) => a[1].lastUpdate - b[1].lastUpdate);
+        const toRemove = sorted.slice(0, sorted.length - 4000);
+        for (const [k] of toRemove) this.binHistory.delete(k);
+      }
     }
 
     return enrichedBins;

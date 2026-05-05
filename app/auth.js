@@ -9,6 +9,10 @@ const authUI = (() => {
   // --- DOM refs ---
   const authBtn = document.getElementById('authBtn')
   const authModal = document.getElementById('authModal')
+  if (!authModal) {
+    console.warn('[Auth] authModal element not found, auth UI disabled')
+    return { getToken: () => token, getUser: () => null, init: () => {} }
+  }
   const authModalClose = document.getElementById('authModalClose')
   const authOverlay = authModal.querySelector('.auth-modal-overlay')
   const authError = document.getElementById('authError')

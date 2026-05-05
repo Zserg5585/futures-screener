@@ -160,10 +160,14 @@ async function loadSignals() {
     // Direction filter stays server-side (simple, no sync issues)
     if (sigState.dirFilter) params.set('direction', sigState.dirFilter)
 
+    const safeFetch = (url) => fetch(url).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    })
     const [liveRes, summaryRes, outcomesRes] = await Promise.allSettled([
-      fetch(`${SIG_API}/api/signals/live?${params}`).then(r => r.json()),
-      fetch(`${SIG_API}/api/signals/summary`).then(r => r.json()),
-      fetch(`${SIG_API}/api/signals/outcomes`).then(r => r.json()),
+      safeFetch(`${SIG_API}/api/signals/live?${params}`),
+      safeFetch(`${SIG_API}/api/signals/summary`),
+      safeFetch(`${SIG_API}/api/signals/outcomes`),
     ])
 
     if (liveRes.status === 'fulfilled' && liveRes.value?.success) {
@@ -709,12 +713,16 @@ if (navigator.serviceWorker) {
   if (sym) {
     // Clean URL
     window.history.replaceState({}, '', '/')
-    // Wait for app to init, then open modal with signal marker
+    // Wait for app to init, then open modal with signal marker (max 30 retries = 15s)
+    let retries = 0
+    const MAX_RETRIES = 30
     const tryOpen = () => {
       if (typeof openCoinModal === 'function' && typeof mc !== 'undefined' && mc.allPairs.length > 0) {
         setSignalMarkerAndOpen(sym, sid)
-      } else {
+      } else if (++retries < MAX_RETRIES) {
         setTimeout(tryOpen, 500)
+      } else {
+        console.warn('[Signals] Gave up waiting for app init to open signal', sym)
       }
     }
     setTimeout(tryOpen, 1000)

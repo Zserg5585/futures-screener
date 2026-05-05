@@ -274,8 +274,8 @@ function saveDensityToDisk(data, meta) {
   try {
     const dir = require('path').dirname(DENSITY_CACHE_FILE)
     if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
-    // Non-blocking write (fire-and-forget)
-    require('fs').promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
+    // Returns promise so shutdown can await it
+    return require('fs').promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
       .catch(e => console.log('[density-cache] disk save error:', e.message))
   } catch (e) { console.log('[density-cache] disk save error:', e.message) }
 }
@@ -407,6 +407,8 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
       await new Promise(resolve => setTimeout(resolve, delay))
     }
   }
+  // Safety: should never reach here (loop always returns or throws)
+  throw new Error(`Binance GET ${path} failed: exhausted all retries`)
 }
 
 // Klines stats cache (TTL 60s) to avoid hammering Binance
@@ -771,10 +773,14 @@ fastify.get('/symbols', async () => {
   return { count: symbols.length, symbols }
 })
 
-fastify.get('/depth/:symbol', async (req) => {
+fastify.get('/depth/:symbol', async (req, reply) => {
   const symbol = String(req.params.symbol || '').toUpperCase()
-  const limit = Number(req.query.limit || 100)
-  const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=${limit}`)
+  if (!/^[A-Z0-9]{2,20}$/.test(symbol)) {
+    reply.code(400)
+    return { error: 'Invalid symbol format' }
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit || 100), 5), 1000)
+  const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${symbol}&limit=${limit}`)
   return { symbol, lastUpdateId: ob.lastUpdateId, bids: ob.bids, asks: ob.asks }
 })
 
@@ -805,7 +811,7 @@ fastify.get('/densities/simple', async (req, reply) => {
       return { ...densityCache.meta, xFilter, natrFilter, data: finalData, cached: true, cacheAgeSec: Number(ageSec) }
     }
     // No cache at all — return empty (warmup will fill it)
-    reply.code(503)
+    reply.code(503).header('Retry-After', '30')
     return { count: 0, data: [], cached: false, message: 'Warming up, try again in 30s' }
   }
 
@@ -974,11 +980,9 @@ function savePersistenceMapToDisk() {
   try {
     const dir = require('path').dirname(PERSISTENCE_MAP_FILE)
     if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
-    const obj = {}
-    for (const [key, val] of densityV2PersistenceMap.entries()) {
-      obj[key] = val
-    }
-    require('fs').promises.writeFile(PERSISTENCE_MAP_FILE, JSON.stringify({ map: obj, ts: Date.now() }))
+    // Snapshot the map synchronously to avoid mutation during async write
+    const snapshot = JSON.stringify({ map: Object.fromEntries(densityV2PersistenceMap), ts: Date.now() })
+    return require('fs').promises.writeFile(PERSISTENCE_MAP_FILE, snapshot)
       .catch(e => console.log('[persistence-map] disk save error:', e.message))
   } catch (e) { console.log('[persistence-map] disk save error:', e.message) }
 }
@@ -1330,11 +1334,14 @@ fastify.get('/api/oi-history', async (req, reply) => {
 })
 
 // Batch klines — SQLite cache first, Binance fallback
-fastify.post('/api/klines-batch', async (req) => {
+fastify.post('/api/klines-batch', async (req, reply) => {
   const symbols = req.body?.symbols
   const interval = String(req.body?.interval || '15m')
   const limit = Math.min(Number(req.body?.limit || 200), 1500)
-  if (!Array.isArray(symbols) || symbols.length === 0) return { error: 'symbols[] required' }
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    reply.code(400)
+    return { error: 'symbols[] required' }
+  }
 
   const syms = symbols.slice(0, 30).map(s => String(s).toUpperCase())
   const result = {}
@@ -1567,14 +1574,20 @@ async function gracefulShutdown(signal) {
       wsManager.callbacks.clear()
     }
     // Save density cache + persistence map to disk before exit
+    const flushes = []
     if (densityCache.data) {
-      saveDensityToDisk(densityCache.data, densityCache.meta)
+      flushes.push(saveDensityToDisk(densityCache.data, densityCache.meta))
     }
     if (densityV2PersistenceMap.size > 0) {
-      savePersistenceMapToDisk()
+      flushes.push(savePersistenceMapToDisk())
     }
-    // Give async writes a moment to flush
-    await new Promise(r => setTimeout(r, 300))
+    // Wait for disk writes to complete (with timeout)
+    if (flushes.length > 0) {
+      await Promise.race([
+        Promise.allSettled(flushes),
+        new Promise(r => setTimeout(r, 2000)) // 2s max wait
+      ])
+    }
     console.log(`[shutdown] Clean exit.`)
     process.exit(0)
   } catch (err) {

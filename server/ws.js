@@ -70,9 +70,10 @@ class BinanceWSConnection {
     this.streams.delete(streamName);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this._send('UNSUBSCRIBE', [streamName]);
-      if (this.streams.size === 0) {
-        this.ws.close();
-      }
+    }
+    if (this.streams.size === 0 && this.ws) {
+      // Terminate immediately regardless of state to avoid lingering connections
+      this._cleanup();
     }
   }
 
@@ -118,14 +119,12 @@ class BinanceWSConnection {
       const oldWs = this.ws;
       this.ws = null;
       oldWs.removeAllListeners();
-      oldWs.on('error', () => {}); // swallow async errors
+      oldWs.on('error', () => {}); // swallow async errors after cleanup
       try {
-        if (oldWs.readyState === WebSocket.OPEN) {
+        // terminate() works in any state (OPEN, CONNECTING, CLOSING) — forces immediate close
+        if (oldWs.readyState !== WebSocket.CLOSED) {
           oldWs.terminate();
-        } else if (oldWs.readyState === WebSocket.CONNECTING || oldWs.readyState === WebSocket.CLOSING) {
-          oldWs.close();
         }
-        // CLOSED state — nothing to do
       } catch (_) { /* safe — socket may already be dead */ }
     }
   }
