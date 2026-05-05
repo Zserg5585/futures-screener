@@ -81,6 +81,20 @@ node server/index.js  # Start server (or PM2: futures-screener)
 
 See `.env.example` — key ones: `JWT_SECRET`, `VAPID_*`, `PORT` (default 3200)
 
+## 🚨 ПРАВИЛО: "Сохранись" = 5 мест
+
+При команде **"сохранись"** ВСЕГДА обновить ВСЕ 5 мест:
+
+1. **git commit** — коммит изменений
+2. **git push** — пуш на remote
+3. **Скилл** (`/home/app/skills/futures-screener/SKILL.md`) — параметры, версии, грабли
+4. **Brain** (`/home/app/brain/decisions/log.md`) — решение + причина
+5. **Memory** (`MEMORY.md`) — краткая запись в Ключевые факты
+
+НЕ ПРОПУСКАТЬ. Не спрашивать. Делать все 5 сразу.
+
+---
+
 ## Recent Major Changes
 
 - LWC v5 migration (chart API changes)
