@@ -49,6 +49,8 @@
 - **2026-05-05** — Ops scripts: deploy.sh, health-check.sh, backup.sh, setup.sh, pre-commit hook, install-hooks.sh. Tests: 14→41 (vitest). vitest.config.js. Commit `b873b03`.
 - **2026-05-05** — 14-bug audit fix: persistence snapshot, bgetWithRetry safety, WS terminate, shutdown flush, symbol validation, Retry-After, HTTP 400, binHistory cap, auth null guard, renderWatchlist/initModalEvents/openCoinModal null checks, safeFetch, retry limit. Commit `59232b4`.
 - **2026-05-05** — Candle gap fix: renderFromCache() staleness check (3×TF), WS updates dataCache even when chart destroyed (cap 2000). Commit `f0cfa02`.
+- **2026-05-05** — Modal price scale touch drag: ⚠️ UNRESOLVED. Попытки: autoSize, axisPressedMouseMove объект, vertTouchDrag, ResizeObserver removal, touch-action:none, overscroll-behavior:none. Вероятно ограничение LWC v5 в position:fixed на мобильном PWA. Commit `1b5d889`.
+- **2026-05-05** — ⚠️ Futures Screener ПЕРЕЕХАЛ на Malaysia VPS: `screen.clkway.online` (IP 72.62.247.119). Этот сервер (szhub) больше НЕ хостит FS. PM2 остановлен. Код здесь — только для git/разработки. Прод = screen.clkway.online.
 
 ## Текущее состояние
 

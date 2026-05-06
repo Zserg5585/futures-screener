@@ -1196,8 +1196,8 @@ function createChartInstance(sym) {
     setupDrawingHandlers(chartEl);
 }
 
-// TF string → milliseconds lookup for staleness check
-const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+// TF string → milliseconds lookup for staleness check & countdown
+const TF_MS = { '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000, '8h': 28800000, '12h': 43200000, '1d': 86400000 };
 
 // Render chart from cached data (instant, no network)
 function renderFromCache(sym) {
@@ -3431,7 +3431,6 @@ function openCoinModal(sym) {
 }
 
 // ---- Candle Countdown Timer ----
-const TF_MS = { '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000, '8h': 28800000, '12h': 43200000, '1d': 86400000 };
 
 function startCountdown() {
     if (modal._countdownTimer) clearInterval(modal._countdownTimer);
