@@ -582,4 +582,9 @@ function stopChannelScanners() {
   _timers.length = 0
 }
 
-module.exports = { initChannelScanners, stopChannelScanners, scanChannelSignals, computeRegressionChannel }
+module.exports = {
+  initChannelScanners, stopChannelScanners, scanChannelSignals, computeRegressionChannel,
+  // Exported for testing
+  detectChannelSignal, calcConfidence, checkConfluence, recordSignalForConfluence,
+  getTouchCount, recentChannelSignals,
+}

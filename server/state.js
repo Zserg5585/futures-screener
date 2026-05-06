@@ -3,22 +3,49 @@ class StateManager {
     // symbol -> Map<price, {notional, firstSeen, lastUpdate, isMM}>
     this.books = new Map();
 
+    // Hard cap: max symbols in books (prevents unbounded memory growth)
+    this.MAX_BOOKS = 600;
+    // Hard cap: max levels per side per symbol
+    this.MAX_LEVELS_PER_SIDE = 2000;
+
+    // Resync callback: called when order book goes out-of-sync
+    // Set via setResyncHandler(fn(symbol))
+    this._resyncHandler = null;
+    // Throttle: don't resync the same symbol more than once per 30s
+    this._resyncCooldowns = new Map();
+
     // Cache to track dynamically created bins over time to detect robots
     // cacheKey: "SYMBOL:SIDE:BIN_ANCHOR" -> { oldestSeen, maxNotional, lastUpdate, isMovingTowardPrice }
     this.binHistory = new Map();
   }
 
+  setResyncHandler(fn) {
+    this._resyncHandler = fn;
+  }
+
   initBook(symbol, bids, asks) {
+    // Evict oldest book if at capacity
+    if (!this.books.has(symbol) && this.books.size >= this.MAX_BOOKS) {
+      let oldestSym = null, oldestTime = Infinity;
+      for (const [sym, st] of this.books.entries()) {
+        const t = st._lastActivity || 0;
+        if (t < oldestTime) { oldestTime = t; oldestSym = sym; }
+      }
+      if (oldestSym) this.books.delete(oldestSym);
+    }
+
     if (!this.books.has(symbol)) {
       this.books.set(symbol, {
         bids: new Map(),
         asks: new Map(),
-        lastUpdateId: 0
+        lastUpdateId: 0,
+        _lastActivity: Date.now()
       });
     }
 
     const state = this.books.get(symbol);
     const now = Date.now();
+    state._lastActivity = now;
 
     bids.forEach(([priceStr, qtyStr]) => {
       const price = parseFloat(priceStr);
@@ -33,15 +60,31 @@ class StateManager {
     });
   }
 
+  removeBook(symbol) {
+    this.books.delete(symbol);
+  }
+
   processDelta(symbol, payload) {
     if (!this.books.has(symbol)) return;
 
     const state = this.books.get(symbol);
-    
-    // Binance sequence check (U <= lastUpdateId+1 AND u >= lastUpdateId+1)
-    // Simplified for now: just apply deltas blindly for simplicity if not strictly syncing
-    // To do strict sync: Drop out-of-order and fetch snapshot again
+
+    // Binance sequence: payload.U = first updateId, payload.u = last updateId
+    // Drop stale deltas
     if (payload.u <= state.lastUpdateId) return;
+
+    // Gap detection: if first updateId of this delta > lastUpdateId+1, we missed deltas
+    if (state.lastUpdateId > 0 && payload.U > state.lastUpdateId + 1) {
+      const now = Date.now();
+      const cooldown = this._resyncCooldowns.get(symbol) || 0;
+      if (this._resyncHandler && now - cooldown > 30000) {
+        this._resyncCooldowns.set(symbol, now);
+        console.log(`[state] Gap detected for ${symbol}: expected ${state.lastUpdateId + 1}, got ${payload.U}. Requesting resync.`);
+        // Fire-and-forget — resync will call initBook which resets state
+        this._resyncHandler(symbol);
+      }
+      return; // Drop this delta — book is stale until resync
+    }
 
     const now = Date.now();
 
@@ -83,6 +126,8 @@ class StateManager {
 
     state.lastUpdateId = payload.u;
 
+    state._lastActivity = now;
+
     // Cleanup stale price levels not updated in 2 minutes
     if (!state._lastCleanup || now - state._lastCleanup > 60000) {
       state._lastCleanup = now;
@@ -92,6 +137,14 @@ class StateManager {
       }
       for (const [price, data] of state.asks.entries()) {
         if (now - data.lastUpdate > staleMs) state.asks.delete(price);
+      }
+      // Hard cap: trim to MAX_LEVELS_PER_SIDE by removing smallest notional
+      for (const side of [state.bids, state.asks]) {
+        if (side.size > this.MAX_LEVELS_PER_SIDE) {
+          const sorted = [...side.entries()].sort((a, b) => a[1].notional - b[1].notional);
+          const toRemove = sorted.slice(0, side.size - this.MAX_LEVELS_PER_SIDE);
+          for (const [price] of toRemove) side.delete(price);
+        }
       }
     }
   }

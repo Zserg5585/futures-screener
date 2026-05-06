@@ -581,7 +581,7 @@ const _1H_CACHE_TTL = 30 * 60_000
 const _1H_CACHE_MAX_AGE = 60 * 60_000 // evict entries older than 60min
 
 // Periodic cleanup of stale 1h cache entries (every 10min)
-setInterval(() => {
+const _cleanupInterval = setInterval(() => {
   const now = Date.now()
   let evicted = 0
   for (const [symbol, entry] of _1hCache) {
@@ -836,6 +836,8 @@ module.exports = {
   confirmSweep,
   scoreConfidence,
   scanLiqSweep,
+  // cleanup interval — register in _intervals for graceful shutdown
+  _cleanupInterval,
   // internal — exported for testing
   mergeLevels,
   clusterLevels,

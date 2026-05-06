@@ -382,10 +382,11 @@ function setCached(req, data) {
 
 // Retry/backoff helper for Binance requests (rate-limit aware)
 async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
+  const MAX_RATE_LIMIT_RETRIES = 3
+  let attempt = 0
   let rateLimitRetries = 0
-  const MAX_RATE_LIMIT_RETRIES = 3 // max 3 rate-limit retries on top of regular retries
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  while (attempt < maxRetries) {
     try {
       return await bget(path)
     } catch (err) {
@@ -394,22 +395,33 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
         if (rateLimitRetries > MAX_RATE_LIMIT_RETRIES) {
           throw new Error(`Binance GET ${path} rate limited ${rateLimitRetries}x, giving up (${rateLimiter.status()})`)
         }
-        // 429/418: global pause already set by bget(), wait and retry (don't count as regular attempt)
-        console.log(`[bgetWithRetry] 429 on ${path.slice(0, 60)}, retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES}, waiting ${err.retryAfterMs}ms`)
-        await new Promise(r => setTimeout(r, err.retryAfterMs))
-        attempt-- // don't count rate limit as a regular retry attempt
-        continue
+        // 429/418: wait and retry — does NOT count as a regular attempt
+        const waitMs = Math.max(err.retryAfterMs || 30000, 1000) // min 1s to avoid tight loop
+        console.log(`[bgetWithRetry] 429 on ${path.slice(0, 60)}, retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES}, waiting ${waitMs}ms`)
+        await new Promise(r => setTimeout(r, waitMs))
+        continue // retry without incrementing attempt
       }
-      if (attempt === maxRetries) {
+      attempt++
+      if (attempt >= maxRetries) {
         throw new Error(`Binance GET ${path} failed after ${maxRetries} attempts: ${err.message}`)
       }
       const delay = baseDelay * Math.pow(2, attempt - 1)
       await new Promise(resolve => setTimeout(resolve, delay))
     }
   }
-  // Safety: should never reach here (loop always returns or throws)
   throw new Error(`Binance GET ${path} failed: exhausted all retries`)
 }
+
+// Resync handler: re-fetch order book snapshot when gap detected in WS stream
+stateManager.setResyncHandler(async (symbol) => {
+  try {
+    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`);
+    stateManager.initBook(symbol, ob.bids, ob.asks);
+    console.log(`[state] Resync completed for ${symbol}`);
+  } catch (err) {
+    console.error(`[state] Resync failed for ${symbol}: ${err.message}`);
+  }
+})
 
 // Klines stats cache (TTL 60s) to avoid hammering Binance
 const klinesStatsCache = new Map()
@@ -490,8 +502,14 @@ async function getKlinesWithStats(symbol) {
     return result
 
   } catch (err) {
-    console.warn(`[klines-stats] ${symbol} failed: ${err.message}`)
-    return null // caller must handle null (skip symbol)
+    // On failure: return stale cache if available (better than dropping symbol)
+    const stale = klinesStatsCache.get(symbol)
+    if (stale) {
+      console.warn(`[klines-stats] ${symbol} failed: ${err.message}, using stale cache (age: ${((Date.now() - stale.ts) / 1000).toFixed(0)}s)`)
+      return stale.data
+    }
+    console.warn(`[klines-stats] ${symbol} failed: ${err.message}, no cache available`)
+    return null
   }
 }
 
@@ -838,6 +856,9 @@ fastify.get('/densities/simple', async (req, reply) => {
       if (!isSpecificSymbols) {
         return []; // Full scan: skip unsubscribed symbols, they'll warm up via chart views
       }
+      // Prevent concurrent subscribe for the same symbol
+      if (_subscribingSymbols.has(sym)) return [];
+      _subscribingSymbols.add(sym);
       try {
         const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
         stateManager.initBook(sym, ob.bids, ob.asks);
@@ -845,6 +866,8 @@ fastify.get('/densities/simple', async (req, reply) => {
       } catch (err) {
         console.log(`[density] Skip ${sym}: ${err.message.slice(0, 80)}`);
         return [];
+      } finally {
+        _subscribingSymbols.delete(sym);
       }
     }
 
@@ -968,6 +991,9 @@ fastify.get('/densities/simple', async (req, reply) => {
   return result
 })
 
+// Guard: prevent concurrent on-demand subscriptions for the same symbol
+const _subscribingSymbols = new Set()
+
 // ---- Density V2: Statistical Walls + Imbalance ----
 const densityV2PersistenceMap = new Map()
 let densityV2Cache = { data: null, ts: 0 }
@@ -1063,12 +1089,16 @@ fastify.get('/densities/v2', async (req) => {
     // If not yet WS-subscribed and specific symbol requested: fetch depth on demand
     if (!wsManager.callbacks.has(sym)) {
       if (!isSpecific) continue // Full scan: skip unsubscribed
+      if (_subscribingSymbols.has(sym)) continue
+      _subscribingSymbols.add(sym)
       try {
         const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
         stateManager.initBook(sym, ob.bids, ob.asks)
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
       } catch (err) {
         continue
+      } finally {
+        _subscribingSymbols.delete(sym)
       }
     }
 
@@ -1151,11 +1181,18 @@ fastify.get('/_cache/stats', async () => ({
 // ---- Binance Proxy for Mini-Charts (cached) ----
 const proxyCache = new Map()
 const PROXY_MAX_TTL_MS = 600000 // 10 min max TTL for cleanup (NATR read TTL is 600s, must survive refresh gaps)
+const PROXY_CACHE_MAX_ENTRIES = 5000
 // Cleanup expired proxy cache entries every 30 seconds
 _intervals.push(setInterval(() => {
   const now = Date.now()
   for (const [key, entry] of proxyCache.entries()) {
     if (now - entry.ts > PROXY_MAX_TTL_MS) proxyCache.delete(key)
+  }
+  // Hard cap: drop oldest if still over limit
+  if (proxyCache.size > PROXY_CACHE_MAX_ENTRIES) {
+    const sorted = [...proxyCache.entries()].sort((a, b) => a[1].ts - b[1].ts)
+    const toRemove = sorted.slice(0, proxyCache.size - PROXY_CACHE_MAX_ENTRIES)
+    for (const [key] of toRemove) proxyCache.delete(key)
   }
 }, 30000))
 
@@ -1179,13 +1216,22 @@ fastify.get('/api/ticker24hr', async () => {
 })
 
 // Klines — SQLite cache first, Binance fallback
-fastify.get('/api/klines', async (req) => {
+const VALID_INTERVALS = ['1m','3m','5m','15m','30m','1h','2h','4h','6h','8h','12h','1d','3d','1w','1M']
+
+fastify.get('/api/klines', async (req, reply) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const interval = String(req.query.interval || '15m')
   const limit = Math.min(Number(req.query.limit || 200), 1500)
   const endTime = req.query.endTime ? Number(req.query.endTime) : null
   const startTime = req.query.startTime ? Number(req.query.startTime) : null
-  if (!symbol) return { error: 'symbol required' }
+  if (!symbol || !/^[A-Z0-9]{2,20}$/.test(symbol)) {
+    reply.code(400)
+    return { error: 'Invalid or missing symbol' }
+  }
+  if (!VALID_INTERVALS.includes(interval)) {
+    reply.code(400)
+    return { error: 'Invalid interval' }
+  }
 
   // Delta request: return only candles after startTime (for client cache sync)
   if (startTime) {
@@ -1342,8 +1388,14 @@ fastify.post('/api/klines-batch', async (req, reply) => {
     reply.code(400)
     return { error: 'symbols[] required' }
   }
+  if (!VALID_INTERVALS.includes(interval)) {
+    reply.code(400)
+    return { error: 'Invalid interval' }
+  }
 
-  const syms = symbols.slice(0, 30).map(s => String(s).toUpperCase())
+  const syms = symbols.slice(0, 30)
+    .map(s => String(s).toUpperCase())
+    .filter(s => /^[A-Z0-9]{2,20}$/.test(s))
   const result = {}
   const needFetch = []
 
@@ -1558,6 +1610,8 @@ async function gracefulShutdown(signal) {
     // Stop all intervals
     for (const id of _intervals) clearInterval(id)
     if (_klinesUpdaterInterval) clearInterval(_klinesUpdaterInterval)
+    // Stop liq-sweep cache cleanup interval
+    try { const liqSweep = require('./liq-sweep'); clearInterval(liqSweep._cleanupInterval) } catch (_) {}
     // Stop signal scanners
     try { signals.stop() } catch (_) {}
     console.log(`[shutdown] Cleared ${_intervals.length + 1} interval(s) + signal scanners`)
@@ -1598,6 +1652,15 @@ async function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error(`[${new Date().toISOString()}] unhandledRejection:`, reason)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error(`[${new Date().toISOString()}] uncaughtException:`, err)
+  gracefulShutdown('uncaughtException')
+})
 
 // Gradually subscribe symbols to depth WS and build density cache
 async function warmupDensitySubscriptions() {

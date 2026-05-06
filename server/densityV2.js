@@ -220,10 +220,19 @@ function enrichWithPersistence(wall, persistenceMap, symbol, side, markPrice) {
 function cleanupPersistence(persistenceMap) {
   const now = Date.now()
   const STALE_MS = 300000 // 5 min — wall can disappear briefly and come back
+  const MAX_ENTRIES = 10000 // hard cap to prevent unbounded growth
+
   for (const [key, record] of persistenceMap.entries()) {
     if (now - record.lastSeen > STALE_MS) {
       persistenceMap.delete(key)
     }
+  }
+
+  // Hard cap: if still too large after stale cleanup, drop oldest entries
+  if (persistenceMap.size > MAX_ENTRIES) {
+    const sorted = [...persistenceMap.entries()].sort((a, b) => a[1].lastSeen - b[1].lastSeen)
+    const toRemove = sorted.slice(0, persistenceMap.size - MAX_ENTRIES)
+    for (const [key] of toRemove) persistenceMap.delete(key)
   }
 }
 
