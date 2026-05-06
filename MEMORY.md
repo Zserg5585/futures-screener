@@ -52,6 +52,7 @@
 - **2026-05-05** — Modal price scale touch drag: ⚠️ UNRESOLVED. Попытки: autoSize, axisPressedMouseMove объект, vertTouchDrag, ResizeObserver removal, touch-action:none, overscroll-behavior:none. Вероятно ограничение LWC v5 в position:fixed на мобильном PWA. Commit `1b5d889`.
 - **2026-05-05** — ⚠️ Futures Screener ПЕРЕЕХАЛ на Malaysia VPS: `screen.clkway.online` (IP 72.62.247.119). Этот сервер (szhub) больше НЕ хостит FS. PM2 остановлен. Код здесь — только для git/разработки. Прод = screen.clkway.online.
 - **2026-05-06** — ⚠️ PROD ROLLBACK: scp фиксов сломало чарты (duplicate const TF_MS). Откатили фронтенд к `378dee0`. Прод НЕ имеет bug audit/candle gap фиксов — они только в git. ПРАВИЛО: всегда `node -c` перед деплоем, не scp напрямую без diff.
+- **2026-05-06** — Comprehensive Code Audit: 11 bugfixes (unhandledRejection/uncaughtException handlers, memory caps books=600/levels=2000/persistenceMap=10K/proxyCache=5K, input validation, race-condition guard, order book resync on gap, bgetWithRetry refactor, stale cache fallback, liq-sweep interval tracked). Tests: 41→189 (11 файлов). Commit `4492574`.
 
 ## Текущее состояние
 
