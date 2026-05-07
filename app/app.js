@@ -105,12 +105,19 @@ function setupEventListeners() {
                 targetContent.style.display = 'block'
             }
 
+            // Stop alerts refresh when leaving tab
+            if (typeof stopAlerts === 'function' && tabName !== 'alerts') stopAlerts()
+
             // Обновить UI в зависимости от вкладки
             if (tabName === 'densities') {
                 if (state.cache.data) renderDensities(state.cache.data)
             } else if (tabName === 'mini-charts') {
                 if (typeof initMiniCharts === 'function') {
                     initMiniCharts()
+                }
+            } else if (tabName === 'alerts') {
+                if (typeof initAlerts === 'function') {
+                    initAlerts()
                 }
             }
         })

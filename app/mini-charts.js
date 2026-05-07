@@ -2963,8 +2963,9 @@ function wsConnect() {
                 document.title = `T${mc._wsMsgCount} ${incomingInterval} ${sym.slice(0,4)} streams=${mc.wsStreams.size}`;
             }
 
-            // Check price alerts (custom drawings + library DM drawings)
+            // Check price alerts (custom drawings + dedicated + library DM drawings)
             checkPriceAlerts(sym, candle.close);
+            checkDedicatedPriceAlerts(sym, candle.close);
             if (typeof DM !== 'undefined' && DM && DM.checkAlerts) DM.checkAlerts(sym, candle.close);
 
             // Update mini-chart (throttled: max 4 updates/sec per symbol)
@@ -3413,6 +3414,39 @@ function openCoinModal(sym) {
     setupDrawingHandlers();
     updateModalCursor();
 
+    // ---- Price Alert: bell button + right-click on price scale ----
+    const alertBtn = document.createElement('button');
+    alertBtn.className = 'chart-alert-btn';
+    alertBtn.innerHTML = '🔔';
+    alertBtn.title = 'Price Alerts';
+    alertBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleAlertPanel(sym, chartEl);
+    });
+    chartEl.appendChild(alertBtn);
+
+    // Right-click on price scale → add alert at that price
+    chartEl.addEventListener('contextmenu', (e) => {
+        const rect = chartEl.getBoundingClientRect();
+        const xInChart = e.clientX - rect.left;
+        // Right ~60px is the price scale area
+        if (xInChart < rect.width - 65) return;
+        e.preventDefault();
+        const yInChart = e.clientY - rect.top;
+        try {
+            const price = modal.series.coordinateToPrice(yInChart);
+            if (!price || isNaN(price) || price <= 0) return;
+            showAlertContextMenu(e.clientX, e.clientY, price, sym);
+        } catch {}
+    });
+
+    // Load and render alert lines after chart data is loaded
+    priceAlertStore.loadFromServer().then(() => {
+        applyAlertLinesToChart(sym, modal.series);
+    }).catch(() => {
+        applyAlertLinesToChart(sym, modal.series);
+    });
+
     // Attach library DrawingManager (if loaded)
     if (typeof DM !== 'undefined' && DM && DM.attach) {
         try {
@@ -3731,6 +3765,7 @@ async function applyOIToBatch(symbols) {
 // ==========================================
 const DRAW_TOOLS = [
     { id: 'cursor', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M6 3v15.5l4-4.5 3.5 6.5 2-1-3.5-6.5H18L6 3z" fill="currentColor" fill-opacity="0.12" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>', title: 'Cursor (Esc)', key: 'Escape' },
+    { id: 'alert', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="currentColor" fill-opacity="0.08"/><path d="M13.73 21a2 2 0 01-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>', title: 'Price Alert (A)', key: 'a' },
     { id: 'hline', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/><circle cx="6" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><circle cx="18" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/></svg>', title: 'Horizontal Line (H)', key: 'h' },
     { id: 'ray', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><line x1="7.5" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/><path d="M19 9l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/></svg>', title: 'Horizontal Ray (R)', key: 'r' },
     { id: 'trendline', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><line x1="4" y1="18" x2="20" y2="6" stroke="currentColor" stroke-width="2"/><circle cx="4" cy="18" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/><circle cx="20" cy="6" r="2.5" stroke="currentColor" stroke-width="1.5" fill="#1e222d"/></svg>', title: 'Trend Line (T)', key: 't' },
@@ -3877,6 +3912,310 @@ function showAlertToast(sym, ticker, currentPrice, alertPrice, direction, color)
     }
 }
 
+// ==========================================
+// Price Alert Store + UI (TradingView-style)
+// ==========================================
+const priceAlertStore = (() => {
+    const KEY = 'fs_price_alerts';
+    let _cache = null;
+    let _serverAlerts = []; // from GET /api/alerts
+
+    function loadLocal() {
+        if (_cache) return _cache;
+        try { _cache = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { _cache = []; }
+        return _cache;
+    }
+    function saveLocal(alerts) {
+        _cache = alerts;
+        lsSet(KEY, JSON.stringify(alerts));
+    }
+    function nextLocalId() {
+        return 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    }
+
+    return {
+        getAll() {
+            const local = loadLocal();
+            // Merge: server alerts + local-only alerts (no server id)
+            const serverIds = new Set(_serverAlerts.map(a => a.id));
+            const localOnly = local.filter(a => !a.serverId || !serverIds.has(a.serverId));
+            return [..._serverAlerts.map(a => ({ ...a, source: 'server' })), ...localOnly.map(a => ({ ...a, source: 'local' }))];
+        },
+        getBySymbol(sym) {
+            return this.getAll().filter(a => a.symbol === sym);
+        },
+        async add(sym, price, direction = 'crosses') {
+            const alert = { id: nextLocalId(), symbol: sym, price, direction, enabled: true, createdAt: Date.now() };
+
+            // Try save to server first
+            if (typeof authUI !== 'undefined' && authUI.isLoggedIn()) {
+                try {
+                    const res = await authUI.authFetch('/api/alerts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ type: 'price', symbol: sym, condition: { price, direction }, cooldown_sec: 300 })
+                    });
+                    const data = await res.json();
+                    if (data.success && data.id) {
+                        alert.serverId = data.id;
+                        alert.source = 'server';
+                    }
+                } catch (e) { console.warn('[PriceAlerts] Server save failed:', e.message); }
+            }
+
+            // Always save locally too
+            const local = loadLocal();
+            local.push(alert);
+            saveLocal(local);
+            return alert;
+        },
+        async remove(alertId) {
+            // Find and remove
+            const all = this.getAll();
+            const alert = all.find(a => a.id === alertId || a.serverId === alertId);
+            if (!alert) return;
+
+            // Remove from server
+            const sId = alert.serverId || alert.id;
+            if (alert.source === 'server' && typeof authUI !== 'undefined' && authUI.isLoggedIn()) {
+                try {
+                    await authUI.authFetch(`/api/alerts/${sId}`, { method: 'DELETE' });
+                } catch (e) { console.warn('[PriceAlerts] Server delete failed:', e.message); }
+            }
+
+            // Remove from local
+            const local = loadLocal();
+            const idx = local.findIndex(a => a.id === alert.id || a.serverId === sId);
+            if (idx !== -1) { local.splice(idx, 1); saveLocal(local); }
+
+            // Remove from server cache
+            const sIdx = _serverAlerts.findIndex(a => a.id === sId);
+            if (sIdx !== -1) _serverAlerts.splice(sIdx, 1);
+        },
+        setServerAlerts(alerts) {
+            _serverAlerts = alerts.filter(a => a.type === 'price').map(a => ({
+                id: a.id, serverId: a.id, symbol: a.symbol,
+                price: a.condition?.price, direction: a.condition?.direction || 'crosses',
+                enabled: a.enabled, cooldown_sec: a.cooldown_sec
+            }));
+        },
+        async loadFromServer() {
+            if (typeof authUI === 'undefined' || !authUI.isLoggedIn()) return;
+            try {
+                const res = await authUI.authFetch('/api/alerts');
+                const data = await res.json();
+                if (data.success && data.alerts) {
+                    this.setServerAlerts(data.alerts);
+                    // Cleanup stale local alerts: if local has serverId not on server → remove
+                    const serverIds = new Set(_serverAlerts.map(a => a.id));
+                    const local = loadLocal();
+                    const cleaned = local.filter(a => !a.serverId || serverIds.has(a.serverId));
+                    if (cleaned.length !== local.length) {
+                        console.log(`[PriceAlerts] Cleaned ${local.length - cleaned.length} stale local alert(s)`);
+                        saveLocal(cleaned);
+                    }
+                }
+            } catch (e) { console.warn('[PriceAlerts] Load from server failed:', e.message); }
+        },
+        invalidateCache() { _cache = null; }
+    };
+})();
+
+// Render alert price lines on a chart
+const _alertPriceLines = new Map(); // key: "sym:alertId" → priceLine object
+
+function applyAlertLinesToChart(sym, series) {
+    if (!series) return;
+    // Remove existing alert lines for this symbol
+    for (const [key, line] of _alertPriceLines) {
+        if (key.startsWith(sym + ':')) {
+            try { series.removePriceLine(line); } catch {}
+            _alertPriceLines.delete(key);
+        }
+    }
+    // Add current alerts
+    const alerts = priceAlertStore.getBySymbol(sym);
+    for (const a of alerts) {
+        if (!a.price || !a.enabled) continue;
+        try {
+            const pl = series.createPriceLine({
+                price: a.price,
+                color: '#eab308',
+                lineWidth: 1,
+                lineStyle: 2, // dashed
+                axisLabelVisible: false,
+                title: '',
+            });
+            _alertPriceLines.set(`${sym}:${a.id || a.serverId}`, pl);
+        } catch {}
+    }
+}
+
+function removeAlertLineFromChart(sym, alertId, series) {
+    const key = `${sym}:${alertId}`;
+    const line = _alertPriceLines.get(key);
+    if (line && series) {
+        try { series.removePriceLine(line); } catch {}
+        _alertPriceLines.delete(key);
+    }
+}
+
+// Context menu for adding alerts
+let _alertCtxEl = null;
+
+function showAlertContextMenu(x, y, price, sym) {
+    closeAlertContextMenu();
+    const prec = getPricePrecision(price);
+
+    const menu = document.createElement('div');
+    menu.className = 'alert-ctx-menu';
+    menu.style.left = Math.min(x, window.innerWidth - 240) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+    menu.innerHTML = `
+        <label>Price Alert — ${sym.replace('USDT', '/USDT')}</label>
+        <input type="number" step="any" value="${price.toFixed(prec)}" id="alertPriceInput" />
+        <select id="alertDirSelect">
+            <option value="crosses">↕ Crosses</option>
+            <option value="crosses_above">▲ Crosses Above</option>
+            <option value="crosses_below">▼ Crosses Below</option>
+        </select>
+        <div class="alert-ctx-actions">
+            <button class="alert-ctx-add">🔔 Add Alert</button>
+            <button class="alert-ctx-cancel">Cancel</button>
+        </div>
+    `;
+
+    // Auto-select direction based on current price
+    const currentPrice = alertState.lastPrices[sym];
+    if (currentPrice) {
+        const dir = price > currentPrice ? 'crosses_above' : 'crosses_below';
+        menu.querySelector('#alertDirSelect').value = dir;
+    }
+
+    menu.querySelector('.alert-ctx-add').onclick = async () => {
+        const inputPrice = parseFloat(menu.querySelector('#alertPriceInput').value);
+        const direction = menu.querySelector('#alertDirSelect').value;
+        if (!inputPrice || isNaN(inputPrice)) return;
+
+        const alert = await priceAlertStore.add(sym, inputPrice, direction);
+        // Apply visual line
+        const series = modal.series || (mc.charts[sym] && mc.charts[sym].series);
+        if (series) applyAlertLinesToChart(sym, series);
+
+        closeAlertContextMenu();
+        // Show confirmation toast
+        showAlertToast(sym, sym.replace('USDT', ''), inputPrice, inputPrice,
+            '🔔 Alert Set: ' + (direction === 'crosses' ? '↕ Crosses' : direction === 'crosses_above' ? '▲ Above' : '▼ Below'),
+            '#eab308');
+    };
+    menu.querySelector('.alert-ctx-cancel').onclick = () => closeAlertContextMenu();
+
+    // Close on click outside
+    menu.addEventListener('mousedown', e => e.stopPropagation());
+    menu.addEventListener('click', e => e.stopPropagation());
+    document.addEventListener('mousedown', closeAlertContextMenu, { once: true });
+
+    document.body.appendChild(menu);
+    _alertCtxEl = menu;
+    menu.querySelector('#alertPriceInput').focus();
+    menu.querySelector('#alertPriceInput').select();
+}
+
+function closeAlertContextMenu() {
+    if (_alertCtxEl && _alertCtxEl.parentNode) _alertCtxEl.remove();
+    _alertCtxEl = null;
+}
+
+// Alert panel (list of alerts for current symbol)
+let _alertPanelEl = null;
+
+function toggleAlertPanel(sym, chartEl) {
+    if (_alertPanelEl) { _alertPanelEl.remove(); _alertPanelEl = null; return; }
+
+    const panel = document.createElement('div');
+    panel.className = 'alert-panel';
+
+    function renderPanel() {
+        const alerts = priceAlertStore.getBySymbol(sym);
+        if (!alerts.length) {
+            panel.innerHTML = `<div class="alert-panel-title">🔔 Alerts — ${sym.replace('USDT', '')}</div>
+                <div class="alert-panel-empty">No alerts set.<br>Right-click price scale to add.</div>`;
+            return;
+        }
+        const prec = getPricePrecision(alerts[0].price || 1);
+        panel.innerHTML = `<div class="alert-panel-title">🔔 Alerts — ${sym.replace('USDT', '')} (${alerts.length})</div>` +
+            alerts.map(a => {
+                const dirIcon = a.direction === 'crosses_above' ? '▲' : a.direction === 'crosses_below' ? '▼' : '↕';
+                return `<div class="alert-panel-item" data-id="${a.id || a.serverId}">
+                    <span class="ap-bell">🔔</span>
+                    <span class="ap-price">$${(a.price || 0).toFixed(prec)}</span>
+                    <span class="ap-dir">${dirIcon}</span>
+                    <span class="ap-del" title="Delete alert">✕</span>
+                </div>`;
+            }).join('');
+
+        panel.querySelectorAll('.ap-del').forEach(btn => {
+            btn.onclick = async (e) => {
+                e.stopPropagation();
+                const id = btn.closest('.alert-panel-item').dataset.id;
+                await priceAlertStore.remove(id.startsWith('local_') ? id : Number(id));
+                const series = modal.series || (mc.charts[sym] && mc.charts[sym].series);
+                if (series) applyAlertLinesToChart(sym, series);
+                renderPanel();
+            };
+        });
+    }
+
+    renderPanel();
+    panel.addEventListener('mousedown', e => e.stopPropagation());
+    chartEl.appendChild(panel);
+    _alertPanelEl = panel;
+
+    // Close on next click outside
+    setTimeout(() => {
+        document.addEventListener('mousedown', function handler(e) {
+            if (_alertPanelEl && !_alertPanelEl.contains(e.target)) {
+                _alertPanelEl.remove();
+                _alertPanelEl = null;
+                document.removeEventListener('mousedown', handler);
+            }
+        });
+    }, 100);
+}
+
+// Check dedicated price alerts (extends existing checkPriceAlerts)
+function checkDedicatedPriceAlerts(sym, currentPrice) {
+    const alerts = priceAlertStore.getBySymbol(sym);
+    if (!alerts.length) return;
+
+    const lastPrice = alertState.lastPrices[sym];
+    if (lastPrice === undefined) return;
+
+    for (const a of alerts) {
+        if (!a.price || !a.enabled) continue;
+
+        const crossedUp = lastPrice < a.price && currentPrice >= a.price;
+        const crossedDown = lastPrice > a.price && currentPrice <= a.price;
+        if (!crossedUp && !crossedDown) continue;
+
+        const matchesDir =
+            a.direction === 'crosses' ||
+            (a.direction === 'crosses_above' && crossedUp) ||
+            (a.direction === 'crosses_below' && crossedDown);
+        if (!matchesDir) continue;
+
+        // Cooldown
+        const cKey = `pa:${a.id}`;
+        const now = Date.now();
+        if (alertState.cooldowns[cKey] && now - alertState.cooldowns[cKey] < (a.cooldown_sec || 60) * 1000) continue;
+        alertState.cooldowns[cKey] = now;
+
+        const direction = crossedUp ? '▲ Crossed Above' : '▼ Crossed Below';
+        const ticker = sym.replace('USDT', '');
+        showAlertToast(sym, ticker, currentPrice, a.price, direction, '#eab308');
+    }
+}
+
 // Fibonacci levels config (customizable, persisted in localStorage)
 // Format: [{level: 0, color: '#4caf50'}, ...] — each level has its own color
 const FIB_DEFAULT_COLORS = ['#787b86', '#f44336', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#787b86', '#e91e63', '#00bcd4', '#8bc34a'];
@@ -4014,7 +4353,7 @@ function renderDrawToolbar(targetEl) {
             removePreviewOverlay();
             if (tool !== 'ruler') removeRulerMeasurement();
             // Route to library DrawingManager if available (hline/ray/trendline/fib/rect)
-            if (typeof DM !== 'undefined' && DM && DM.isActive() && tool !== 'ruler') {
+            if (typeof DM !== 'undefined' && DM && DM.isActive() && tool !== 'ruler' && tool !== 'alert') {
                 DM.setTool(tool);
             }
             renderDrawToolbar();
@@ -4627,7 +4966,7 @@ function setupDrawingHandlers(targetEl) {
         if (!_c || !_s) return;
         if (draw.activeTool === 'cursor') return;
         // If library DrawingManager is handling this tool, don't use custom handlers
-        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler') return;
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler' && draw.activeTool !== 'alert') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
@@ -4643,7 +4982,12 @@ function setupDrawingHandlers(targetEl) {
             time = snapped.time;
         }
 
-        if (draw.activeTool === 'hline') {
+        if (draw.activeTool === 'alert') {
+            drawAlertLine(price);
+            draw.activeTool = 'cursor';
+            renderDrawToolbar();
+            updateModalCursor();
+        } else if (draw.activeTool === 'hline') {
             drawHorizontalLine(price);
             draw.activeTool = 'cursor';
             renderDrawToolbar();
@@ -4792,7 +5136,7 @@ function setupDrawingHandlers(targetEl) {
         }
         // If library DrawingManager handles this tool — don't preventDefault,
         // let native touch→click conversion happen so chart.subscribeClick fires for the library
-        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler') return;
+        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler' && draw.activeTool !== 'alert') return;
         e.preventDefault();
         const touch = e.changedTouches[0];
         if (!touch) return;
@@ -5125,6 +5469,36 @@ function drawHorizontalLine(price, color) {
     });
     draw.drawings.push({ id: ++drawIdCounter, type: 'hline', color: c, locked: false, priceLine, data: { price } });
     persistDrawings();
+}
+
+function drawAlertLine(price) {
+    const _s = drawCtx.series || modal.series;
+    if (!_s) return;
+    const sym = drawCtx.sym || modal.currentSym;
+    if (!sym) return;
+
+    // Auto-detect direction: above current price = crosses_above, below = crosses_below
+    const currentPrice = alertState.lastPrices[sym];
+    const direction = currentPrice ? (price > currentPrice ? 'crosses_above' : 'crosses_below') : 'crosses';
+
+    // Visual: white dashed line (clean, no emoji on price axis)
+    const pl = _s.createPriceLine({
+        price, color: '#ffffff', lineWidth: 1,
+        lineStyle: 2, axisLabelVisible: false, title: '',
+    });
+    _alertPriceLines.set(`${sym}:local_${Date.now()}`, pl);
+
+    // Save alert to server/local
+    priceAlertStore.add(sym, price, direction).then(alert => {
+        // Re-key with proper ID
+        if (alert && (alert.serverId || alert.id)) {
+            applyAlertLinesToChart(sym, _s);
+        }
+    });
+
+    // Toast
+    const dirLabel = direction === 'crosses_above' ? '▲ Above' : direction === 'crosses_below' ? '▼ Below' : '↕ Crosses';
+    showAlertToast(sym, sym.replace('USDT', ''), price, price, '🔔 Alert: ' + dirLabel, '#ffffff');
 }
 
 function drawHorizontalRay(price, startTime, color) {

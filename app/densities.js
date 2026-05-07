@@ -118,15 +118,19 @@ function setupDv2Events() {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
             tab.classList.add('active')
 
+            // Stop non-active tab refreshes
+            if (typeof stopSignals === 'function' && tabName !== 'signals') stopSignals()
+            if (typeof stopAlerts === 'function' && tabName !== 'alerts') stopAlerts()
+
             if (tabName === 'densities') {
-                if (typeof stopSignals === 'function') stopSignals()
                 if (!dv2.data) loadDensitiesV2(true)
                 else renderDv2Table(dv2.data)
             } else if (tabName === 'mini-charts') {
-                if (typeof stopSignals === 'function') stopSignals()
                 if (typeof initMiniCharts === 'function') initMiniCharts()
             } else if (tabName === 'signals') {
                 if (typeof initSignals === 'function') initSignals()
+            } else if (tabName === 'alerts') {
+                if (typeof initAlerts === 'function') initAlerts()
             }
         })
     })

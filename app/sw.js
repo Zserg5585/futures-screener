@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v36'
+const CACHE_NAME = 'fs-v39'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -7,6 +7,7 @@ const STATIC_ASSETS = [
   '/signals.js',
   '/densities.js',
   '/mini-charts.js',
+  '/alerts.js',
   '/manifest.json',
 ]
 
@@ -28,6 +29,10 @@ self.addEventListener('activate', (e) => {
     ])
   )
   self.clients.claim()
+  // Notify all open tabs that a new SW version is active
+  self.clients.matchAll({ type: 'window' }).then(cls => {
+    for (const c of cls) c.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME })
+  })
 })
 
 // Notification click — open PWA and navigate to coin modal
@@ -82,9 +87,20 @@ self.addEventListener('fetch', (e) => {
       url.pathname.startsWith('/depth/') || url.pathname === '/health') {
     return
   }
-  // Static — network first, fallback cache
+  // Navigation (HTML) — ALWAYS bypass HTTP cache to get fresh version checks
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request, { cache: 'no-store' }).then(res => {
+        const clone = res.clone()
+        caches.open(CACHE_NAME).then(c => c.put(e.request, clone))
+        return res
+      }).catch(() => caches.match(e.request))
+    )
+    return
+  }
+  // Static assets — network first (bypass HTTP cache), fallback to SW cache
   e.respondWith(
-    fetch(e.request).then(res => {
+    fetch(e.request, { cache: 'no-cache' }).then(res => {
       const clone = res.clone()
       caches.open(CACHE_NAME).then(c => c.put(e.request, clone))
       return res

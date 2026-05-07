@@ -142,6 +142,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint);
 `)
 
+// Migration: add user_id to push_subscriptions for per-user alert push
+try {
+  db.exec('ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER')
+} catch(e) { /* column exists */ }
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id)')
+} catch(e) { /* index exists */ }
+
 // Migration: add new columns if missing (mfe_pct, mae_pct, spot_after_1d)
 try {
   db.exec(`ALTER TABLE signal_log ADD COLUMN spot_after_1d REAL`)
@@ -239,6 +247,8 @@ const stmts = {
   countPushSubs: db.prepare('SELECT COUNT(*) as count FROM push_subscriptions'),
   incrementPushFail: db.prepare('UPDATE push_subscriptions SET fail_count = fail_count + 1 WHERE endpoint = ?'),
   resetPushFail: db.prepare(`UPDATE push_subscriptions SET fail_count = 0, last_success = datetime('now') WHERE endpoint = ?`),
+  getPushSubsByUser: db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ? AND fail_count < 3'),
+  linkPushSubToUser: db.prepare('UPDATE push_subscriptions SET user_id = ? WHERE endpoint = ?'),
 }
 
 // --- Helpers ---

@@ -43,6 +43,7 @@ const densityV2 = require('./densityV2');
 const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
+const alertChecker = require('./alerts');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -50,11 +51,31 @@ const klinesCache = require('./klines-cache');
 // ---- helpers ----
 const FETCH_TIMEOUT_MS = 15000 // 15s timeout for all Binance requests
 
-// ---- Global Binance Rate Limiter ----
+// ---- Global Binance Rate Limiter (with disk persistence) ----
+const RATE_LIMIT_FILE = require('path').resolve(__dirname, '..', 'data', 'rate-limit-pause.json')
+
+function loadPauseFromDisk() {
+  try {
+    const raw = require('fs').readFileSync(RATE_LIMIT_FILE, 'utf8')
+    const { pauseUntil } = JSON.parse(raw)
+    if (pauseUntil && pauseUntil > Date.now()) {
+      console.log(`[rate-limiter] Restored pause from disk: ${Math.ceil((pauseUntil - Date.now()) / 1000)}s remaining`)
+      return pauseUntil
+    }
+  } catch {}
+  return 0
+}
+
+function savePauseToDisk(pauseUntil) {
+  try {
+    require('fs').writeFileSync(RATE_LIMIT_FILE, JSON.stringify({ pauseUntil, savedAt: new Date().toISOString() }))
+  } catch (e) { console.warn('[rate-limiter] Failed to save pause to disk:', e.message) }
+}
+
 const rateLimiter = {
   usedWeight: 0,              // last known X-MBX-USED-WEIGHT-1M
   weightUpdatedAt: 0,         // when usedWeight was last updated
-  pauseUntil: 0,              // global pause timestamp (after 429)
+  pauseUntil: loadPauseFromDisk(), // restored from disk if active
   WEIGHT_SOFT_LIMIT: 1800,    // start throttling at 1800/2400 (75%)
   WEIGHT_HARD_LIMIT: 2200,    // hard pause at 2200/2400 (92%)
   THROTTLE_DELAY_MS: 500,     // delay when approaching soft limit
@@ -73,18 +94,18 @@ const rateLimiter = {
     const until = Date.now() + ms
     if (until > this.pauseUntil) {
       this.pauseUntil = until
+      savePauseToDisk(until)
       console.log(`[rate-limiter] ⚠️ Global pause ${ms}ms (until ${new Date(until).toISOString().slice(11,19)})`)
     }
   },
 
   /** Wait if paused or throttled. Call before every request. */
   async waitIfNeeded() {
-    // Global pause (after 429)
+    // Global pause (after 429/418) — fail fast instead of blocking
     const now = Date.now()
     if (now < this.pauseUntil) {
       const wait = this.pauseUntil - now
-      console.log(`[rate-limiter] Waiting ${wait}ms (global pause)`)
-      await new Promise(r => setTimeout(r, wait))
+      throw new Error(`Rate limited, retry in ${Math.ceil(wait / 1000)}s`)
     }
 
     // Weight is stale after 60s — Binance resets every minute
@@ -518,7 +539,7 @@ const path = require('path')
 const fs = require('fs')
 const APP_DIR = path.resolve(__dirname, '..', 'app')
 
-// Pre-load static files into memory (never changes at runtime)
+// Pre-load static files into memory (hot-reload without PM2 restart via POST /api/reload-static)
 const staticCache = new Map()
 function getStatic(relPath) {
   if (staticCache.has(relPath)) return staticCache.get(relPath)
@@ -527,11 +548,18 @@ function getStatic(relPath) {
   staticCache.set(relPath, buf)
   return buf
 }
+function reloadAllStatic() {
+  staticCache.clear()
+  for (const f of STATIC_FILES) {
+    try { getStatic(f) } catch (e) { console.warn(`[Static] Reload failed ${f}: ${e.message}`) }
+  }
+  console.log(`[Static] Hot-reloaded ${STATIC_FILES.length} files`)
+}
 
 // Pre-warm all static files at module load
 const STATIC_FILES = [
   'index.html', 'app.js', 'densities.js', 'mini-charts.js', 'auth.js',
-  'drawing-manager.js', 'signals.js', 'settings.js', 'styles.css',
+  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'styles.css',
   'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
 ]
 for (const f of STATIC_FILES) {
@@ -575,6 +603,9 @@ fastify.get('/signals.js', async (req, reply) => {
 })
 fastify.get('/settings.js', async (req, reply) => {
   reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('settings.js'))
+})
+fastify.get('/alerts.js', async (req, reply) => {
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('alerts.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
@@ -735,6 +766,27 @@ fastify.post('/api/alerts', async (req, reply) => {
   if (!type) return reply.code(400).send({ error: 'Alert type required' })
   const result = auth.createUserAlert(req.user.id, type, symbol, condition || {}, cooldown_sec || 300)
   return { success: true, id: result.lastInsertRowid }
+})
+
+fastify.patch('/api/alerts/:id', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
+  const { enabled, condition, cooldown_sec } = req.body || {}
+  const id = Number(req.params.id)
+  if (enabled !== undefined) {
+    auth.stmts.toggleAlert.run(enabled ? 1 : 0, id, req.user.id)
+  }
+  if (condition !== undefined || cooldown_sec !== undefined) {
+    const existing = auth.getUserAlerts(req.user.id).find(a => a.id === id)
+    if (existing) {
+      auth.stmts.updateAlert.run(
+        JSON.stringify(condition !== undefined ? condition : existing.condition),
+        enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
+        cooldown_sec !== undefined ? cooldown_sec : existing.cooldown_sec,
+        id, req.user.id
+      )
+    }
+  }
+  return { success: true }
 })
 
 fastify.delete('/api/alerts/:id', async (req, reply) => {
@@ -1210,9 +1262,16 @@ function setProxyCached(key, data) {
 fastify.get('/api/ticker24hr', async () => {
   const cached = getProxyCached('ticker24hr', 60000)
   if (cached) return cached
-  const data = await bgetWithRetry('/fapi/v1/ticker/24hr')
-  setProxyCached('ticker24hr', data)
-  return data
+  try {
+    const data = await bgetWithRetry('/fapi/v1/ticker/24hr')
+    setProxyCached('ticker24hr', data)
+    return data
+  } catch (e) {
+    // Return stale cache if available, otherwise empty array
+    const stale = getProxyCached('ticker24hr', 600000) // 10min stale
+    if (stale) return stale
+    return []
+  }
 })
 
 // Klines — SQLite cache first, Binance fallback
@@ -1285,12 +1344,19 @@ fastify.get('/api/klines', async (req, reply) => {
   const key = `klines:${symbol}:${interval}:${limit}`
   const proxyCached = getProxyCached(key, 10000)
   if (proxyCached) return proxyCached
-  const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
-  if (Array.isArray(data)) {
-    setProxyCached(key, data)
-    klinesCache.storeCandles(symbol, interval, data)
+  try {
+    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+    if (Array.isArray(data)) {
+      setProxyCached(key, data)
+      klinesCache.storeCandles(symbol, interval, data)
+    }
+    return data
+  } catch (e) {
+    // Rate limited — return whatever SQLite has
+    const rows = klinesCache.getCandles(symbol, interval, limit)
+    if (rows.length) return rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+    return []
   }
-  return data
 })
 
 // Test signal — inject a fake signal for notification testing (auto-expires in 60s)
@@ -1315,8 +1381,12 @@ fastify.post('/api/push/subscribe', async (req) => {
     subscription.keys.auth,
     JSON.stringify(filters || {})
   )
+  // Link subscription to authenticated user (for per-user alert push)
+  if (req.user) {
+    try { auth.stmts.linkPushSubToUser.run(req.user.id, subscription.endpoint) } catch {}
+  }
   const count = auth.stmts.countPushSubs.get()?.count || 0
-  console.log(`[Push] New subscription registered (total: ${count})`)
+  console.log(`[Push] New subscription registered (total: ${count})${req.user ? ` [user #${req.user.id}]` : ''}`)
   return { success: true, total: count }
 })
 
@@ -1449,15 +1519,27 @@ fastify.post('/api/klines-batch', async (req, reply) => {
 })
 
 // NATR(14) for all USDT pairs — cached 5min
-fastify.get('/api/natr', async (req) => {
+fastify.get('/api/natr', async (req, reply) => {
   const interval = String(req.query.interval || '15m')
   const cached = getProxyCached(`natr:${interval}`, 300000) // 5 min cache
   if (cached) return cached
 
+  // If rate limited, return stale cache (up to 30min) or empty
+  if (rateLimiter.pauseUntil > Date.now()) {
+    const stale = getProxyCached(`natr:${interval}`, 1800000)
+    return stale || {}
+  }
+
   // Get all USDT pairs from ticker
-  const tickerCached = getProxyCached('ticker24hr', 30000)
-  const ticker = tickerCached || await bgetWithRetry('/fapi/v1/ticker/24hr')
-  if (!tickerCached) setProxyCached('ticker24hr', ticker)
+  let ticker
+  try {
+    const tickerCached = getProxyCached('ticker24hr', 30000)
+    ticker = tickerCached || await bgetWithRetry('/fapi/v1/ticker/24hr')
+    if (!tickerCached) setProxyCached('ticker24hr', ticker)
+  } catch (e) {
+    const stale = getProxyCached(`natr:${interval}`, 1800000)
+    return stale || {}
+  }
 
   const usdtPairs = ticker
     .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
@@ -1551,7 +1633,20 @@ function startKlinesUpdater() {
   console.log('[KlinesUpdater] Started (30s interval)')
 }
 
-// ---- rate limiter status endpoint ----
+// ---- rate limiter status + reset endpoint ----
+fastify.post('/api/rate-limiter/reset', async () => {
+  rateLimiter.pauseUntil = 0
+  rateLimiter.usedWeight = 0
+  savePauseToDisk(0)
+  console.log('[rate-limiter] Manual reset via API')
+  return { success: true, status: 'OK' }
+})
+
+// Hot-reload static files from disk (no PM2 restart needed → no Binance ban)
+fastify.post('/api/reload-static', async () => {
+  reloadAllStatic()
+  return { success: true, files: STATIC_FILES.length }
+})
 fastify.get('/api/rate-limiter', async () => ({
   usedWeight: rateLimiter.usedWeight,
   weightUpdatedAt: rateLimiter.weightUpdatedAt,
@@ -1579,16 +1674,22 @@ const start = async () => {
     // Init klines SQLite cache (before signals so liq_sweep can use it)
     klinesCache.initDB()
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
+    alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
+    // Delay 45s to let Binance rate limit window expire after restart
     setTimeout(async () => {
+      if (rateLimiter.pauseUntil > Date.now()) {
+        console.log('[startup] NATR warmup skipped — rate limiter paused')
+        return
+      }
       try {
         console.log('[startup] Pre-warming NATR cache (15m)...')
         await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
         console.log('[startup] NATR cache warmed ✓')
       } catch (e) { console.warn('[startup] NATR warmup failed:', e.message) }
-    }, 5_000) // 5s after start — let ticker cache populate first
+    }, 45_000)
     // Periodic NATR refresh every 5 min (cache TTL is 5min, so re-compute before expiry)
     _intervals.push(setInterval(async () => {
       try {
@@ -1596,7 +1697,13 @@ const start = async () => {
       } catch (e) { console.warn('[NATR-refresh] failed:', e.message) }
     }, 270_000)) // 4.5 min (slightly before 5min TTL expiry)
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
-    warmupDensitySubscriptions()
+    setTimeout(() => {
+      if (rateLimiter.pauseUntil > Date.now()) {
+        console.log('[startup] Density warmup skipped — rate limiter paused')
+        return
+      }
+      warmupDensitySubscriptions()
+    }, 60_000)
   } catch (err) {
     fastify.log.error(err)
     process.exit(1)
@@ -1614,6 +1721,7 @@ async function gracefulShutdown(signal) {
     try { const liqSweep = require('./liq-sweep'); clearInterval(liqSweep._cleanupInterval) } catch (_) {}
     // Stop signal scanners
     try { signals.stop() } catch (_) {}
+    try { alertChecker.stop() } catch (_) {}
     console.log(`[shutdown] Cleared ${_intervals.length + 1} interval(s) + signal scanners`)
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()

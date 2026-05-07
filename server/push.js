@@ -130,8 +130,35 @@ function getVapidPublicKey() {
   return process.env.VAPID_PUBLIC_KEY || null
 }
 
+/**
+ * Send push notification to a specific user (by user_id)
+ * Used for price alerts — only sends to subscriptions linked to this user
+ */
+function sendPushToUser(userId, payload) {
+  if (!_enabled || !_stmts) return
+
+  const subs = _stmts.getPushSubsByUser ? _stmts.getPushSubsByUser.all(userId) : []
+  if (!subs.length) return
+
+  const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
+  let sent = 0
+
+  for (const sub of subs) {
+    const pushSub = {
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth }
+    }
+    sent++
+    sendWithRetry(pushSub, payloadStr, sub.endpoint)
+  }
+
+  if (sent > 0) {
+    console.log(`[Push] Alert → user #${userId}: sent to ${sent} subscription(s)`)
+  }
+}
+
 function isEnabled() {
   return _enabled
 }
 
-module.exports = { init, sendPushForSignal, getVapidPublicKey, isEnabled }
+module.exports = { init, sendPushForSignal, sendPushToUser, getVapidPublicKey, isEnabled }
