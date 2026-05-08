@@ -48,6 +48,7 @@ const push = require('./push');
 const alertChecker = require('./alerts');
 const depthHeatmap = require('./depth-heatmap');
 const vpinScanner = require('./vpin');
+const fillKill = require('./fill-kill');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -693,6 +694,20 @@ fastify.get('/api/vpin', async (req) => {
 
 fastify.get('/api/vpin/stats', async () => {
   return { success: true, data: vpinScanner.getStats() }
+})
+
+// Fill:Kill Ratio — Wall Authenticity / Spoof Detection
+fastify.get('/api/fill-kill', async (req) => {
+  const { symbol } = req.query
+  if (symbol) {
+    const data = fillKill.getData(symbol)
+    return { success: true, data: data || { symbol, fillKillRatio: null, message: 'No data yet' } }
+  }
+  return { success: true, data: fillKill.getAll() }
+})
+
+fastify.get('/api/fill-kill/stats', async () => {
+  return { success: true, data: fillKill.getStats() }
 })
 
 // Signal stats (public)
@@ -1585,6 +1600,7 @@ const start = async () => {
     alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
     depthHeatmap.init({ stateManager, getProxyCached })
     vpinScanner.init({ bgetWithRetry, getProxyCached })
+    fillKill.init({ stateManager, getProxyCached })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
@@ -1634,6 +1650,7 @@ async function gracefulShutdown(signal) {
     try { alertChecker.stop() } catch (_) {}
     try { depthHeatmap.stop() } catch (_) {}
     try { vpinScanner.stop() } catch (_) {}
+    try { fillKill.stop() } catch (_) {}
     log.info({ intervals: _intervals.length + 1 }, 'Shutdown: cleared intervals + signal scanners')
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()

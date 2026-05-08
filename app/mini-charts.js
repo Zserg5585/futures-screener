@@ -3306,6 +3306,7 @@ function openCoinModal(sym) {
         <span class="cm-metric" title="24h High"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 1L8 5H2L5 1Z" fill="#22c55e" opacity="0.8"/></svg>${parseFloat(pair.highPrice).toFixed(prec)}</span>
         <span class="cm-metric" title="24h Low"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 9L2 5H8L5 9Z" fill="#ef4444" opacity="0.8"/></svg>${parseFloat(pair.lowPrice).toFixed(prec)}</span>
         <span class="cm-metric" id="cmVpin" title="VPIN — Order Flow Toxicity (0=balanced, 1=informed)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5 3v4M5 3l2 2M5 3l-2 2" stroke="currentColor" stroke-width="1"/></svg>VPIN: —</span>
+        <span class="cm-metric" id="cmFillKill" title="Fill:Kill — Wall authenticity (>0.5=genuine, <0.3=spoof)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="1" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/><path d="M3 5h4" stroke="currentColor" stroke-width="1.2"/></svg>F:K —</span>
     `;
 
     // Fetch VPIN for this symbol (async, updates metric when ready)
@@ -3315,6 +3316,15 @@ function openCoinModal(sym) {
         const v = j.data.vpin;
         const color = v >= 0.6 ? '#ef4444' : v >= 0.4 ? '#fb923c' : '#22c55e';
         vpinEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><circle cx="5" cy="5" r="4" stroke="${color}" stroke-width="1.2" fill="none"/><path d="M5 3v4M5 3l2 2M5 3l-2 2" stroke="${color}" stroke-width="1"/></svg><span style="color:${color}">VPIN: ${v.toFixed(3)}</span>`;
+    }).catch(() => {});
+
+    // Fetch Fill:Kill ratio for this symbol (async)
+    fetch('/api/fill-kill?symbol=' + sym).then(r => r.json()).then(j => {
+        const fkEl = document.getElementById('cmFillKill');
+        if (!fkEl || !j.success || !j.data || j.data.fillKillRatio == null) return;
+        const r = j.data.fillKillRatio;
+        const color = r < 0.3 ? '#ef4444' : r < 0.5 ? '#fb923c' : '#22c55e';
+        fkEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="1" width="8" height="8" rx="1" stroke="${color}" stroke-width="1" fill="none"/><path d="M3 5h4" stroke="${color}" stroke-width="1.2"/></svg><span style="color:${color}">F:K ${r.toFixed(2)}</span> <span style="color:#64748b;font-size:10px">(${j.data.filled}/${j.data.total})</span>`;
     }).catch(() => {});
 
     // TF buttons — set active
