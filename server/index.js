@@ -46,6 +46,7 @@ const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
 const alertChecker = require('./alerts');
+const depthHeatmap = require('./depth-heatmap');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -412,7 +413,7 @@ function reloadAllStatic() {
 // Pre-warm all static files at module load
 const STATIC_FILES = [
   'index.html', 'app.js', 'densities.js', 'mini-charts.js', 'auth.js',
-  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'gapless-scale.js',
+  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'gapless-scale.js', 'depth-heatmap-ui.js',
   'styles.css', 'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
 ]
 for (const f of STATIC_FILES) {
@@ -462,6 +463,9 @@ fastify.get('/alerts.js', async (req, reply) => {
 })
 fastify.get('/gapless-scale.js', async (req, reply) => {
   reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('gapless-scale.js'))
+})
+fastify.get('/depth-heatmap-ui.js', async (req, reply) => {
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('depth-heatmap-ui.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
@@ -660,6 +664,20 @@ fastify.get('/api/alerts/triggers', async (req, reply) => {
 // Alert condition types (for frontend builder)
 fastify.get('/api/alerts/types', async () => {
   return { success: true, types: alertChecker.CONDITION_TYPES }
+})
+
+// Depth Heatmap (Bookmap-style)
+fastify.get('/api/depth-heatmap', async (req) => {
+  const { symbol } = req.query
+  if (!symbol) return { success: false, error: 'symbol required' }
+  depthHeatmap.track(symbol)
+  const data = depthHeatmap.getData(symbol)
+  if (!data || !data.count) return { success: true, data: { symbol, snapshots: [], count: 0, message: 'Collecting data, retry in 10s' } }
+  return { success: true, data }
+})
+
+fastify.get('/api/depth-heatmap/stats', async () => {
+  return { success: true, data: depthHeatmap.getStats() }
 })
 
 // Signal stats (public)
@@ -1550,6 +1568,7 @@ const start = async () => {
     klinesCache.initDB()
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
     alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
+    depthHeatmap.init({ stateManager, getProxyCached })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
@@ -1597,6 +1616,7 @@ async function gracefulShutdown(signal) {
     // Stop signal scanners
     try { signals.stop() } catch (_) {}
     try { alertChecker.stop() } catch (_) {}
+    try { depthHeatmap.stop() } catch (_) {}
     log.info({ intervals: _intervals.length + 1 }, 'Shutdown: cleared intervals + signal scanners')
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()

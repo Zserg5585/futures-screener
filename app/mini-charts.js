@@ -3591,6 +3591,11 @@ async function loadModalChart(sym, tf) {
         // Apply OI overlay if enabled
         applyOIOverlay(modal.chart, sym);
 
+        // Attach depth heatmap overlay (Bookmap-style)
+        if (typeof depthHeatmapUI !== 'undefined') {
+            try { depthHeatmapUI.attach(modal); } catch(e) { console.warn('[modal] heatmap attach failed:', e.message); }
+        }
+
         // Subscribe modal to live WS
         const stream = `${sym.toLowerCase()}@kline_${tf}`;
         modal.wsStream = stream;
@@ -5805,6 +5810,8 @@ function closeCoinModal() {
     // Clear signal markers
     if (modal._sigMarkers) { try { modal._sigMarkers.setMarkers([]); } catch(_){} modal._sigMarkers = null; }
     window._pendingSignalMarker = null;
+    // Detach depth heatmap overlay
+    if (typeof depthHeatmapUI !== 'undefined') { try { depthHeatmapUI.detach(); } catch(_){} }
     // Unsubscribe modal WS stream
     if (modal.wsStream) {
         if (mc.ws && mc.ws.readyState === WebSocket.OPEN) {
@@ -5853,6 +5860,19 @@ function initModalEvents() {
 
     // Overlay click
     document.querySelector('.mc-modal-overlay').addEventListener('click', closeCoinModal);
+
+    // Heatmap toggle button
+    const hmBtn = el('cmHeatmapBtn');
+    if (hmBtn) {
+        hmBtn.addEventListener('click', () => {
+            if (typeof depthHeatmapUI !== 'undefined') {
+                const vis = depthHeatmapUI.toggle();
+                hmBtn.classList.toggle('active', vis);
+            }
+        });
+        // Restore initial state
+        if (typeof depthHeatmapUI !== 'undefined') hmBtn.classList.toggle('active', depthHeatmapUI.isVisible());
+    }
 
     // Escape key (named function — removable if needed)
     document.addEventListener('keydown', _modalEscapeHandler);
