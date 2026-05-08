@@ -68,7 +68,7 @@ function savePauseToDisk(pauseUntil) {
 
 // ─── Bottleneck limiter ────────────────────────────────────────────────
 const limiter = new Bottleneck({
-  maxConcurrent: 10,       // max 10 parallel requests
+  maxConcurrent: 50,       // must be >= max single request weight (ticker24hr=40, openInterestHist=30)
   minTime: 50,             // min 50ms between requests
   reservoir: 2400,         // Binance weight budget
   reservoirRefreshAmount: 2400,

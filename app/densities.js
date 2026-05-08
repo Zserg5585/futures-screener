@@ -114,7 +114,7 @@ function setupDv2Events() {
             const tabName = tab.dataset.tab
             document.querySelectorAll('.tab-content').forEach(tc => tc.style.display = 'none')
             const target = document.getElementById(`tab-${tabName}`)
-            if (target) target.style.display = 'block'
+            if (target) target.style.display = tabName === 'treemap' ? 'flex' : 'block'
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
             tab.classList.add('active')
 
