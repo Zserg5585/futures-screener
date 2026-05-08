@@ -95,8 +95,18 @@ See `.env.example` — key ones: `JWT_SECRET`, `VAPID_*`, `PORT` (default 3200)
 
 ---
 
+## 🚨 Deploy Rules (CRITICAL — May 7 lesson)
+
+- **Frontend changes (JS/CSS/HTML):** `rsync` to prod + `curl -X POST http://localhost:3200/api/reload-static`
+- **NEVER PM2 restart for frontend-only changes** — каждый рестарт = Binance IP бан 20-45 мин!
+- **Server code changes:** PM2 restart unavoidable, expect 1-2 min ban
+- **New static files need:** `fastify.get('/file.js', ...)` route + entry in `STATIC_FILES` array
+- **Cache busting:** bump `SW_VER` + `CACHE_NAME` in sw.js + `?v=` in HTML script tags
+- **Test with `curl` on prod BEFORE confirming to user**
+
 ## Recent Major Changes
 
+- **Alerts tab + Price Alert drawing tool + Hot-reload** (May 7)
 - LWC v5 migration (chart API changes)
 - Keltner + Regression channel overlays
 - Liq Sweep V2 (swing-only, volume gate ≥5x)

@@ -433,14 +433,57 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
   throw new Error(`Binance GET ${path} failed: exhausted all retries`)
 }
 
-// Resync handler: re-fetch order book snapshot when gap detected in WS stream
-stateManager.setResyncHandler(async (symbol) => {
-  try {
-    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`);
-    stateManager.initBook(symbol, ob.bids, ob.asks);
-    console.log(`[state] Resync completed for ${symbol}`);
-  } catch (err) {
-    console.error(`[state] Resync failed for ${symbol}: ${err.message}`);
+// Resync queue: batch depth requests to avoid mass rate-limit ban
+// When WS drops packets, ALL symbols fire resync at once → 200+ depth requests → IP ban
+// Fix: queue symbols and process in batches with delays (like warmup does)
+const _resyncQueue = new Set();
+let _resyncRunning = false;
+const RESYNC_BATCH_SIZE = 5;
+const RESYNC_BATCH_DELAY = 3000;  // 3s between batches
+const RESYNC_ITEM_DELAY = 500;    // 500ms between items in batch
+
+async function _processResyncQueue() {
+  if (_resyncRunning || _resyncQueue.size === 0) return;
+  _resyncRunning = true;
+  const symbols = [..._resyncQueue];
+  _resyncQueue.clear();
+  console.log(`[resync] Processing ${symbols.length} symbols in batches of ${RESYNC_BATCH_SIZE}`);
+
+  for (let i = 0; i < symbols.length; i += RESYNC_BATCH_SIZE) {
+    // Check rate limiter before each batch
+    if (rateLimiter.pauseUntil && Date.now() < rateLimiter.pauseUntil) {
+      const wait = rateLimiter.pauseUntil - Date.now();
+      console.log(`[resync] Rate limited, waiting ${Math.round(wait/1000)}s before next batch`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+    const batch = symbols.slice(i, i + RESYNC_BATCH_SIZE);
+    for (const sym of batch) {
+      try {
+        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
+        stateManager.initBook(sym, ob.bids, ob.asks);
+      } catch (err) {
+        console.error(`[resync] Failed ${sym}: ${err.message}`);
+      }
+      if (batch.indexOf(sym) < batch.length - 1) {
+        await new Promise(r => setTimeout(r, RESYNC_ITEM_DELAY));
+      }
+    }
+    if (i + RESYNC_BATCH_SIZE < symbols.length) {
+      await new Promise(r => setTimeout(r, RESYNC_BATCH_DELAY));
+    }
+  }
+  console.log(`[resync] Done, ${symbols.length} symbols processed`);
+  _resyncRunning = false;
+  // If new symbols queued during processing, run again
+  if (_resyncQueue.size > 0) _processResyncQueue();
+}
+
+// Resync handler: queue symbol instead of immediate fire
+stateManager.setResyncHandler((symbol) => {
+  _resyncQueue.add(symbol);
+  // Debounce: wait 2s to collect all gap-detected symbols, then process
+  if (!_resyncRunning) {
+    setTimeout(() => _processResyncQueue(), 2000);
   }
 })
 
