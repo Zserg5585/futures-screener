@@ -3307,6 +3307,7 @@ function openCoinModal(sym) {
         <span class="cm-metric" title="24h Low"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M5 9L2 5H8L5 9Z" fill="#ef4444" opacity="0.8"/></svg>${parseFloat(pair.lowPrice).toFixed(prec)}</span>
         <span class="cm-metric" id="cmVpin" title="VPIN — Order Flow Toxicity (0=balanced, 1=informed)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5 3v4M5 3l2 2M5 3l-2 2" stroke="currentColor" stroke-width="1"/></svg>VPIN: —</span>
         <span class="cm-metric" id="cmFillKill" title="Fill:Kill — Wall authenticity (>0.5=genuine, <0.3=spoof)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="1" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/><path d="M3 5h4" stroke="currentColor" stroke-width="1.2"/></svg>F:K —</span>
+        <span class="cm-metric" id="cmResilience" title="Book Stability — depth consistency near price (1=stable, 0=fragile)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M1 8L3 4L5 6L7 3L9 5" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="1" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="0.8"/></svg>Stab —</span>
     `;
 
     // Fetch VPIN for this symbol (async, updates metric when ready)
@@ -3325,6 +3326,16 @@ function openCoinModal(sym) {
         const r = j.data.fillKillRatio;
         const color = r < 0.3 ? '#ef4444' : r < 0.5 ? '#fb923c' : '#22c55e';
         fkEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="1" width="8" height="8" rx="1" stroke="${color}" stroke-width="1" fill="none"/><path d="M3 5h4" stroke="${color}" stroke-width="1.2"/></svg><span style="color:${color}">F:K ${r.toFixed(2)}</span> <span style="color:#64748b;font-size:10px">(${j.data.filled}/${j.data.total})</span>`;
+    }).catch(() => {});
+
+    // Fetch resilience (book stability) for this symbol (async)
+    fetch('/api/resilience?symbol=' + sym).then(r => r.json()).then(j => {
+        const stEl = document.getElementById('cmResilience');
+        if (!stEl || !j.success || !j.data || j.data.stability == null) return;
+        const s = j.data.stability;
+        const color = s < 0.5 ? '#ef4444' : s < 0.75 ? '#fb923c' : '#22c55e';
+        const depthStr = j.data.depthScore >= 1e6 ? (j.data.depthScore / 1e6).toFixed(1) + 'M' : j.data.depthScore >= 1e3 ? (j.data.depthScore / 1e3).toFixed(0) + 'K' : j.data.depthScore;
+        stEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M1 8L3 4L5 6L7 3L9 5" stroke="${color}" stroke-width="1.2" fill="none"/><line x1="1" y1="9" x2="9" y2="9" stroke="${color}" stroke-width="0.8"/></svg><span style="color:${color}">Stab ${(s * 100).toFixed(0)}%</span> <span style="color:#64748b;font-size:10px">$${depthStr}</span>`;
     }).catch(() => {});
 
     // TF buttons — set active

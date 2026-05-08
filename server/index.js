@@ -49,6 +49,7 @@ const alertChecker = require('./alerts');
 const depthHeatmap = require('./depth-heatmap');
 const vpinScanner = require('./vpin');
 const fillKill = require('./fill-kill');
+const resilience = require('./resilience');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -708,6 +709,20 @@ fastify.get('/api/fill-kill', async (req) => {
 
 fastify.get('/api/fill-kill/stats', async () => {
   return { success: true, data: fillKill.getStats() }
+})
+
+// Market Resilience — Book Recovery Speed
+fastify.get('/api/resilience', async (req) => {
+  const { symbol } = req.query
+  if (symbol) {
+    const data = resilience.getData(symbol)
+    return { success: true, data: data || { symbol, stability: null, message: 'No data yet' } }
+  }
+  return { success: true, data: resilience.getAll() }
+})
+
+fastify.get('/api/resilience/stats', async () => {
+  return { success: true, data: resilience.getStats() }
 })
 
 // Signal stats (public)
@@ -1601,6 +1616,7 @@ const start = async () => {
     depthHeatmap.init({ stateManager, getProxyCached })
     vpinScanner.init({ bgetWithRetry, getProxyCached })
     fillKill.init({ stateManager, getProxyCached })
+    resilience.init({ stateManager, getProxyCached })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
@@ -1651,6 +1667,7 @@ async function gracefulShutdown(signal) {
     try { depthHeatmap.stop() } catch (_) {}
     try { vpinScanner.stop() } catch (_) {}
     try { fillKill.stop() } catch (_) {}
+    try { resilience.stop() } catch (_) {}
     log.info({ intervals: _intervals.length + 1 }, 'Shutdown: cleared intervals + signal scanners')
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()
