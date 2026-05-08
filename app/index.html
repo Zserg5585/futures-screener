@@ -31,6 +31,7 @@
             <button class="tab" data-tab="densities">Densities</button>
             <button class="tab" data-tab="signals">Signals</button>
             <button class="tab" data-tab="alerts">Alerts</button>
+            <button class="tab" data-tab="treemap">Treemap</button>
         </div>
         <div class="status">
             <span id="state" class="status-text" style="display:none">Idle</span>
@@ -301,6 +302,10 @@
                 <div id="altContent"></div>
             </div>
 
+            <!-- Treemap Tab -->
+            <div id="tab-treemap" class="tab-content" style="display:none;flex-direction:column;height:calc(100vh - 100px);">
+            </div>
+
             <div class="footer">
                 <span id="updated" class="footer-text"></span>
                 <button id="filterToggle" class="btn-filters" style="display:none;">Filter</button>
@@ -495,6 +500,7 @@
     <script src="/alerts.js?v=20260507-v1"></script>
     <script src="/gapless-scale.js?v=20260508-v1"></script>
     <script src="/depth-heatmap-ui.js?v=20260508-v1"></script>
+    <script src="/treemap.js?v=20260508-v1"></script>
     <script src="/mini-charts.js?v=20260508-v63"></script>
 </body>
 

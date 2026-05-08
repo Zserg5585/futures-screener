@@ -122,6 +122,9 @@ function setupDv2Events() {
             if (typeof stopSignals === 'function' && tabName !== 'signals') stopSignals()
             if (typeof stopAlerts === 'function' && tabName !== 'alerts') stopAlerts()
 
+            // Stop treemap when switching away
+            if (typeof treemapUI !== 'undefined' && tabName !== 'treemap') treemapUI.stop()
+
             if (tabName === 'densities') {
                 if (!dv2.data) loadDensitiesV2(true)
                 else renderDv2Table(dv2.data)
@@ -131,6 +134,8 @@ function setupDv2Events() {
                 if (typeof initSignals === 'function') initSignals()
             } else if (tabName === 'alerts') {
                 if (typeof initAlerts === 'function') initAlerts()
+            } else if (tabName === 'treemap') {
+                if (typeof treemapUI !== 'undefined') treemapUI.init()
             }
         })
     })

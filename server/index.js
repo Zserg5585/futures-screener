@@ -49,7 +49,8 @@ const alertChecker = require('./alerts');
 const depthHeatmap = require('./depth-heatmap');
 const vpinScanner = require('./vpin');
 const fillKill = require('./fill-kill');
-const resilience = require('./resilience');
+const resilience = require('./resilience')
+const treemapProvider = require('./treemap');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -416,7 +417,7 @@ function reloadAllStatic() {
 // Pre-warm all static files at module load
 const STATIC_FILES = [
   'index.html', 'app.js', 'densities.js', 'mini-charts.js', 'auth.js',
-  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'gapless-scale.js', 'depth-heatmap-ui.js',
+  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'gapless-scale.js', 'depth-heatmap-ui.js', 'treemap.js',
   'styles.css', 'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
 ]
 for (const f of STATIC_FILES) {
@@ -469,6 +470,9 @@ fastify.get('/gapless-scale.js', async (req, reply) => {
 })
 fastify.get('/depth-heatmap-ui.js', async (req, reply) => {
   reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('depth-heatmap-ui.js'))
+})
+fastify.get('/treemap.js', async (req, reply) => {
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('treemap.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
@@ -723,6 +727,16 @@ fastify.get('/api/resilience', async (req) => {
 
 fastify.get('/api/resilience/stats', async () => {
   return { success: true, data: resilience.getStats() }
+})
+
+// RSI/Momentum Treemap
+fastify.get('/api/treemap', async () => {
+  const data = await treemapProvider.getData()
+  return { success: true, data }
+})
+
+fastify.get('/api/treemap/stats', async () => {
+  return { success: true, data: treemapProvider.getStats() }
 })
 
 // Signal stats (public)
@@ -1617,6 +1631,7 @@ const start = async () => {
     vpinScanner.init({ bgetWithRetry, getProxyCached })
     fillKill.init({ stateManager, getProxyCached })
     resilience.init({ stateManager, getProxyCached })
+    treemapProvider.init({ bgetWithRetry, getProxyCached })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
