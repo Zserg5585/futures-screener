@@ -1,31 +1,12 @@
-const fetch = require('node-fetch').default
-
-const BASE_URL = 'https://fapi.binance.com'
-
-// Simple retry with exponential backoff
-async function retryWithBackoff(fn, maxAttempts = 3, initialDelay = 1000) {
-  let lastError
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn()
-    } catch (err) {
-      lastError = err
-      if (attempt < maxAttempts) {
-        const delay = initialDelay * Math.pow(2, attempt - 1)
-        await new Promise(resolve => setTimeout(resolve, delay))
-      }
-    }
-  }
-  throw lastError
-}
+'use strict'
+/**
+ * Klines module — uses centralized binance-client for rate-limited fetches.
+ * Previously used raw fetch() bypassing the rate limiter.
+ */
+const { bgetWithRetry } = require('../binance-client')
 
 async function getKlines({ symbol, interval = '5m', limit = 10 }) {
-  const url = `${BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
-  const res = await retryWithBackoff(async () => {
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
-  }, 3, 1000)
+  const res = await bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`)
   
   // [time, open, high, low, close, volume, closeTime, quoteAssetVolume, trades, takerBuyBaseVol, takerBuyQuoteVol, ignore]
   return res.map(row => ({
