@@ -304,7 +304,10 @@ async function processResyncQueue() {
     _resyncRunning++
     ;(async () => {
       try {
-        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`)
+        // Direct fetch — resync has its own queue (3 concurrent, 500ms delay)
+        const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`, { signal: AbortSignal.timeout(10000) })
+        if (!resp.ok) throw new Error(`depth ${symbol}: ${resp.status}`)
+        const ob = await resp.json()
         stateManager.initBook(symbol, ob.bids, ob.asks)
         log.info({ symbol, pending: _resyncPending.size }, 'Resync completed')
       } catch (err) {
@@ -1789,7 +1792,11 @@ async function warmupDensitySubscriptions() {
       for (const sym of batch) {
         if (wsManager.callbacks.has(sym)) { subscribed++; continue }
         try {
-          const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
+          // Direct fetch — warmup has its own throttle (300ms + 20s batch pause)
+          // Going through Bottleneck would exhaust reservoir and block user klines
+          const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: AbortSignal.timeout(10000) })
+          if (!resp.ok) throw new Error(`depth ${sym}: ${resp.status}`)
+          const ob = await resp.json()
           stateManager.initBook(sym, ob.bids, ob.asks)
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
