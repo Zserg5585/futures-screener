@@ -87,7 +87,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type TEXT NOT NULL CHECK(type IN ('price', 'density', 'impulse', 'listing', 'volume_spike')),
+    type TEXT NOT NULL CHECK(type IN ('price', 'density', 'impulse', 'listing', 'volume_spike', 'multi')),
     symbol TEXT,
     condition TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
@@ -163,6 +163,60 @@ try {
 try {
   db.exec(`ALTER TABLE signal_log ADD COLUMN mae_pct REAL`)
 } catch(e) { /* column exists */ }
+
+// Migration: add 'multi' type to alerts CHECK constraint (SQLite can't ALTER CHECK)
+// IMPORTANT: foreign_keys OFF to prevent FK reference propagation on RENAME
+try {
+  const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='alerts'").get()
+  if (tableInfo && tableInfo.sql && !tableInfo.sql.includes("'multi'")) {
+    db.pragma('foreign_keys = OFF')
+    db.transaction(() => {
+      db.exec(`ALTER TABLE alerts RENAME TO _alerts_old`)
+      db.exec(`CREATE TABLE alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type TEXT NOT NULL CHECK(type IN ('price', 'density', 'impulse', 'listing', 'volume_spike', 'multi')),
+        symbol TEXT, condition TEXT DEFAULT '{}', enabled INTEGER DEFAULT 1,
+        cooldown_sec INTEGER DEFAULT 300,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+      )`)
+      db.exec(`INSERT INTO alerts SELECT * FROM _alerts_old`)
+      db.exec(`DROP TABLE _alerts_old`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts(enabled)`)
+    })()
+    db.pragma('foreign_keys = ON')
+    log.info('Migration: alerts table recreated with multi type support')
+  }
+} catch(e) {
+  try { db.pragma('foreign_keys = ON') } catch(_) {}
+  log.warn({ err: e.message }, 'Migration: alerts multi type check')
+}
+
+// Migration: repair alert_triggers FK if it references _alerts_old (broken by prior migration)
+try {
+  const trigInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='alert_triggers'").get()
+  if (trigInfo && trigInfo.sql && trigInfo.sql.includes('_alerts_old')) {
+    db.pragma('foreign_keys = OFF')
+    db.transaction(() => {
+      db.exec(`CREATE TABLE _alert_triggers_fix (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL, symbol TEXT, message TEXT,
+        data TEXT DEFAULT '{}', triggered_at TEXT DEFAULT (datetime('now'))
+      )`)
+      db.exec(`INSERT INTO _alert_triggers_fix SELECT * FROM alert_triggers`)
+      db.exec(`DROP TABLE alert_triggers`)
+      db.exec(`ALTER TABLE _alert_triggers_fix RENAME TO alert_triggers`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_alert_triggers_user ON alert_triggers(user_id)`)
+    })()
+    db.pragma('foreign_keys = ON')
+    log.info('Migration: alert_triggers FK repaired (was referencing _alerts_old)')
+  }
+} catch(e) {
+  try { db.pragma('foreign_keys = ON') } catch(_) {}
+  log.warn({ err: e.message }, 'Migration: alert_triggers FK repair')
+}
 
 // --- Prepared Statements ---
 const stmts = {

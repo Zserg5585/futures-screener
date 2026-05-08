@@ -657,6 +657,11 @@ fastify.get('/api/alerts/triggers', async (req, reply) => {
   return { success: true, triggers: auth.getAlertTriggers(req.user.id, limit) }
 })
 
+// Alert condition types (for frontend builder)
+fastify.get('/api/alerts/types', async () => {
+  return { success: true, types: alertChecker.CONDITION_TYPES }
+})
+
 // Signal stats (public)
 fastify.get('/api/signals/stats', async () => {
   return { success: true, stats: auth.getSignalStats(), recent: auth.getRecentSignals(20) }
