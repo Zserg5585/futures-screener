@@ -291,14 +291,41 @@ function setCached(req, data) {
 
 // bget / bgetWithRetry / RateLimitError / rateLimiter — imported from ./binance-client.js
 
-// Resync handler: re-fetch order book snapshot when gap detected in WS stream
-stateManager.setResyncHandler(async (symbol) => {
-  try {
-    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`);
-    stateManager.initBook(symbol, ob.bids, ob.asks);
-    log.info({ symbol }, 'Resync completed');
-  } catch (err) {
-    log.error({ symbol, err: err.message }, 'Resync failed');
+// Resync handler with global queue: max 3 concurrent, debounced, deduped
+const _resyncPending = new Set()
+let _resyncRunning = 0
+const RESYNC_MAX_CONCURRENT = 3
+const RESYNC_DELAY_MS = 500
+
+async function processResyncQueue() {
+  while (_resyncPending.size > 0 && _resyncRunning < RESYNC_MAX_CONCURRENT) {
+    const symbol = _resyncPending.values().next().value
+    _resyncPending.delete(symbol)
+    _resyncRunning++
+    ;(async () => {
+      try {
+        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`)
+        stateManager.initBook(symbol, ob.bids, ob.asks)
+        log.info({ symbol, pending: _resyncPending.size }, 'Resync completed')
+      } catch (err) {
+        log.error({ symbol, err: err.message }, 'Resync failed')
+      } finally {
+        _resyncRunning--
+        if (_resyncPending.size > 0) setTimeout(processResyncQueue, RESYNC_DELAY_MS)
+      }
+    })()
+  }
+}
+
+let _resyncDebounce = null
+stateManager.setResyncHandler((symbol) => {
+  _resyncPending.add(symbol)
+  if (!_resyncDebounce) {
+    _resyncDebounce = setTimeout(() => {
+      _resyncDebounce = null
+      log.info({ pending: _resyncPending.size, running: _resyncRunning }, 'Resync queue processing')
+      processResyncQueue()
+    }, 2000) // 2s debounce — collect gaps after WS reconnect
   }
 })
 
