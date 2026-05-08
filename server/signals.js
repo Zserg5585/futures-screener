@@ -1,5 +1,6 @@
 const { createLogger } = require('./logger')
 const log = createLogger('signals')
+const BINANCE_FAPI = 'https://fapi.binance.com'
 
 /**
  * Signals Scanner — detects trading signals from market data
@@ -66,6 +67,17 @@ let _klinesCache = null
 let _stateManager = null
 let _densityV2 = null
 let _persistenceMap = null
+
+// ticker/24hr (all symbols) weight=40 exceeds Bottleneck maxConcurrent=10 → direct fetch
+async function _fetchTicker24hr() {
+  const cached = _getProxyCached('ticker24hr', 60_000)
+  if (Array.isArray(cached) && cached.length > 0) return cached
+  const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15_000) })
+  if (!resp.ok) throw new Error(`ticker24hr: ${resp.status}`)
+  const data = await resp.json()
+  _setProxyCached('ticker24hr', data)
+  return data
+}
 
 function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap }) {
   _getProxyCached = getProxyCached
@@ -244,11 +256,9 @@ const VOL_SCAN_DELAY_MS = 150 // delay between klines requests
 
 async function scan() {
   try {
-    let ticker = _getProxyCached('ticker24hr', 60_000)
-    if (!Array.isArray(ticker) || ticker.length === 0) {
-      try { ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr') } catch { return }
-      if (!Array.isArray(ticker)) return
-    }
+    let ticker
+    try { ticker = await _fetchTicker24hr() } catch { return }
+    if (!Array.isArray(ticker) || ticker.length === 0) return
 
     const liquid = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
@@ -347,12 +357,9 @@ async function scan() {
 
 async function scanOiCvd() {
   try {
-    let ticker = _getProxyCached('ticker24hr', 60_000)
-    if (!Array.isArray(ticker) || ticker.length === 0) {
-      // Ticker not cached yet — fetch it ourselves
-      try { ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr') } catch { return }
-      if (!Array.isArray(ticker)) return
-    }
+    let ticker
+    try { ticker = await _fetchTicker24hr() } catch { return }
+    if (!Array.isArray(ticker) || ticker.length === 0) return
 
     const allLiquid = ticker
       .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
@@ -671,14 +678,9 @@ async function checkOutcomes() {
     if (!pending || pending.length === 0) return
 
     // Try cache first, then fetch fresh if stale (fixes: no tracking when UI is idle)
-    let ticker = _getProxyCached('ticker24hr', 60_000)
-    if (!Array.isArray(ticker)) {
-      try {
-        ticker = await _bgetWithRetry('/fapi/v1/ticker/24hr')
-        if (Array.isArray(ticker)) _setProxyCached('ticker24hr', ticker)
-      } catch (e) { /* will retry next cycle */ }
-    }
-    if (!Array.isArray(ticker)) return
+    let ticker
+    try { ticker = await _fetchTicker24hr() } catch { /* will retry next cycle */ }
+    if (!Array.isArray(ticker) || ticker.length === 0) return
 
     const priceMap = new Map()
     for (const t of ticker) {

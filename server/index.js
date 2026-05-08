@@ -1045,10 +1045,10 @@ fastify.get('/densities/v2', async (req) => {
     return { count: filtered.length, data: filtered, cached: true, cacheAgeSec: Math.round((Date.now() - densityV2Cache.ts) / 1000) }
   }
 
-  // Get 24h ticker for volume filter
+  // Get 24h ticker for volume filter (direct fetch, weight=40 exceeds Bottleneck)
   let ticker24h
   try {
-    ticker24h = await bgetWithRetry('/fapi/v1/ticker/24hr')
+    ticker24h = await fetchTicker24hr()
   } catch (err) {
     return { count: 0, data: [], error: 'Ticker data temporarily unavailable' }
   }
@@ -1196,17 +1196,28 @@ function setProxyCached(key, data) {
   proxyCache.set(key, { data, ts: Date.now() })
 }
 
-// 24hr ticker — cached 30s (all pairs, heavy endpoint)
-fastify.get('/api/ticker24hr', async () => {
+// Shared ticker24hr fetcher — weight=40 exceeds Bottleneck maxConcurrent=10,
+// so we use proxyCache + direct fetch (bypass Bottleneck). Called by routes & modules.
+async function fetchTicker24hr() {
   const cached = getProxyCached('ticker24hr', 60000)
   if (cached) return cached
+  const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15000) })
+  if (!resp.ok) throw new Error(`Binance ticker24hr: ${resp.status}`)
+  const data = await resp.json()
+  setProxyCached('ticker24hr', data)
+  return data
+}
+
+// 24hr ticker — cached 60s (all pairs, heavy endpoint)
+// NOTE: ticker/24hr (all symbols) has Binance weight=40, which exceeds Bottleneck
+// maxConcurrent=10. Direct fetch bypasses this limitation. Safe because it's called
+// at most once per 60s (cached).
+fastify.get('/api/ticker24hr', async () => {
   try {
-    const data = await bgetWithRetry('/fapi/v1/ticker/24hr')
-    setProxyCached('ticker24hr', data)
-    return data
+    return await fetchTicker24hr()
   } catch (e) {
-    // Return stale cache if available, otherwise empty array
-    const stale = getProxyCached('ticker24hr', 600000) // 10min stale
+    log.warn({ err: e.message }, 'ticker24hr fetch failed, trying stale cache')
+    const stale = getProxyCached('ticker24hr', 600000)
     if (stale) return stale
     return []
   }
@@ -1471,9 +1482,7 @@ fastify.get('/api/natr', async (req, reply) => {
   // Get all USDT pairs from ticker
   let ticker
   try {
-    const tickerCached = getProxyCached('ticker24hr', 30000)
-    ticker = tickerCached || await bgetWithRetry('/fapi/v1/ticker/24hr')
-    if (!tickerCached) setProxyCached('ticker24hr', ticker)
+    ticker = await fetchTicker24hr()
   } catch (e) {
     const stale = getProxyCached(`natr:${interval}`, 1800000)
     return stale || {}
@@ -1797,7 +1806,7 @@ async function warmupDensitySubscriptions() {
 async function warmupKlinesCache() {
   try {
     // Get top 200 symbols by 24h volume
-    const ticker = await bgetWithRetry('/fapi/v1/ticker/24hr')
+    const ticker = await fetchTicker24hr()
     const sorted = ticker
       .filter(t => t.symbol.endsWith('USDT'))
       .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
