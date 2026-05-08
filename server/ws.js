@@ -1,4 +1,6 @@
 const WebSocket = require('ws');
+const { createLogger } = require('./logger');
+const log = createLogger('ws');
 
 const BINANCE_WS_URL = 'wss://fstream.binance.com/ws';
 const PING_INTERVAL = 3 * 60 * 1000; // 3 min (Binance closes idle after 5 min)
@@ -20,11 +22,11 @@ class BinanceWSConnection {
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
     this._cleanup();
 
-    console.log(`[WS-${this.id}] Connecting... (${this.streams.size} streams)`);
+    log.info({ connId: this.id, streams: this.streams.size }, 'Connecting');
     this.ws = new WebSocket(BINANCE_WS_URL);
 
     this.ws.on('open', () => {
-      console.log(`[WS-${this.id}] Connected.`);
+      log.info({ connId: this.id }, 'Connected');
       this._resubscribe();
       this._startPing();
     });
@@ -36,22 +38,22 @@ class BinanceWSConnection {
           this.onMessage(payload);
         }
       } catch (err) {
-        console.error(`[WS-${this.id}] Parse error:`, err.message);
+        log.error({ connId: this.id, err: err.message }, 'Parse error');
       }
     });
 
     this.ws.on('close', () => {
       this._stopPing();
       if (this.streams.size > 0) {
-        console.log(`[WS-${this.id}] Disconnected. Reconnecting in 5s...`);
+        log.warn({ connId: this.id }, 'Disconnected, reconnecting in 5s');
         this._reconnectTimer = setTimeout(() => this.connect(), 5000);
       } else {
-        console.log(`[WS-${this.id}] Disconnected. No streams, staying offline.`);
+        log.info({ connId: this.id }, 'Disconnected, no streams, staying offline');
       }
     });
 
     this.ws.on('error', (err) => {
-      console.error(`[WS-${this.id}] Error:`, err.message);
+      log.error({ connId: this.id, err: err.message }, 'Connection error');
     });
 
     this.ws.on('pong', () => {});
@@ -160,7 +162,7 @@ class BinanceWS {
         }
       });
       this.connections.push(conn);
-      console.log(`[WS] Created connection #${id} (total: ${this.connections.length})`);
+      log.info({ connId: id, total: this.connections.length }, 'Created connection');
     }
 
     this.streamToConn.set(streamName, conn);
@@ -179,7 +181,7 @@ class BinanceWS {
       if (conn.streams.size === 0) {
         conn.destroy();
         this.connections = this.connections.filter(c => c !== conn);
-        console.log(`[WS] Removed empty connection. Total: ${this.connections.length}`);
+        log.info({ total: this.connections.length }, 'Removed empty connection');
       }
     }
   }

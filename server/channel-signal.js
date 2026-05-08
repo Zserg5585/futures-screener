@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('channel')
+
 /**
  * Channel Signal v2 — Regression Channel with Trend-Aware Logic
  *
@@ -548,7 +551,7 @@ async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, 
 
       } catch (e) {
         errors++
-        if (errors <= 3) console.warn(`[Channel:${label}] Error ${symbol}:`, e.message)
+        if (errors <= 3) log.warn({ tf: label, symbol, err: e.message }, 'Scan error')
       }
 
       // Rate limit between symbols
@@ -557,10 +560,10 @@ async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, 
 
     const elapsed = ((Date.now() - scanStart) / 1000).toFixed(1)
     if (signalCount > 0 || errors > 0) {
-      console.log(`[Channel:${label}] ${signalCount} signals, ${skipped} skip, ${errors} err (${elapsed}s)`)
+      log.info({ tf: label, signals: signalCount, skipped, errors, elapsedSec: elapsed }, 'Scan done')
     }
   } catch (err) {
-    console.error(`[Channel:${label}] Scanner error:`, err.message)
+    log.error({ tf: label, err: err.message }, 'Scanner error')
   }
 }
 
@@ -574,7 +577,7 @@ function initChannelScanners(deps) {
     setTimeout(() => scanChannelSignals(deps, tf), tf.startDelay)
     _timers.push(timer)
   }
-  console.log(`[Channel] Multi-TF scanners started: ${TIMEFRAMES.map(t => `${t.label}(${t.scanMs / 1000}s)`).join(', ')}`)
+  log.info({ timeframes: TIMEFRAMES.map(t => `${t.label}(${t.scanMs / 1000}s)`) }, 'Multi-TF scanners started')
 }
 
 function stopChannelScanners() {

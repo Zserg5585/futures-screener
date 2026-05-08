@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('signals')
+
 /**
  * Signals Scanner — detects trading signals from market data
  * Types: volume_spike (5m klines SMA20-based), oi_cvd, oi_divergence, oi_funding_squeeze, liq_sweep
@@ -98,7 +101,7 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
     getNatrMap,
   })
 
-  console.log(`[Signals] Scanner started (${SCAN_INTERVAL_MS / 1000}s vol, ${OI_CVD_INTERVAL_MS / 1000}s OI+CVD, ${LIQ_SWEEP_INTERVAL_MS / 1000}s liq_sweep, channel 5m/15m/1h, ${OUTCOME_CHECK_MS / 1000}s outcomes)`)
+  log.info({ volInterval: SCAN_INTERVAL_MS / 1000, oiInterval: OI_CVD_INTERVAL_MS / 1000, liqInterval: LIQ_SWEEP_INTERVAL_MS / 1000, outcomeInterval: OUTCOME_CHECK_MS / 1000 }, 'Scanner started')
 }
 
 /** Wrapper to call scanLiqSweep with injected deps */
@@ -113,7 +116,7 @@ function _runLiqSweep() {
     emitSignal,
     getMarketRegime,
     getFundingMap,
-  }).catch(err => console.error('[Signals] liq_sweep wrapper error:', err.message))
+  }).catch(err => log.error({ err: err.message }, 'liq_sweep wrapper error'))
 }
 
 function stop() {
@@ -143,10 +146,10 @@ async function getFundingMap() {
     // On API failure, return stale data (10min TTL) instead of empty map
     const stale = _getProxyCached('funding_rates', 600_000)
     if (stale) {
-      console.warn(`[Signals] getFundingMap failed, using stale cache: ${e.message}`)
+      log.warn({ err: e.message }, 'getFundingMap failed, using stale cache')
       return stale
     }
-    console.warn(`[Signals] getFundingMap failed, no cache: ${e.message}`)
+    log.warn({ err: e.message }, 'getFundingMap failed, no cache')
     return {}
   }
 }
@@ -158,7 +161,7 @@ let _natrWarnedAt = 0
 function getNatrMap() {
   const map = _getProxyCached('natr:15m', 600_000)
   if (!map && Date.now() - _natrWarnedAt > 300_000) {
-    console.warn('[Signals] NATR cache empty — OI signal metadata will have natr:null')
+    log.warn('NATR cache empty — OI signal metadata will have natr:null')
     _natrWarnedAt = Date.now()
   }
   return map || {}
@@ -208,7 +211,7 @@ async function getMarketRegime() {
   try {
     const klines = await _bgetWithRetry('/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=25')
     if (!Array.isArray(klines) || klines.length < 21) {
-      if (!_marketRegime.direction) console.warn('[Signals] Market regime: BTC klines insufficient, regime=null — trend adjustments disabled')
+      if (!_marketRegime.direction) log.warn('Market regime: BTC klines insufficient, regime=null — trend adjustments disabled')
       return _marketRegime
     }
 
@@ -229,7 +232,7 @@ async function getMarketRegime() {
       updatedAt: now,
     }
   } catch (e) {
-    console.log('[Signals] Market regime fetch error:', e.message)
+    log.warn({ err: e.message }, 'Market regime fetch error')
   }
   return _marketRegime
 }
@@ -334,9 +337,9 @@ async function scan() {
       if (now - ts > COOLDOWN_MS) cooldowns.delete(key)
     }
 
-    console.log(`[Signals] Volume scan: ${liquid.length} symbols, ${signalCount} spikes (>=${VOL_MIN_RATIO}x)${errCount ? ` [${errCount} errors]` : ''}`)
+    log.info({ symbols: liquid.length, spikes: signalCount, minRatio: VOL_MIN_RATIO, errors: errCount || undefined }, 'Volume scan complete')
   } catch (err) {
-    console.error('[Signals] Volume scan error:', err.message)
+    log.error({ err: err.message }, 'Volume scan error')
   }
 }
 
@@ -366,7 +369,7 @@ async function scanOiCvd() {
     let signalCount = 0
     let errCount = 0
 
-    console.log(`[Signals] OI+CVD scan: ${top.length} symbols, regime=${regime.direction}, BTC=${regime.btcPrice} vs EMA20=${regime.ema20}`)
+    log.info({ symbols: top.length, regime: regime.direction, btcPrice: regime.btcPrice, ema20: regime.ema20 }, 'OI+CVD scan started')
 
     for (let idx = 0; idx < top.length; idx++) {
       const t = top[idx]
@@ -654,9 +657,9 @@ async function scanOiCvd() {
       await new Promise(r => setTimeout(r, OI_CVD_DELAY_MS))
     }
 
-    console.log(`[Signals] OI+CVD scan done: ${top.length} symbols, ${signalCount} signals${errCount ? ` [${errCount} errors]` : ''}`)
+    log.info({ symbols: top.length, signals: signalCount, errors: errCount || undefined }, 'OI+CVD scan done')
   } catch (err) {
-    console.error('[Signals] OI+CVD scan error:', err.message)
+    log.error({ err: err.message }, 'OI+CVD scan error')
   }
 }
 
@@ -742,7 +745,7 @@ async function checkOutcomes() {
           parseFloat(track.mae.toFixed(3)),
           sig.id
         )
-      } catch (e) { console.error('[Signals] Outcome update failed for signal', sig.id, e.message) }
+      } catch (e) { log.error({ signalId: sig.id, err: e.message }, 'Outcome update failed') }
     }
 
     // Cleanup stale MFE trackers (older than 25h)
@@ -751,7 +754,7 @@ async function checkOutcomes() {
       if (age > 25 * 3600_000) mfeTracker.delete(key)
     }
   } catch (err) {
-    console.error('[Signals] Outcome check error:', err.message)
+    log.error({ err: err.message }, 'Outcome check error')
   }
 }
 
@@ -770,7 +773,7 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
       "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
     ).get(type, symbol, Math.floor(COOLDOWN_MS / 60_000))
     if (recent) { cooldowns.set(key, now); return }
-  } catch (e) { console.warn('[Signals] DB dedup check failed:', e.message) }
+  } catch (e) { log.warn({ err: e.message }, 'DB dedup check failed') }
 
   cooldowns.set(key, now)
 
@@ -790,13 +793,13 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
     const dbTs = signal.created_at.replace('T', ' ').replace(/\.\d+Z$/, '')
     _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata), dbTs)
   } catch (err) {
-    console.error('[Signals] DB log error:', err.message)
+    log.error({ err: err.message }, 'DB log error')
   }
 
   // Send Web Push immediately (fire-and-forget, never blocks)
   if (_push) {
     try { _push.sendPushForSignal(signal) } catch (e) {
-      console.error('[Signals] Push error:', e.message)
+      log.error({ err: e.message }, 'Push notification error')
     }
   }
 }
@@ -872,7 +875,7 @@ function getLiveSignals(filters = {}) {
       }
     }
   } catch (err) {
-    console.error('[Signals] DB read error, falling back to memory:', err.message)
+    log.error({ err: err.message }, 'DB read error, falling back to memory')
     result = [...liveSignals]
   }
 

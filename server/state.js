@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger');
+const log = createLogger('state');
+
 class StateManager {
   constructor() {
     // symbol -> Map<price, {notional, firstSeen, lastUpdate, isMM}>
@@ -79,7 +82,7 @@ class StateManager {
       const cooldown = this._resyncCooldowns.get(symbol) || 0;
       if (this._resyncHandler && now - cooldown > 30000) {
         this._resyncCooldowns.set(symbol, now);
-        console.log(`[state] Gap detected for ${symbol}: expected ${state.lastUpdateId + 1}, got ${payload.U}. Requesting resync.`);
+        log.warn({ symbol, expected: state.lastUpdateId + 1, got: payload.U }, 'Gap detected, requesting resync');
         // Fire-and-forget — resync will call initBook which resets state
         this._resyncHandler(symbol);
       }

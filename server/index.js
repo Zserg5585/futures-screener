@@ -1,4 +1,6 @@
-const fastify = require('fastify')({ logger: true })
+const { createLogger } = require('./logger')
+const log = createLogger('server')
+const fastify = require('fastify')({ logger: false })
 
 // CORS — whitelist known origins only
 const ALLOWED_ORIGINS = [
@@ -59,7 +61,7 @@ function loadPauseFromDisk() {
     const raw = require('fs').readFileSync(RATE_LIMIT_FILE, 'utf8')
     const { pauseUntil } = JSON.parse(raw)
     if (pauseUntil && pauseUntil > Date.now()) {
-      console.log(`[rate-limiter] Restored pause from disk: ${Math.ceil((pauseUntil - Date.now()) / 1000)}s remaining`)
+      log.info({ remaining: Math.ceil((pauseUntil - Date.now()) / 1000) }, 'Rate limiter: restored pause from disk')
       return pauseUntil
     }
   } catch {}
@@ -69,7 +71,7 @@ function loadPauseFromDisk() {
 function savePauseToDisk(pauseUntil) {
   try {
     require('fs').writeFileSync(RATE_LIMIT_FILE, JSON.stringify({ pauseUntil, savedAt: new Date().toISOString() }))
-  } catch (e) { console.warn('[rate-limiter] Failed to save pause to disk:', e.message) }
+  } catch (e) { log.warn({ err: e.message }, 'Rate limiter: failed to save pause to disk') }
 }
 
 const rateLimiter = {
@@ -95,7 +97,7 @@ const rateLimiter = {
     if (until > this.pauseUntil) {
       this.pauseUntil = until
       savePauseToDisk(until)
-      console.log(`[rate-limiter] ⚠️ Global pause ${ms}ms (until ${new Date(until).toISOString().slice(11,19)})`)
+      log.warn({ pauseMs: ms, until: new Date(until).toISOString().slice(11,19) }, 'Rate limiter: global pause')
     }
   },
 
@@ -115,7 +117,7 @@ const rateLimiter = {
 
     // Hard limit — pause 5s
     if (this.usedWeight >= this.WEIGHT_HARD_LIMIT) {
-      console.log(`[rate-limiter] Weight ${this.usedWeight} >= ${this.WEIGHT_HARD_LIMIT}, pausing 5s`)
+      log.warn({ weight: this.usedWeight, limit: this.WEIGHT_HARD_LIMIT }, 'Rate limiter: weight exceeds hard limit, pausing 5s')
       await new Promise(r => setTimeout(r, 5000))
     }
     // Soft limit — small delay
@@ -297,8 +299,8 @@ function saveDensityToDisk(data, meta) {
     if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
     // Returns promise so shutdown can await it
     return require('fs').promises.writeFile(DENSITY_CACHE_FILE, JSON.stringify({ data, meta, ts: Date.now() }))
-      .catch(e => console.log('[density-cache] disk save error:', e.message))
-  } catch (e) { console.log('[density-cache] disk save error:', e.message) }
+      .catch(e => log.debug({ err: e.message }, 'Density cache: disk save error'))
+  } catch (e) { log.debug({ err: e.message }, 'Density cache: disk save error') }
 }
 function loadDensityFromDisk() {
   try {
@@ -307,10 +309,10 @@ function loadDensityFromDisk() {
     const raw = JSON.parse(require('fs').readFileSync(DENSITY_CACHE_FILE, 'utf8'))
     // Accept disk cache up to 10 minutes old (stale but better than nothing)
     if (raw && raw.data && (Date.now() - raw.ts) < 600000) {
-      console.log(`[density-cache] Loaded ${raw.data.length} walls from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)
+      log.info({ walls: raw.data.length, ageSec: ((Date.now() - raw.ts) / 1000).toFixed(0) }, 'Density cache: loaded from disk')
       return raw
     }
-  } catch (e) { console.log('[density-cache] disk load error:', e.message) }
+  } catch (e) { log.debug({ err: e.message }, 'Density cache: disk load error') }
   return null
 }
 // Load disk cache on startup
@@ -372,7 +374,7 @@ async function sendTelegramAlert(msg) {
       body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' })
     })
   } catch (e) {
-    console.error('Telegram Error:', e.message)
+    log.error({ err: e.message }, 'Telegram send error')
   }
 }
 
@@ -418,7 +420,7 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
         }
         // 429/418: wait and retry — does NOT count as a regular attempt
         const waitMs = Math.max(err.retryAfterMs || 30000, 1000) // min 1s to avoid tight loop
-        console.log(`[bgetWithRetry] 429 on ${path.slice(0, 60)}, retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES}, waiting ${waitMs}ms`)
+        log.warn({ path: path.slice(0, 60), retry: rateLimitRetries, maxRetries: MAX_RATE_LIMIT_RETRIES, waitMs }, 'Binance 429, retrying')
         await new Promise(r => setTimeout(r, waitMs))
         continue // retry without incrementing attempt
       }
@@ -433,57 +435,14 @@ async function bgetWithRetry(path, maxRetries = 3, baseDelay = 500) {
   throw new Error(`Binance GET ${path} failed: exhausted all retries`)
 }
 
-// Resync queue: batch depth requests to avoid mass rate-limit ban
-// When WS drops packets, ALL symbols fire resync at once → 200+ depth requests → IP ban
-// Fix: queue symbols and process in batches with delays (like warmup does)
-const _resyncQueue = new Set();
-let _resyncRunning = false;
-const RESYNC_BATCH_SIZE = 5;
-const RESYNC_BATCH_DELAY = 3000;  // 3s between batches
-const RESYNC_ITEM_DELAY = 500;    // 500ms between items in batch
-
-async function _processResyncQueue() {
-  if (_resyncRunning || _resyncQueue.size === 0) return;
-  _resyncRunning = true;
-  const symbols = [..._resyncQueue];
-  _resyncQueue.clear();
-  console.log(`[resync] Processing ${symbols.length} symbols in batches of ${RESYNC_BATCH_SIZE}`);
-
-  for (let i = 0; i < symbols.length; i += RESYNC_BATCH_SIZE) {
-    // Check rate limiter before each batch
-    if (rateLimiter.pauseUntil && Date.now() < rateLimiter.pauseUntil) {
-      const wait = rateLimiter.pauseUntil - Date.now();
-      console.log(`[resync] Rate limited, waiting ${Math.round(wait/1000)}s before next batch`);
-      await new Promise(r => setTimeout(r, wait));
-    }
-    const batch = symbols.slice(i, i + RESYNC_BATCH_SIZE);
-    for (const sym of batch) {
-      try {
-        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
-        stateManager.initBook(sym, ob.bids, ob.asks);
-      } catch (err) {
-        console.error(`[resync] Failed ${sym}: ${err.message}`);
-      }
-      if (batch.indexOf(sym) < batch.length - 1) {
-        await new Promise(r => setTimeout(r, RESYNC_ITEM_DELAY));
-      }
-    }
-    if (i + RESYNC_BATCH_SIZE < symbols.length) {
-      await new Promise(r => setTimeout(r, RESYNC_BATCH_DELAY));
-    }
-  }
-  console.log(`[resync] Done, ${symbols.length} symbols processed`);
-  _resyncRunning = false;
-  // If new symbols queued during processing, run again
-  if (_resyncQueue.size > 0) _processResyncQueue();
-}
-
-// Resync handler: queue symbol instead of immediate fire
-stateManager.setResyncHandler((symbol) => {
-  _resyncQueue.add(symbol);
-  // Debounce: wait 2s to collect all gap-detected symbols, then process
-  if (!_resyncRunning) {
-    setTimeout(() => _processResyncQueue(), 2000);
+// Resync handler: re-fetch order book snapshot when gap detected in WS stream
+stateManager.setResyncHandler(async (symbol) => {
+  try {
+    const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`);
+    stateManager.initBook(symbol, ob.bids, ob.asks);
+    log.info({ symbol }, 'Resync completed');
+  } catch (err) {
+    log.error({ symbol, err: err.message }, 'Resync failed');
   }
 })
 
@@ -501,7 +460,7 @@ _intervals.push(setInterval(() => {
       evicted++
     }
   }
-  if (evicted > 0) console.log(`[klines-stats] Cache cleanup: evicted ${evicted}, ${klinesStatsCache.size} remaining`)
+  if (evicted > 0) log.debug({ evicted, remaining: klinesStatsCache.size }, 'Klines stats cache cleanup')
 }, 5 * 60_000))
 
 // Получить K-lines и рассчитать объёмы + ATR
@@ -569,10 +528,10 @@ async function getKlinesWithStats(symbol) {
     // On failure: return stale cache if available (better than dropping symbol)
     const stale = klinesStatsCache.get(symbol)
     if (stale) {
-      console.warn(`[klines-stats] ${symbol} failed: ${err.message}, using stale cache (age: ${((Date.now() - stale.ts) / 1000).toFixed(0)}s)`)
+      log.warn({ symbol, err: err.message, staleSec: ((Date.now() - stale.ts) / 1000).toFixed(0) }, 'Klines stats failed, using stale cache')
       return stale.data
     }
-    console.warn(`[klines-stats] ${symbol} failed: ${err.message}, no cache available`)
+    log.warn({ symbol, err: err.message }, 'Klines stats failed, no cache available')
     return null
   }
 }
@@ -594,9 +553,9 @@ function getStatic(relPath) {
 function reloadAllStatic() {
   staticCache.clear()
   for (const f of STATIC_FILES) {
-    try { getStatic(f) } catch (e) { console.warn(`[Static] Reload failed ${f}: ${e.message}`) }
+    try { getStatic(f) } catch (e) { log.warn({ file: f, err: e.message }, 'Static: reload failed') }
   }
-  console.log(`[Static] Hot-reloaded ${STATIC_FILES.length} files`)
+  log.info({ count: STATIC_FILES.length }, 'Static: hot-reloaded')
 }
 
 // Pre-warm all static files at module load
@@ -606,13 +565,13 @@ const STATIC_FILES = [
   'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
 ]
 for (const f of STATIC_FILES) {
-  try { getStatic(f) } catch (e) { console.warn(`[Static] Failed to pre-load ${f}: ${e.message}`) }
+  try { getStatic(f) } catch (e) { log.warn({ file: f, err: e.message }, 'Static: failed to pre-load') }
 }
 
 // Also cache the UMD library
 const LWC_DRAWING_PATH = path.resolve(__dirname, '..', 'node_modules', 'lightweight-charts-drawing', 'dist', 'lightweight-charts-drawing.umd.js')
 let lwcDrawingBuf
-try { lwcDrawingBuf = fs.readFileSync(LWC_DRAWING_PATH) } catch (e) { console.warn('[Static] lightweight-charts-drawing UMD not found') }
+try { lwcDrawingBuf = fs.readFileSync(LWC_DRAWING_PATH) } catch (e) { log.warn('Static: lightweight-charts-drawing UMD not found') }
 
 // Cache headers: HTML = must-revalidate (cache-buster URLs update), assets = 1 day (have ?v= buster)
 const ASSET_CACHE = 'public, max-age=86400' // 1 day
@@ -959,7 +918,7 @@ fastify.get('/densities/simple', async (req, reply) => {
         stateManager.initBook(sym, ob.bids, ob.asks);
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload); });
       } catch (err) {
-        console.log(`[density] Skip ${sym}: ${err.message.slice(0, 80)}`);
+        log.debug({ symbol: sym, err: err.message.slice(0, 80) }, 'Density: skip symbol');
         return [];
       } finally {
         _subscribingSymbols.delete(sym);
@@ -1104,8 +1063,8 @@ function savePersistenceMapToDisk() {
     // Snapshot the map synchronously to avoid mutation during async write
     const snapshot = JSON.stringify({ map: Object.fromEntries(densityV2PersistenceMap), ts: Date.now() })
     return require('fs').promises.writeFile(PERSISTENCE_MAP_FILE, snapshot)
-      .catch(e => console.log('[persistence-map] disk save error:', e.message))
-  } catch (e) { console.log('[persistence-map] disk save error:', e.message) }
+      .catch(e => log.debug({ err: e.message }, 'Persistence map: disk save error'))
+  } catch (e) { log.debug({ err: e.message }, 'Persistence map: disk save error') }
 }
 
 function loadPersistenceMapFromDisk() {
@@ -1122,8 +1081,8 @@ function loadPersistenceMapFromDisk() {
       densityV2PersistenceMap.set(key, val)
       loaded++
     }
-    if (loaded > 0) console.log(`[persistence-map] Loaded ${loaded} wall records from disk (age: ${((Date.now() - raw.ts) / 1000).toFixed(0)}s)`)
-  } catch (e) { console.log('[persistence-map] disk load error:', e.message) }
+    if (loaded > 0) log.info({ loaded, ageSec: ((Date.now() - raw.ts) / 1000).toFixed(0) }, 'Persistence map: loaded from disk')
+  } catch (e) { log.debug({ err: e.message }, 'Persistence map: disk load error') }
 }
 
 // Load on startup
@@ -1429,7 +1388,7 @@ fastify.post('/api/push/subscribe', async (req) => {
     try { auth.stmts.linkPushSubToUser.run(req.user.id, subscription.endpoint) } catch {}
   }
   const count = auth.stmts.countPushSubs.get()?.count || 0
-  console.log(`[Push] New subscription registered (total: ${count})${req.user ? ` [user #${req.user.id}]` : ''}`)
+  log.info({ total: count, userId: req.user?.id }, 'Push: new subscription registered')
   return { success: true, total: count }
 })
 
@@ -1555,7 +1514,7 @@ fastify.post('/api/klines-batch', async (req, reply) => {
         if (Array.isArray(data)) result[symbol] = data
       } catch(e) { /* skip */ }
     })
-    await Promise.all(promises).catch(e => console.error('[klines-batch] Error:', e.message))
+    await Promise.all(promises).catch(e => log.error({ err: e.message }, 'Klines batch error'))
   }
 
   return result
@@ -1622,7 +1581,7 @@ fastify.get('/api/natr', async (req, reply) => {
         if (lastClose > 0) result[t.symbol] = parseFloat(((atr / lastClose) * 100).toFixed(2))
       } catch(e) { /* skip pair */ }
     })
-    await Promise.all(promises).catch(e => console.error('[natr] Unexpected error:', e.message))
+    await Promise.all(promises).catch(e => log.error({ err: e.message }, 'NATR batch error'))
     // Small delay between batches to avoid rate limits
     if (i + batchSize < usdtPairs.length) await new Promise(r => setTimeout(r, 200))
   }
@@ -1670,10 +1629,10 @@ function startKlinesUpdater() {
         }
       }
     } catch(e) {
-      console.error('[KlinesUpdater] Error:', e.message)
+      log.error({ err: e.message }, 'KlinesUpdater error')
     }
   }, UPDATE_INTERVAL)
-  console.log('[KlinesUpdater] Started (30s interval)')
+  log.info('KlinesUpdater started (30s interval)')
 }
 
 // ---- rate limiter status + reset endpoint ----
@@ -1681,8 +1640,19 @@ fastify.post('/api/rate-limiter/reset', async () => {
   rateLimiter.pauseUntil = 0
   rateLimiter.usedWeight = 0
   savePauseToDisk(0)
-  console.log('[rate-limiter] Manual reset via API')
+  log.info('Rate limiter: manual reset via API')
   return { success: true, status: 'OK' }
+})
+
+// Log level management — runtime control without restart
+const { setLevel, getLevels } = require('./logger')
+fastify.get('/api/log-levels', async () => ({ success: true, levels: getLevels() }))
+fastify.post('/api/log-levels', async (req) => {
+  const { module, level } = req.body || {}
+  if (!module || !level) return { success: false, error: 'module and level required' }
+  const result = setLevel(module, level)
+  log.info({ module, level }, 'Log level changed via API')
+  return { success: true, ...result }
 })
 
 // Hot-reload static files from disk (no PM2 restart needed → no Binance ban)
@@ -1724,25 +1694,25 @@ const start = async () => {
     // Delay 45s to let Binance rate limit window expire after restart
     setTimeout(async () => {
       if (rateLimiter.pauseUntil > Date.now()) {
-        console.log('[startup] NATR warmup skipped — rate limiter paused')
+        log.info('Startup: NATR warmup skipped — rate limiter paused')
         return
       }
       try {
-        console.log('[startup] Pre-warming NATR cache (15m)...')
+        log.info('Startup: pre-warming NATR cache (15m)')
         await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
-        console.log('[startup] NATR cache warmed ✓')
-      } catch (e) { console.warn('[startup] NATR warmup failed:', e.message) }
+        log.info('Startup: NATR cache warmed')
+      } catch (e) { log.warn({ err: e.message }, 'Startup: NATR warmup failed') }
     }, 45_000)
     // Periodic NATR refresh every 5 min (cache TTL is 5min, so re-compute before expiry)
     _intervals.push(setInterval(async () => {
       try {
         await fastify.inject({ method: 'GET', url: '/api/natr?interval=15m' })
-      } catch (e) { console.warn('[NATR-refresh] failed:', e.message) }
+      } catch (e) { log.warn({ err: e.message }, 'NATR refresh failed') }
     }, 270_000)) // 4.5 min (slightly before 5min TTL expiry)
     // Background warmup: subscribe top symbols to WS gradually (rate-limit safe)
     setTimeout(() => {
       if (rateLimiter.pauseUntil > Date.now()) {
-        console.log('[startup] Density warmup skipped — rate limiter paused')
+        log.info('Startup: density warmup skipped — rate limiter paused')
         return
       }
       warmupDensitySubscriptions()
@@ -1755,7 +1725,7 @@ const start = async () => {
 
 // Graceful shutdown — clean up resources on PM2 restart / kill
 async function gracefulShutdown(signal) {
-  console.log(`[shutdown] ${signal} received, closing gracefully...`)
+  log.info({ signal }, 'Shutdown: signal received, closing gracefully')
   try {
     // Stop all intervals
     for (const id of _intervals) clearInterval(id)
@@ -1765,12 +1735,12 @@ async function gracefulShutdown(signal) {
     // Stop signal scanners
     try { signals.stop() } catch (_) {}
     try { alertChecker.stop() } catch (_) {}
-    console.log(`[shutdown] Cleared ${_intervals.length + 1} interval(s) + signal scanners`)
+    log.info({ intervals: _intervals.length + 1 }, 'Shutdown: cleared intervals + signal scanners')
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()
     // Close WebSocket connections
     if (wsManager.connections && wsManager.connections.length > 0) {
-      console.log(`[shutdown] Closing ${wsManager.connections.length} WS connection(s)...`)
+      log.info({ connections: wsManager.connections.length }, 'Shutdown: closing WS connections')
       for (const conn of wsManager.connections) {
         conn.destroy()
       }
@@ -1793,10 +1763,10 @@ async function gracefulShutdown(signal) {
         new Promise(r => setTimeout(r, 2000)) // 2s max wait
       ])
     }
-    console.log(`[shutdown] Clean exit.`)
+    log.info('Shutdown: clean exit')
     process.exit(0)
   } catch (err) {
-    console.error('[shutdown] Error during cleanup:', err.message)
+    log.error({ err: err.message }, 'Shutdown: error during cleanup')
     process.exit(1)
   }
 }
@@ -1805,11 +1775,11 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error(`[${new Date().toISOString()}] unhandledRejection:`, reason)
+  log.error({ err: reason }, 'Unhandled rejection')
 })
 
 process.on('uncaughtException', (err) => {
-  console.error(`[${new Date().toISOString()}] uncaughtException:`, err)
+  log.fatal({ err }, 'Uncaught exception')
   gracefulShutdown('uncaughtException')
 })
 
@@ -1824,7 +1794,7 @@ async function warmupDensitySubscriptions() {
     const BATCH = 10
     const BATCH_PAUSE = 20000 // 20s between batches
     const ITEM_DELAY = 300   // 300ms between items
-    console.log(`[warmup] ${allSymbols.length} symbols, ${BATCH}/batch, ${BATCH_PAUSE/1000}s pause`)
+    log.info({ symbols: allSymbols.length, batchSize: BATCH, pauseSec: BATCH_PAUSE/1000 }, 'Warmup: starting')
     let subscribed = 0
     let batchRetries = 0
     const MAX_BATCH_RETRIES = 3
@@ -1840,13 +1810,13 @@ async function warmupDensitySubscriptions() {
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
         } catch (err) {
-          console.log(`[warmup] Error ${sym}: ${err.message.slice(0, 60)}, pausing 60s... (retry ${batchRetries + 1}/${MAX_BATCH_RETRIES})`)
+          log.warn({ symbol: sym, err: err.message.slice(0, 60), retry: batchRetries + 1, maxRetries: MAX_BATCH_RETRIES }, 'Warmup: error, pausing 60s')
           await new Promise(r => setTimeout(r, 60000))
           if (batchRetries < MAX_BATCH_RETRIES) {
             batchRetries++
             i -= BATCH // retry this batch
           } else {
-            console.log(`[warmup] Skipping batch after ${MAX_BATCH_RETRIES} retries`)
+            log.warn({ maxRetries: MAX_BATCH_RETRIES }, 'Warmup: skipping batch after max retries')
             batchRetries = 0
           }
           batchFailed = true
@@ -1860,18 +1830,18 @@ async function warmupDensitySubscriptions() {
       const batchNum = Math.floor(i / BATCH) + 1
       if (batchNum % 5 === 0 || i + BATCH >= allSymbols.length) {
         try { await rebuildDensityCache(allSymbols) } catch (_) {}
-        console.log(`[warmup] ${subscribed}/${allSymbols.length} subscribed, cache: ${densityCache.data ? densityCache.data.length : 0} walls`)
+        log.info({ subscribed, total: allSymbols.length, walls: densityCache.data ? densityCache.data.length : 0 }, 'Warmup: progress')
       }
 
       if (i + BATCH < allSymbols.length) {
         await new Promise(r => setTimeout(r, BATCH_PAUSE))
       }
     }
-    console.log(`[warmup] Done: ${subscribed} symbols`)
+    log.info({ subscribed }, 'Warmup: done')
     // After density warmup, pre-warm klines cache for fast chart loads
     warmupKlinesCache()
   } catch (err) {
-    console.log(`[warmup] Failed: ${err.message.slice(0, 100)}`)
+    log.error({ err: err.message.slice(0, 100) }, 'Warmup: failed')
   }
 }
 
@@ -1891,7 +1861,7 @@ async function warmupKlinesCache() {
     const total = sorted.length * TFS.length
     let done = 0, cached = 0
 
-    console.log(`[klines-warmup] Starting: ${sorted.length} symbols × ${TFS.length} TFs = ${total} requests`)
+    log.info({ symbols: sorted.length, tfs: TFS.length, total }, 'Klines warmup: starting')
 
     for (const tf of TFS) {
       for (let i = 0; i < sorted.length; i++) {
@@ -1918,11 +1888,11 @@ async function warmupKlinesCache() {
           } catch (err) {
             symbolRetries++
             if (symbolRetries > MAX_SYMBOL_RETRIES) {
-              console.log(`[klines-warmup] Skipping ${sym}:${tf} after ${MAX_SYMBOL_RETRIES} retries`)
+              log.warn({ symbol: sym, tf, maxRetries: MAX_SYMBOL_RETRIES }, 'Klines warmup: skipping after max retries')
               done++
               break
             }
-            console.log(`[klines-warmup] Rate limited at ${done}/${total} (${sym} retry ${symbolRetries}/${MAX_SYMBOL_RETRIES}), pausing 30s...`)
+            log.warn({ done, total, symbol: sym, retry: symbolRetries, maxRetries: MAX_SYMBOL_RETRIES }, 'Klines warmup: rate limited, pausing 30s')
             await new Promise(r => setTimeout(r, 30000))
           }
         }
@@ -1932,13 +1902,13 @@ async function warmupKlinesCache() {
 
         // Progress every 100 requests
         if (done % 100 === 0) {
-          console.log(`[klines-warmup] ${done}/${total} (${cached} from cache)`)
+          log.info({ done, total, cached }, 'Klines warmup: progress')
         }
       }
     }
-    console.log(`[klines-warmup] Done: ${done}/${total} cached (${cached} already had)`)
+    log.info({ done, total, cached }, 'Klines warmup: done')
   } catch (err) {
-    console.log(`[klines-warmup] Failed: ${err.message.slice(0, 100)}`)
+    log.error({ err: err.message.slice(0, 100) }, 'Klines warmup: failed')
   }
 }
 
@@ -1998,7 +1968,7 @@ async function rebuildDensityCache(allSymbols) {
   const meta = { count: finalData.length, minNotional: 0, depthLimit: 100, concurrency: 0, mmMode: false, windowPct: 5, mmMultiplier: 4 }
   densityCache = { data: finalData, meta, ts: Date.now() }
   saveDensityToDisk(finalData, meta)
-  if (skipped) console.warn(`[density] Rebuild: ${skipped}/${subscribedSyms.length} symbols skipped (klines unavailable)`)
+  if (skipped) log.warn({ skipped, total: subscribedSyms.length }, 'Density rebuild: symbols skipped (klines unavailable)')
 }
 
 start()

@@ -31,7 +31,8 @@ function initDB() {
             ON klines(symbol, interval);
     `);
 
-    console.log('[KlinesCache] SQLite initialized at', DB_PATH);
+    const { createLogger } = require('./logger');
+    createLogger('klines-cache').info({ path: DB_PATH }, 'SQLite initialized');
     return db;
 }
 
@@ -146,6 +147,31 @@ function getCachedSymbols(interval) {
     return s.getSymbols.all(interval).map(r => r.symbol);
 }
 
+// Find gaps in cached klines for a symbol (returns array of {start, end} timestamps in seconds)
+function findGaps(symbol, interval, lookbackSec = 86400) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const TF_SEC = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400 };
+    const step = TF_SEC[interval] || 300;
+    const rows = db.prepare(`
+        SELECT time FROM klines
+        WHERE symbol = ? AND interval = ? AND time > ?
+        ORDER BY time ASC
+    `).all(symbol, interval, nowSec - lookbackSec);
+    if (rows.length < 2) return [];
+    const gaps = [];
+    for (let i = 1; i < rows.length; i++) {
+        const diff = rows[i].time - rows[i - 1].time;
+        if (diff > step * 1.5) {
+            gaps.push({
+                start: rows[i - 1].time * 1000, // ms for Binance API
+                end: rows[i].time * 1000,
+                missing: Math.round(diff / step) - 1,
+            });
+        }
+    }
+    return gaps;
+}
+
 // DB stats
 function getStats() {
     const totalRows = db.prepare('SELECT COUNT(*) as cnt FROM klines').get().cnt;
@@ -163,5 +189,6 @@ module.exports = {
     getLatestTime,
     getCount,
     getCachedSymbols,
+    findGaps,
     getStats,
 };

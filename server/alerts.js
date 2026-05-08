@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('alerts')
+
 /**
  * Price Alert Checker — server-side alert engine
  * Runs on a 5-second interval, checks all enabled price alerts against current mark prices.
@@ -33,7 +36,7 @@ function init({ auth, push, getProxyCached, bgetWithRetry }) {
     checkAlerts().catch(() => {})
   }, CHECK_INTERVAL_MS)
 
-  console.log(`[Alerts] Price alert checker started (every ${CHECK_INTERVAL_MS / 1000}s)`)
+  log.info({ intervalSec: CHECK_INTERVAL_MS / 1000 }, 'Price alert checker started')
 }
 
 async function checkAlerts() {
@@ -109,7 +112,7 @@ async function checkAlerts() {
           previousPrice: prevPrice,
         })
 
-        console.log(`[Alerts] 🔔 ${symbol} ${dirLabel} (alert #${id}, user #${user_id})`)
+        log.info({ symbol, direction: dirLabel, alertId: id, userId: user_id }, 'Alert triggered')
 
         // Send push notification
         if (_push && _push.isEnabled() && _push.sendPushToUser) {
@@ -124,11 +127,11 @@ async function checkAlerts() {
               vibrate: [200, 100, 200],
             })
           } catch (pushErr) {
-            console.warn(`[Alerts] Push failed for alert #${id}: ${pushErr.message}`)
+            log.warn({ alertId: id, err: pushErr.message }, 'Push failed for alert')
           }
         }
       } catch (alertErr) {
-        console.warn(`[Alerts] Error checking alert #${alert.id}: ${alertErr.message}`)
+        log.warn({ alertId: alert.id, err: alertErr.message }, 'Error checking alert')
       }
     }
 
@@ -137,7 +140,7 @@ async function checkAlerts() {
       lastPrices.set(symbol, price)
     }
   } catch (err) {
-    console.error(`[Alerts] checkAlerts error: ${err.message}`)
+    log.error({ err: err.message }, 'checkAlerts error')
   }
 }
 
@@ -146,7 +149,7 @@ function stop() {
     clearInterval(_interval)
     _interval = null
   }
-  console.log('[Alerts] Price alert checker stopped')
+  log.info('Price alert checker stopped')
 }
 
 module.exports = { init, stop }

@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('auth')
+
 /**
  * Auth Module — JWT + SQLite + Google OAuth ready
  *
@@ -15,10 +18,10 @@ const crypto = require('crypto')
 // --- Config ---
 const DB_PATH = path.join(__dirname, 'data', 'users.db')
 if (!process.env.JWT_SECRET) {
-  console.error('[Auth] ❌ CRITICAL: JWT_SECRET not set in env! Tokens will reset on every restart.')
-  console.error('[Auth] Set JWT_SECRET in PM2 ecosystem.config.js or .env file.')
+  log.fatal('CRITICAL: JWT_SECRET not set in env! Tokens will reset on every restart.')
+  log.fatal('Set JWT_SECRET in PM2 ecosystem.config.js or .env file.')
   if (process.env.NODE_ENV === 'production') {
-    console.error('[Auth] Refusing to start in production without JWT_SECRET.')
+    log.fatal('Refusing to start in production without JWT_SECRET.')
     process.exit(1)
   }
 }

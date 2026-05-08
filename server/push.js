@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('push')
+
 /**
  * Web Push Module — real server-sent push notifications
  * Each signal triggers immediate push to all subscribers
@@ -17,7 +20,7 @@ function init({ stmts }) {
   const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@szhub.space'
 
   if (!vapidPublic || !vapidPrivate) {
-    console.warn('[Push] VAPID keys not configured — push disabled. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY env vars.')
+    log.warn('VAPID keys not configured — push disabled')
     return
   }
 
@@ -25,7 +28,7 @@ function init({ stmts }) {
   _enabled = true
 
   const count = _stmts.countPushSubs.get()?.count || 0
-  console.log(`[Push] Web Push initialized (${count} subscriptions)`)
+  log.info({ subscriptions: count }, 'Web Push initialized')
 }
 
 /**
@@ -43,7 +46,7 @@ async function sendWithRetry(pushSub, payload, endpoint, maxRetries = 2) {
     } catch (err) {
       if (err.statusCode === 410 || err.statusCode === 404) {
         try { _stmts.deletePushSub.run(endpoint) } catch {}
-        console.log('[Push] Removed expired subscription')
+        log.info('Removed expired subscription')
         return
       }
       // Network error (no statusCode) — retry
@@ -56,9 +59,9 @@ async function sendWithRetry(pushSub, payload, endpoint, maxRetries = 2) {
       // Give up
       try { _stmts.incrementPushFail.run(endpoint) } catch {}
       if (attempt === maxRetries && isTransient) {
-        console.warn(`[Push] Failed after ${maxRetries + 1} attempts: ${err.message}`)
+        log.warn({ attempts: maxRetries + 1, err: err.message }, 'Push failed after retries')
       } else {
-        console.error(`[Push] Send error (${err.statusCode}): ${err.message}`)
+        log.error({ statusCode: err.statusCode, err: err.message }, 'Push send error')
       }
       return
     }
@@ -122,7 +125,7 @@ function sendPushForSignal(signal) {
   }
 
   if (sent > 0) {
-    console.log(`[Push] Signal ${signal.symbol} ${signal.type} → sent to ${sent}/${subs.length} subscribers`)
+    log.info({ symbol: signal.symbol, type: signal.type, sent, total: subs.length }, 'Signal push sent')
   }
 }
 
@@ -153,7 +156,7 @@ function sendPushToUser(userId, payload) {
   }
 
   if (sent > 0) {
-    console.log(`[Push] Alert → user #${userId}: sent to ${sent} subscription(s)`)
+    log.info({ userId, sent }, 'Alert push sent')
   }
 }
 

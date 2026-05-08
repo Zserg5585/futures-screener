@@ -1,3 +1,6 @@
+const { createLogger } = require('./logger')
+const log = createLogger('liq-sweep')
+
 /**
  * Liquidity Sweep + Pin Bar Signal Detector
  *
@@ -197,7 +200,7 @@ function getWallLevels({ symbol, markPrice, stateManager, densityV2, persistence
       return walls
     } catch (e) {
       // Fallback: skip densityV2, return empty
-      console.error('[LiqSweep] densityV2 error for', symbol, e.message)
+      log.error({ symbol, err: e.message }, 'densityV2 error')
     }
   }
 
@@ -590,7 +593,7 @@ const _cleanupInterval = setInterval(() => {
       evicted++
     }
   }
-  if (evicted > 0) console.log(`[liq-sweep] Cache cleanup: evicted ${evicted} stale entries, ${_1hCache.size} remaining`)
+  if (evicted > 0) log.debug({ evicted, remaining: _1hCache.size }, 'Cache cleanup')
 }, 10 * 60_000)
 
 /**
@@ -813,15 +816,15 @@ async function scanLiqSweep(deps) {
 
       } catch (e) {
         errCount++
-        if (errCount <= 3) console.warn(`[LiqSweep] ${symbol} error:`, e.message)
+        if (errCount <= 3) log.warn({ symbol, err: e.message }, 'Scan error')
       }
 
       await new Promise(r => setTimeout(r, LIQ_SWEEP_SCAN_DELAY_MS))
     }
 
-    console.log(`[LiqSweep] Scan done: ${liquid.length} symbols | pinBars: ${pinBarCount}, sweeps: ${sweepCount}, volGate(<${MIN_VOLUME_RATIO}x): ${volGateSkipped}, signals: ${signalCount}${errCount ? ` [${errCount} errors]` : ''}`)
+    log.info({ symbols: liquid.length, pinBars: pinBarCount, sweeps: sweepCount, volGateSkipped, signals: signalCount, errors: errCount || undefined }, 'Scan done')
   } catch (err) {
-    console.error('[LiqSweep] Scan error:', err.message)
+    log.error({ err: err.message }, 'Scan error')
   }
 }
 
