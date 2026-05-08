@@ -47,6 +47,7 @@ const signals = require('./signals');
 const push = require('./push');
 const alertChecker = require('./alerts');
 const depthHeatmap = require('./depth-heatmap');
+const vpinScanner = require('./vpin');
 const klinesCache = require('./klines-cache');
 
 // WS connects lazily on first subscribe() — no eager connect needed
@@ -678,6 +679,20 @@ fastify.get('/api/depth-heatmap', async (req) => {
 
 fastify.get('/api/depth-heatmap/stats', async () => {
   return { success: true, data: depthHeatmap.getStats() }
+})
+
+// VPIN — Volume-Synchronized Probability of Informed Trading
+fastify.get('/api/vpin', async (req) => {
+  const { symbol } = req.query
+  if (symbol) {
+    const data = await vpinScanner.getVPIN(symbol)
+    return { success: true, data: data || { symbol, vpin: null, message: 'No data yet' } }
+  }
+  return { success: true, data: vpinScanner.getAll() }
+})
+
+fastify.get('/api/vpin/stats', async () => {
+  return { success: true, data: vpinScanner.getStats() }
 })
 
 // Signal stats (public)
@@ -1569,6 +1584,7 @@ const start = async () => {
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
     alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
     depthHeatmap.init({ stateManager, getProxyCached })
+    vpinScanner.init({ bgetWithRetry, getProxyCached })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan
@@ -1617,6 +1633,7 @@ async function gracefulShutdown(signal) {
     try { signals.stop() } catch (_) {}
     try { alertChecker.stop() } catch (_) {}
     try { depthHeatmap.stop() } catch (_) {}
+    try { vpinScanner.stop() } catch (_) {}
     log.info({ intervals: _intervals.length + 1 }, 'Shutdown: cleared intervals + signal scanners')
     // Close Fastify (stop accepting new requests, finish in-flight)
     await fastify.close()
