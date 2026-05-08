@@ -3341,9 +3341,10 @@ function openCoinModal(sym) {
     const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
     const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
-    modal.chart = LightweightCharts.createChart(chartEl, {
+    // Gapless chart — equally-spaced candles via custom horizontal scale behavior
+    modal._gapless = new GaplessHorzScaleBehavior();
+    modal.chart = LightweightCharts.createChartEx(chartEl, modal._gapless, {
         autoSize: true,
-        ...localChartOptions,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: getGridOpts(),
         crosshair: { mode: 0 },

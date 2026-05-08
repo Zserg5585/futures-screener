@@ -412,8 +412,8 @@ function reloadAllStatic() {
 // Pre-warm all static files at module load
 const STATIC_FILES = [
   'index.html', 'app.js', 'densities.js', 'mini-charts.js', 'auth.js',
-  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'styles.css',
-  'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
+  'drawing-manager.js', 'signals.js', 'settings.js', 'alerts.js', 'gapless-scale.js',
+  'styles.css', 'manifest.json', 'sw.js', 'icon-192.svg', 'icon-512.svg'
 ]
 for (const f of STATIC_FILES) {
   try { getStatic(f) } catch (e) { log.warn({ file: f, err: e.message }, 'Static: failed to pre-load') }
@@ -459,6 +459,9 @@ fastify.get('/settings.js', async (req, reply) => {
 })
 fastify.get('/alerts.js', async (req, reply) => {
   reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('alerts.js'))
+})
+fastify.get('/gapless-scale.js', async (req, reply) => {
+  reply.header('Cache-Control', ASSET_CACHE).type('application/javascript; charset=utf-8').send(getStatic('gapless-scale.js'))
 })
 
 fastify.get('/styles.css', async (req, reply) => {
