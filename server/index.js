@@ -291,11 +291,14 @@ function setCached(req, data) {
 
 // bget / bgetWithRetry / RateLimitError / rateLimiter — imported from ./binance-client.js
 
-// Resync handler with global queue: max 3 concurrent, debounced, deduped
+// Resync handler with global queue: max 3 concurrent, debounced, deduped, cooldown
 const _resyncPending = new Set()
+const _resyncCooldown = new Map() // symbol → timestamp (prevent re-add within 60s)
 let _resyncRunning = 0
 const RESYNC_MAX_CONCURRENT = 3
 const RESYNC_DELAY_MS = 500
+const RESYNC_MAX_PENDING = 10      // cap pending to prevent queue explosion after WS reconnect
+const RESYNC_COOLDOWN_MS = 60_000  // don't re-add same symbol within 60s
 
 async function processResyncQueue() {
   while (_resyncPending.size > 0 && _resyncRunning < RESYNC_MAX_CONCURRENT) {
@@ -304,12 +307,18 @@ async function processResyncQueue() {
     _resyncRunning++
     ;(async () => {
       try {
-        // Direct fetch — resync has its own queue (3 concurrent, 500ms delay)
-        const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`, { signal: AbortSignal.timeout(10000) })
-        if (!resp.ok) throw new Error(`depth ${symbol}: ${resp.status}`)
-        const ob = await resp.json()
-        stateManager.initBook(symbol, ob.bids, ob.asks)
-        log.info({ symbol, pending: _resyncPending.size }, 'Resync completed')
+        // Direct fetch (bypasses Bottleneck) — limit=100 (weight=2), WS fills the rest
+        const controller = new AbortController()
+        const tid = setTimeout(() => controller.abort(), 10_000)
+        try {
+          const res = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=100`, { signal: controller.signal })
+          if (!res.ok) throw new Error(`depth ${symbol}: ${res.status}`)
+          const ob = await res.json()
+          stateManager.initBook(symbol, ob.bids, ob.asks)
+          log.info({ symbol, pending: _resyncPending.size }, 'Resync completed')
+        } finally {
+          clearTimeout(tid)
+        }
       } catch (err) {
         log.error({ symbol, err: err.message }, 'Resync failed')
       } finally {
@@ -320,9 +329,25 @@ async function processResyncQueue() {
   }
 }
 
+// Cleanup stale cooldowns every 2 min
+_intervals.push(setInterval(() => {
+  const now = Date.now()
+  for (const [sym, ts] of _resyncCooldown) {
+    if (now - ts > RESYNC_COOLDOWN_MS) _resyncCooldown.delete(sym)
+  }
+}, 120_000))
+
 let _resyncDebounce = null
 stateManager.setResyncHandler((symbol) => {
+  // Cooldown: skip if recently resynced or attempted
+  const now = Date.now()
+  if (_resyncCooldown.has(symbol) && now - _resyncCooldown.get(symbol) < RESYNC_COOLDOWN_MS) return
+  _resyncCooldown.set(symbol, now)
+
+  // Cap pending to prevent queue explosion after mass WS reconnect
+  if (_resyncPending.size >= RESYNC_MAX_PENDING) return
   _resyncPending.add(symbol)
+
   if (!_resyncDebounce) {
     _resyncDebounce = setTimeout(() => {
       _resyncDebounce = null
@@ -1226,16 +1251,22 @@ function setProxyCached(key, data) {
   proxyCache.set(key, { data, ts: Date.now() })
 }
 
-// Shared ticker24hr fetcher — weight=40 exceeds Bottleneck maxConcurrent=10,
-// so we use proxyCache + direct fetch (bypass Bottleneck). Called by routes & modules.
+// Shared ticker24hr fetcher — direct fetch (bypasses Bottleneck).
+// Weight=40 would block Bottleneck queue and cause AbortController timeouts.
 async function fetchTicker24hr() {
   const cached = getProxyCached('ticker24hr', 60000)
   if (cached) return cached
-  const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15000) })
-  if (!resp.ok) throw new Error(`Binance ticker24hr: ${resp.status}`)
-  const data = await resp.json()
-  setProxyCached('ticker24hr', data)
-  return data
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const res = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: controller.signal })
+    if (!res.ok) throw new Error(`ticker24hr: ${res.status}`)
+    const data = await res.json()
+    setProxyCached('ticker24hr', data)
+    return data
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 // 24hr ticker — cached 60s (all pairs, heavy endpoint)
@@ -1524,41 +1555,60 @@ fastify.get('/api/natr', async (req, reply) => {
     .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
     .slice(0, 200) // top 200 by volume
 
-  // Fetch klines in parallel batches of 20
+  // Fetch klines: SQLite first, then direct fetch (bypasses Bottleneck) for uncached
   const result = {}
-  const batchSize = 20
-  for (let i = 0; i < usdtPairs.length; i += batchSize) {
-    const batch = usdtPairs.slice(i, i + batchSize)
-    const promises = batch.map(async (t) => {
-      try {
-        const key = `klines:${t.symbol}:${interval}:50`
-        let klines = getProxyCached(key, 10000)
-        if (!klines) {
-          klines = await bgetWithRetry(`/fapi/v1/klines?symbol=${t.symbol}&interval=${interval}&limit=50`)
-          setProxyCached(key, klines)
-        }
-        if (!Array.isArray(klines) || klines.length < 15) return
-        // Calculate ATR(14)
-        const candles = klines.map(k => ({
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-        }))
+  const needFetch = []
+
+  // 1. Try SQLite cache for all symbols (instant, no API calls)
+  for (const t of usdtPairs) {
+    try {
+      const rows = klinesCache ? klinesCache.getCandles(t.symbol, interval, 50) : []
+      if (rows && rows.length >= 15) {
+        const candles = rows.map(r => ({ high: r.high, low: r.low, close: r.close }))
         let trSum = 0
         for (let j = candles.length - 14; j < candles.length; j++) {
-          const h = candles[j].high
-          const l = candles[j].low
-          const pc = candles[j - 1].close
+          const h = candles[j].high, l = candles[j].low, pc = candles[j - 1].close
           trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))
         }
         const atr = trSum / 14
         const lastClose = candles[candles.length - 1].close
         if (lastClose > 0) result[t.symbol] = parseFloat(((atr / lastClose) * 100).toFixed(2))
-      } catch(e) { /* skip pair */ }
-    })
-    await Promise.all(promises).catch(e => log.error({ err: e.message }, 'NATR batch error'))
-    // Small delay between batches to avoid rate limits
-    if (i + batchSize < usdtPairs.length) await new Promise(r => setTimeout(r, 200))
+        continue
+      }
+    } catch (_) {}
+    needFetch.push(t)
+  }
+
+  // 2. Direct fetch for uncached (no Bottleneck — avoids 50ms×N throttle)
+  if (needFetch.length > 0) {
+    const batchSize = 20
+    for (let i = 0; i < needFetch.length; i += batchSize) {
+      const batch = needFetch.slice(i, i + batchSize)
+      await Promise.all(batch.map(async (t) => {
+        try {
+          const controller = new AbortController()
+          const tid = setTimeout(() => controller.abort(), 10_000)
+          try {
+            const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${t.symbol}&interval=${interval}&limit=50`, { signal: controller.signal })
+            if (!res.ok) return
+            const klines = await res.json()
+            if (!Array.isArray(klines) || klines.length < 15) return
+            // Store in SQLite for next time
+            if (klinesCache) try { klinesCache.storeCandles(t.symbol, interval, klines) } catch (_) {}
+            const candles = klines.map(k => ({ high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]) }))
+            let trSum = 0
+            for (let j = candles.length - 14; j < candles.length; j++) {
+              const h = candles[j].high, l = candles[j].low, pc = candles[j - 1].close
+              trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))
+            }
+            const atr = trSum / 14
+            const lastClose = candles[candles.length - 1].close
+            if (lastClose > 0) result[t.symbol] = parseFloat(((atr / lastClose) * 100).toFixed(2))
+          } finally { clearTimeout(tid) }
+        } catch (_) {}
+      })).catch(() => {})
+      if (i + batchSize < needFetch.length) await new Promise(r => setTimeout(r, 100))
+    }
   }
 
   setProxyCached(`natr:${interval}`, result)
@@ -1631,7 +1681,7 @@ fastify.post('/api/log-levels', async (req) => {
 })
 
 // Binance rate limiter stats — monitor weight usage and Bottleneck queue
-fastify.get('/api/rate-limit', async () => ({ success: true, ...getBinanceStats() }))
+fastify.get('/api/rate-limit', async () => ({ success: true, ...(await getBinanceStats()) }))
 
 // Hot-reload static files from disk (no PM2 restart needed → no Binance ban)
 fastify.post('/api/reload-static', async () => {
@@ -1774,13 +1824,27 @@ process.on('uncaughtException', (err) => {
 async function warmupDensitySubscriptions() {
   try {
     const info = await bgetWithRetry('/fapi/v1/exchangeInfo')
-    const allSymbols = (info.symbols || [])
+    const allPerpetuals = (info.symbols || [])
       .filter(s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
       .map(s => s.symbol)
 
-    const BATCH = 10
-    const BATCH_PAUSE = 20000 // 20s between batches
-    const ITEM_DELAY = 300   // 300ms between items
+    // Prioritize top symbols by volume (warm the rest lazily via resync)
+    let allSymbols = allPerpetuals
+    try {
+      const ticker = await fetchTicker24hr()
+      if (Array.isArray(ticker) && ticker.length > 0) {
+        const volMap = new Map(ticker.map(t => [t.symbol, parseFloat(t.quoteVolume) || 0]))
+        allSymbols = allPerpetuals
+          .sort((a, b) => (volMap.get(b) || 0) - (volMap.get(a) || 0))
+          .slice(0, 200) // top 200 by volume — rest will warm lazily via WS gaps
+      }
+    } catch { /* use all symbols if ticker fails */ }
+
+    // Rate budget: depth/1000 = weight 20 per call, Binance limit 2400/min
+    // Share budget with signal scanners (~600/min) → warmup gets ~1000/min = 50 calls/min
+    const BATCH = 5
+    const BATCH_PAUSE = 10000  // 10s between batches
+    const ITEM_DELAY = 1000    // 1s between items (5 items × 1s + 10s pause = 15s/batch = 100 weight/15s = 400/min)
     log.info({ symbols: allSymbols.length, batchSize: BATCH, pauseSec: BATCH_PAUSE/1000 }, 'Warmup: starting')
     let subscribed = 0
     let batchRetries = 0
@@ -1792,11 +1856,16 @@ async function warmupDensitySubscriptions() {
       for (const sym of batch) {
         if (wsManager.callbacks.has(sym)) { subscribed++; continue }
         try {
-          // Direct fetch — warmup has its own throttle (300ms + 20s batch pause)
-          // Going through Bottleneck would exhaust reservoir and block user klines
-          const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: AbortSignal.timeout(10000) })
-          if (!resp.ok) throw new Error(`depth ${sym}: ${resp.status}`)
-          const ob = await resp.json()
+          // Direct fetch (bypasses Bottleneck) — limit=100 (weight=2), WS fills the rest
+          // 200+ warmup requests would exhaust Bottleneck reservoir and cause AbortController timeouts
+          const _ctrl = new AbortController()
+          const _tid = setTimeout(() => _ctrl.abort(), 10_000)
+          let ob
+          try {
+            const _res = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=100`, { signal: _ctrl.signal })
+            if (!_res.ok) throw new Error(`depth ${sym}: ${_res.status}`)
+            ob = await _res.json()
+          } finally { clearTimeout(_tid) }
           stateManager.initBook(sym, ob.bids, ob.asks)
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
@@ -1837,12 +1906,12 @@ async function warmupDensitySubscriptions() {
 }
 
 // Pre-warm klines cache: top 200 by volume × main TFs → instant chart opens
+// Phase 1: SQLite check (instant), Phase 2: direct fetch for missing (parallel batches)
 async function warmupKlinesCache() {
   try {
-    // Get top 200 symbols by 24h volume
     const ticker = await fetchTicker24hr()
     const sorted = ticker
-      .filter(t => t.symbol.endsWith('USDT'))
+      .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('_'))
       .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
       .slice(0, 200)
       .map(t => t.symbol)
@@ -1850,54 +1919,69 @@ async function warmupKlinesCache() {
     const TFS = ['15m', '1h', '4h']
     const LIMITS = { '15m': 1500, '1h': 1500, '4h': 1500 }
     const total = sorted.length * TFS.length
-    let done = 0, cached = 0
+    const needFetch = []
+    let fromSqlite = 0, fromProxy = 0
 
-    log.info({ symbols: sorted.length, tfs: TFS.length, total }, 'Klines warmup: starting')
-
+    // Phase 1: Check proxyCache + SQLite (instant, zero API calls)
     for (const tf of TFS) {
-      for (let i = 0; i < sorted.length; i++) {
-        const sym = sorted[i]
+      for (const sym of sorted) {
         const limit = LIMITS[tf]
         const key = `klines:${sym}:${tf}:${limit}`
 
-        // Skip if already cached
-        if (getProxyCached(key, 300000)) { done++; cached++; continue }
+        if (getProxyCached(key, 300000)) { fromProxy++; continue }
 
-        const MAX_SYMBOL_RETRIES = 3
-        let symbolRetries = 0
-        let success = false
-        while (!success && symbolRetries <= MAX_SYMBOL_RETRIES) {
-          try {
-            const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`)
-            setProxyCached(key, data)
-            // Persist to SQLite so data survives proxy cache expiry and PM2 restarts
-            if (klinesCache && Array.isArray(data)) {
-              try { klinesCache.storeCandles(sym, tf, data) } catch (_) {}
+        // Check SQLite — data survives PM2 restarts
+        if (klinesCache) {
+          const latestTime = klinesCache.getLatestTime(sym, tf)
+          if (latestTime && (Date.now() / 1000 - latestTime) < 3600) {
+            // Fresh enough in SQLite (< 1 hour), load into proxyCache
+            const rows = klinesCache.getCandles(sym, tf, limit)
+            if (rows && rows.length > 100) {
+              const data = rows.map(r => [r.time * 1000, String(r.open), String(r.high), String(r.low), String(r.close), '0', 0, String(r.volume)])
+              setProxyCached(key, data)
+              fromSqlite++
+              continue
             }
-            done++
-            success = true
-          } catch (err) {
-            symbolRetries++
-            if (symbolRetries > MAX_SYMBOL_RETRIES) {
-              log.warn({ symbol: sym, tf, maxRetries: MAX_SYMBOL_RETRIES }, 'Klines warmup: skipping after max retries')
-              done++
-              break
-            }
-            log.warn({ done, total, symbol: sym, retry: symbolRetries, maxRetries: MAX_SYMBOL_RETRIES }, 'Klines warmup: rate limited, pausing 30s')
-            await new Promise(r => setTimeout(r, 30000))
           }
         }
-
-        // Throttle: 150ms between requests (concurrency 1, ~400 req/min safe)
-        await new Promise(r => setTimeout(r, 150))
-
-        // Progress every 100 requests
-        if (done % 100 === 0) {
-          log.info({ done, total, cached }, 'Klines warmup: progress')
-        }
+        needFetch.push({ sym, tf, limit, key })
       }
     }
-    log.info({ done, total, cached }, 'Klines warmup: done')
+
+    log.info({ total, fromSqlite, fromProxy, needFetch: needFetch.length }, 'Klines warmup: SQLite check done')
+
+    // Phase 2: Direct fetch for missing (bypass Bottleneck, parallel batches of 10)
+    // Rate budget: ~1200 weight/min (half of 2400, leaving room for user requests)
+    // limit=1500 → weight=20. 1200/20 = 60 req/min → batch of 10 every 10s
+    const BATCH = 10
+    let fetched = 0, errors = 0
+    for (let i = 0; i < needFetch.length; i += BATCH) {
+      const batch = needFetch.slice(i, i + BATCH)
+      await Promise.all(batch.map(async ({ sym, tf, limit, key }) => {
+        const controller = new AbortController()
+        const tid = setTimeout(() => controller.abort(), 15_000)
+        try {
+          const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=${limit}`, { signal: controller.signal })
+          if (!res.ok) { errors++; return }
+          const data = await res.json()
+          if (!Array.isArray(data)) { errors++; return }
+          setProxyCached(key, data)
+          if (klinesCache) try { klinesCache.storeCandles(sym, tf, data) } catch (_) {}
+          fetched++
+        } catch (_) { errors++ }
+        finally { clearTimeout(tid) }
+      }))
+
+      // Progress every 5 batches
+      if ((i / BATCH) % 5 === 0 && i > 0) {
+        log.info({ fetched, errors, remaining: needFetch.length - i - BATCH }, 'Klines warmup: progress')
+      }
+
+      // Rate limit: 10 × weight 20 = 200 weight/batch. 10s between → 1200 weight/min
+      if (i + BATCH < needFetch.length) await new Promise(r => setTimeout(r, 10_000))
+    }
+
+    log.info({ total, fromSqlite, fromProxy, fetched, errors }, 'Klines warmup: done')
   } catch (err) {
     log.error({ err: err.message.slice(0, 100) }, 'Klines warmup: failed')
   }

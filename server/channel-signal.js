@@ -1,6 +1,5 @@
 const { createLogger } = require('./logger')
 const log = createLogger('channel')
-const BINANCE_FAPI = 'https://fapi.binance.com'
 
 /**
  * Channel Signal v2 — Regression Channel with Trend-Aware Logic
@@ -449,8 +448,7 @@ async function scanChannelSignals({ getProxyCached, bgetWithRetry, klinesCache, 
     let ticker = getProxyCached('ticker24hr', 60_000)
     if (!Array.isArray(ticker) || ticker.length === 0) {
       try {
-        const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15_000) })
-        if (resp.ok) ticker = await resp.json()
+        ticker = await bgetWithRetry('/fapi/v1/ticker/24hr')
       } catch { return }
       if (!Array.isArray(ticker)) return
     }

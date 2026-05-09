@@ -8,7 +8,6 @@
 const { createLogger } = require('./logger')
 const log = createLogger('treemap')
 
-const BINANCE_FAPI = 'https://fapi.binance.com'
 let _bgetWithRetry = null
 let _getProxyCached = null
 
@@ -94,14 +93,11 @@ async function getData() {
   }
 
   try {
-    // 1. Get ticker24hr for all symbols (try cache, then direct fetch)
-    // Note: ticker/24hr without symbol has weight=40, exceeds Bottleneck maxConcurrent=10
-    // So we use proxyCache first, then direct fetch bypassing Bottleneck
+    // 1. Get ticker24hr for all symbols (cache → Bottleneck, maxConcurrent=50 supports weight=40)
     let tickers = _getProxyCached('ticker24hr', 60_000)
     if (!Array.isArray(tickers) || tickers.length === 0) {
       try {
-        const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(10_000) })
-        if (resp.ok) tickers = await resp.json()
+        tickers = await _bgetWithRetry('/fapi/v1/ticker/24hr')
       } catch (e) {
         log.warn({ err: e.message }, 'Failed to fetch ticker24hr for treemap')
       }

@@ -1,6 +1,5 @@
 const { createLogger } = require('./logger')
 const log = createLogger('liq-sweep')
-const BINANCE_FAPI = 'https://fapi.binance.com'
 
 /**
  * Liquidity Sweep + Pin Bar Signal Detector
@@ -618,12 +617,11 @@ async function scanLiqSweep(deps) {
   } = deps
 
   try {
-    // --- Get liquid symbols (proxyCache → direct fetch, weight=40 bypasses Bottleneck) ---
+    // --- Get liquid symbols (proxyCache → Bottleneck, maxConcurrent=50 supports weight=40) ---
     let ticker = getProxyCached('ticker24hr', 60_000)
     if (!Array.isArray(ticker) || ticker.length === 0) {
       try {
-        const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15_000) })
-        if (resp.ok) ticker = await resp.json()
+        ticker = await bgetWithRetry('/fapi/v1/ticker/24hr')
       } catch { return }
       if (!Array.isArray(ticker)) return
     }

@@ -93,9 +93,14 @@ const weightTracker = {
     if (w > 0) {
       this.usedWeight = w
       this.weightUpdatedAt = Date.now()
-      // Sync Bottleneck reservoir with actual Binance weight
-      const remaining = Math.max(2400 - w, 0)
-      limiter.updateSettings({ reservoir: remaining })
+      // Sync Bottleneck reservoir with actual Binance weight.
+      // Only sync when weight is below hard limit — at/above limit the response
+      // is likely a 429 and setting reservoir=0 would deadlock Bottleneck
+      // (auto-refresh can't reliably recover after updateSettings).
+      if (w < this.WEIGHT_HARD_LIMIT) {
+        const remaining = Math.max(2400 - w, 0)
+        limiter.updateSettings({ reservoir: remaining })
+      }
     }
   },
 
@@ -204,8 +209,10 @@ async function bgetWithRetry(apiPath, maxRetries = 3, baseDelay = 500) {
 }
 
 // ─── Stats for monitoring ──────────────────────────────────────────────
-function getStats() {
+async function getStats() {
   const counts = limiter.counts()
+  let reservoir = 'unknown'
+  try { reservoir = await limiter.currentReservoir() } catch {}
   return {
     weight: weightTracker.usedWeight,
     weightLimit: 2400,
@@ -214,7 +221,7 @@ function getStats() {
     bottleneck: {
       running: counts.RUNNING,
       queued: counts.QUEUED,
-      reservoir: counts.RESERVOIR || 'unknown',
+      reservoir,
     }
   }
 }

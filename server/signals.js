@@ -1,6 +1,5 @@
 const { createLogger } = require('./logger')
 const log = createLogger('signals')
-const BINANCE_FAPI = 'https://fapi.binance.com'
 
 /**
  * Signals Scanner — detects trading signals from market data
@@ -68,13 +67,11 @@ let _stateManager = null
 let _densityV2 = null
 let _persistenceMap = null
 
-// ticker/24hr (all symbols) weight=40 exceeds Bottleneck maxConcurrent=10 → direct fetch
+// ticker/24hr helper — uses proxy cache then Bottleneck (maxConcurrent=50 supports weight=40)
 async function _fetchTicker24hr() {
   const cached = _getProxyCached('ticker24hr', 60_000)
   if (Array.isArray(cached) && cached.length > 0) return cached
-  const resp = await fetch(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { signal: AbortSignal.timeout(15_000) })
-  if (!resp.ok) throw new Error(`ticker24hr: ${resp.status}`)
-  const data = await resp.json()
+  const data = await _bgetWithRetry('/fapi/v1/ticker/24hr')
   _setProxyCached('ticker24hr', data)
   return data
 }
