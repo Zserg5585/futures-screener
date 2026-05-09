@@ -1791,7 +1791,7 @@ const start = async () => {
     vpinScanner.init({ bgetWithRetry, getProxyCached })
     fillKill.init({ stateManager, getProxyCached })
     resilience.init({ stateManager, getProxyCached })
-    treemapProvider.init({ bgetWithRetry, getProxyCached })
+    treemapProvider.init({ getProxyCached, BINANCE_FAPI })
     // Start background klines updater (every 30s, updates cached symbols)
     startKlinesUpdater()
     // Pre-warm NATR cache so signals scanner has data from first scan

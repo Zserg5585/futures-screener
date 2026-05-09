@@ -8,8 +8,8 @@
 const { createLogger } = require('./logger')
 const log = createLogger('treemap')
 
-let _bgetWithRetry = null
 let _getProxyCached = null
+let _binanceFapi = null
 
 // Cache
 let _cache = null       // { ts, data[] }
@@ -23,9 +23,9 @@ const RSI_KLINE_LIMIT = RSI_PERIOD + 2
 // Concurrency control — don't hammer Binance
 const MAX_CONCURRENT = 8
 
-function init({ bgetWithRetry, getProxyCached }) {
-  _bgetWithRetry = bgetWithRetry
+function init({ getProxyCached, BINANCE_FAPI }) {
   _getProxyCached = getProxyCached
+  _binanceFapi = BINANCE_FAPI
   log.info('Treemap provider initialized')
 }
 
@@ -34,7 +34,14 @@ function init({ bgetWithRetry, getProxyCached }) {
  */
 async function computeRSI(symbol) {
   try {
-    const klines = await _bgetWithRetry(`/fapi/v1/klines?symbol=${symbol}&interval=${RSI_TF}&limit=${RSI_KLINE_LIMIT}`)
+    const ctrl = new AbortController()
+    const tid = setTimeout(() => ctrl.abort(), 10_000)
+    let klines
+    try {
+      const res = await fetch(`${_binanceFapi}/fapi/v1/klines?symbol=${symbol}&interval=${RSI_TF}&limit=${RSI_KLINE_LIMIT}`, { signal: ctrl.signal })
+      if (!res.ok) return null
+      klines = await res.json()
+    } finally { clearTimeout(tid) }
     if (!Array.isArray(klines) || klines.length < RSI_PERIOD + 1) return null
 
     const closes = klines.map(k => parseFloat(k[4]))
@@ -97,7 +104,12 @@ async function getData() {
     let tickers = _getProxyCached('ticker24hr', 60_000)
     if (!Array.isArray(tickers) || tickers.length === 0) {
       try {
-        tickers = await _bgetWithRetry('/fapi/v1/ticker/24hr')
+        const ctrl = new AbortController()
+        const tid = setTimeout(() => ctrl.abort(), 15_000)
+        try {
+          const res = await fetch(`${_binanceFapi}/fapi/v1/ticker/24hr`, { signal: ctrl.signal })
+          if (res.ok) tickers = await res.json()
+        } finally { clearTimeout(tid) }
       } catch (e) {
         log.warn({ err: e.message }, 'Failed to fetch ticker24hr for treemap')
       }
