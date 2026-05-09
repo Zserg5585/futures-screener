@@ -843,7 +843,15 @@ fastify.get('/depth/:symbol', async (req, reply) => {
     return { error: 'Invalid symbol format' }
   }
   const limit = Math.min(Math.max(Number(req.query.limit || 100), 5), 1000)
-  const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${symbol}&limit=${limit}`)
+  // Direct fetch — bypasses Bottleneck for user requests
+  const _depthCtrl = new AbortController()
+  const _depthTid = setTimeout(() => _depthCtrl.abort(), 10_000)
+  let ob
+  try {
+    const _depthRes = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${symbol}&limit=${limit}`, { signal: _depthCtrl.signal })
+    if (!_depthRes.ok) throw new Error(`depth: ${_depthRes.status}`)
+    ob = await _depthRes.json()
+  } finally { clearTimeout(_depthTid) }
   return { symbol, lastUpdateId: ob.lastUpdateId, bids: ob.bids, asks: ob.asks }
 })
 
@@ -884,7 +892,21 @@ fastify.get('/densities/simple', async (req, reply) => {
     symbols = symbols.slice(0, limitSymbols)
   }
 
-  const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
+  // Direct fetch — bypasses Bottleneck for user-facing requests
+  let marks
+  const _premCached = getProxyCached('premiumIndex', 30000)
+  if (_premCached) {
+    marks = _premCached
+  } else {
+    const _pCtrl = new AbortController()
+    const _pTid = setTimeout(() => _pCtrl.abort(), 10_000)
+    try {
+      const _pRes = await fetch(`${BINANCE_FAPI}/fapi/v1/premiumIndex`, { signal: _pCtrl.signal })
+      if (!_pRes.ok) throw new Error(`premiumIndex: ${_pRes.status}`)
+      marks = await _pRes.json()
+      setProxyCached('premiumIndex', marks)
+    } finally { clearTimeout(_pTid) }
+  }
   const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
 
   // Delay between items to stay under Binance rate limit (2400/min)
@@ -904,14 +926,19 @@ fastify.get('/densities/simple', async (req, reply) => {
       // Prevent concurrent subscribe for the same symbol
       if (_subscribingSymbols.has(sym)) return [];
       _subscribingSymbols.add(sym);
+      const _dsCtrl = new AbortController()
+      const _dsTid = setTimeout(() => _dsCtrl.abort(), 10_000)
       try {
-        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`);
+        const _dsRes = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: _dsCtrl.signal })
+        if (!_dsRes.ok) throw new Error(`depth ${sym}: ${_dsRes.status}`)
+        const ob = await _dsRes.json()
         stateManager.initBook(sym, ob.bids, ob.asks);
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload); });
       } catch (err) {
         log.debug({ symbol: sym, err: err.message.slice(0, 80) }, 'Density: skip symbol');
         return [];
       } finally {
+        clearTimeout(_dsTid)
         _subscribingSymbols.delete(sym);
       }
     }
@@ -1109,8 +1136,21 @@ fastify.get('/densities/v2', async (req) => {
   }
   const volumeMap = new Map(ticker24h.map(t => [t.symbol, Number(t.quoteVolume)]))
 
-  // Get mark prices
-  const marks = await bgetWithRetry('/fapi/v1/premiumIndex')
+  // Get mark prices (direct fetch — bypasses congested Bottleneck queue)
+  let marks
+  const premiumCached = getProxyCached('premiumIndex', 30000)
+  if (premiumCached) {
+    marks = premiumCached
+  } else {
+    const _ctrl = new AbortController()
+    const _tid = setTimeout(() => _ctrl.abort(), 10_000)
+    try {
+      const _res = await fetch(`${BINANCE_FAPI}/fapi/v1/premiumIndex`, { signal: _ctrl.signal })
+      if (!_res.ok) throw new Error(`premiumIndex: ${_res.status}`)
+      marks = await _res.json()
+      setProxyCached('premiumIndex', marks)
+    } finally { clearTimeout(_tid) }
+  }
   const markMap = new Map(marks.map(m => [m.symbol, Number(m.markPrice)]))
 
   // Determine symbols to analyze
@@ -1136,13 +1176,18 @@ fastify.get('/densities/v2', async (req) => {
       if (!isSpecific) continue // Full scan: skip unsubscribed
       if (_subscribingSymbols.has(sym)) continue
       _subscribingSymbols.add(sym)
+      const _dCtrl = new AbortController()
+      const _dTid = setTimeout(() => _dCtrl.abort(), 10_000)
       try {
-        const ob = await bgetWithRetry(`/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`)
+        const _dRes = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: _dCtrl.signal })
+        if (!_dRes.ok) throw new Error(`depth ${sym}: ${_dRes.status}`)
+        const ob = await _dRes.json()
         stateManager.initBook(sym, ob.bids, ob.asks)
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
       } catch (err) {
         continue
       } finally {
+        clearTimeout(_dTid)
         _subscribingSymbols.delete(sym)
       }
     }
@@ -1306,10 +1351,14 @@ fastify.get('/api/klines', async (req, reply) => {
   if (startTime) {
     const delta = klinesCache.getCandlesAfter(symbol, interval, Math.floor(startTime / 1000))
     if (delta.length > 0) return { cached: true, data: delta }
-    // Fallback: fetch from Binance
-    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&startTime=${startTime}`)
-    if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data)
-    return data
+    // Fallback: direct fetch from Binance (bypasses Bottleneck for user requests)
+    const controller1 = new AbortController()
+    const tid1 = setTimeout(() => controller1.abort(), 15_000)
+    try {
+      const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&startTime=${startTime}`, { signal: controller1.signal })
+      if (res.ok) { const data = await res.json(); if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data); return data }
+    } finally { clearTimeout(tid1) }
+    return []
   }
 
   // Historical pagination (endTime) — check SQLite first
@@ -1317,19 +1366,23 @@ fastify.get('/api/klines', async (req, reply) => {
     const beforeSec = Math.floor(endTime / 1000)
     const cached = klinesCache.getCandlesBefore(symbol, interval, beforeSec, limit)
     if (cached.length >= limit * 0.8) {
-      // Return in Binance-compatible format for client parseKlines()
       return cached.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
     }
-    // Not enough in cache — fetch from Binance and cache
     const key = `klines:${symbol}:${interval}:${limit}:end${endTime}`
     const proxyCached = getProxyCached(key, 300000)
     if (proxyCached) return proxyCached
-    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&endTime=${endTime}`)
-    if (Array.isArray(data)) {
-      setProxyCached(key, data)
-      klinesCache.storeCandles(symbol, interval, data)
-    }
-    return data
+    // Direct fetch (bypasses Bottleneck)
+    const controller2 = new AbortController()
+    const tid2 = setTimeout(() => controller2.abort(), 15_000)
+    try {
+      const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&endTime=${endTime}`, { signal: controller2.signal })
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data)) { setProxyCached(key, data); klinesCache.storeCandles(symbol, interval, data) }
+        return data
+      }
+    } finally { clearTimeout(tid2) }
+    return []
   }
 
   // Latest candles — try SQLite cache (fresh or stale with background refresh)
@@ -1350,12 +1403,18 @@ fastify.get('/api/klines', async (req, reply) => {
     }
   }
 
-  // Cache stale or miss — fetch from Binance, update SQLite
+  // Cache stale or miss — direct fetch from Binance (bypasses Bottleneck for user requests)
   const key = `klines:${symbol}:${interval}:${limit}`
   const proxyCached = getProxyCached(key, 10000)
   if (proxyCached) return proxyCached
   try {
-    const data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+    const controller = new AbortController()
+    const tid = setTimeout(() => controller.abort(), 15_000)
+    let data
+    try {
+      const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`, { signal: controller.signal })
+      if (res.ok) data = await res.json()
+    } finally { clearTimeout(tid) }
     if (Array.isArray(data)) {
       setProxyCached(key, data)
       klinesCache.storeCandles(symbol, interval, data)
@@ -1448,14 +1507,20 @@ fastify.get('/api/oi-history', async (req, reply) => {
   const cached = getProxyCached(key, 60000) // cache 1 min
   if (cached) return cached
 
+  // Direct fetch — bypasses congested Bottleneck queue for user requests
+  const controller = new AbortController()
+  const tid = setTimeout(() => controller.abort(), 15_000)
   try {
-    const url = `/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=${period}&limit=${limit}`
-    const data = await bgetWithRetry(url)
+    const res = await fetch(`${BINANCE_FAPI}/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=${period}&limit=${limit}`, { signal: controller.signal })
+    if (!res.ok) throw new Error(`OI history: ${res.status}`)
+    const data = await res.json()
     setProxyCached(key, data)
     return data
   } catch (e) {
     reply.code(503)
     return { error: 'Failed to fetch OI history', message: e.message }
+  } finally {
+    clearTimeout(tid)
   }
 })
 
@@ -1506,14 +1571,20 @@ fastify.post('/api/klines-batch', async (req, reply) => {
     )).catch(() => {})
   }
 
-  // Fetch uncached from Binance in parallel
+  // Fetch uncached from Binance in parallel (direct fetch — bypasses Bottleneck
+  // so user requests aren't blocked by warmup/scanner queue)
   if (needFetch.length > 0) {
     const promises = needFetch.map(async (symbol) => {
       try {
         const key = `klines:${symbol}:${interval}:${limit}`
         let data = getProxyCached(key, 10000)
         if (!data) {
-          data = await bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`)
+          const controller = new AbortController()
+          const tid = setTimeout(() => controller.abort(), 15_000)
+          try {
+            const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`, { signal: controller.signal })
+            if (res.ok) data = await res.json()
+          } finally { clearTimeout(tid) }
           if (data) {
             setProxyCached(key, data)
             klinesCache.storeCandles(symbol, interval, data)

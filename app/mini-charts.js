@@ -1239,7 +1239,7 @@ function renderFromCache(sym) {
 const HISTORY_TARGET = 20000;
 const HISTORY_BARS_THRESHOLD = 10; // load when fewer than N bars remain on left
 
-function setupInfiniteScroll(chartObj, seriesObj, volSeriesObj, sym, tf, getCandleData, setCandleData) {
+function setupInfiniteScroll(chartObj, seriesObj, volSeriesObj, sym, tf, getCandleData, setCandleData, gaplessBehavior) {
     let loading = false;
 
     const unsub = chartObj.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
@@ -1267,15 +1267,23 @@ function setupInfiniteScroll(chartObj, seriesObj, volSeriesObj, sym, tf, getCand
                 if (filtered.length === 0) return;
                 const newData = [...filtered, ...freshData];
                 setCandleData(newData);
-                // Save viewport before setData, restore shifted by prepend count
+
+                // Save visible range BEFORE setData
                 const rangeBefore = chartObj.timeScale().getVisibleLogicalRange();
                 const prependCount = filtered.length;
+
+                // setData rebuilds gapless maps — all old indices shift by prependCount
                 seriesObj.setData(newData);
                 if (volSeriesObj) volSeriesObj.setData(extractVolume(newData));
+
+                // Restore viewport — defer to next frame so LWC finishes internal layout
                 if (rangeBefore) {
-                    chartObj.timeScale().setVisibleLogicalRange({
-                        from: rangeBefore.from + prependCount,
-                        to: rangeBefore.to + prependCount
+                    const newFrom = rangeBefore.from + prependCount;
+                    const newTo = rangeBefore.to + prependCount;
+                    requestAnimationFrame(() => {
+                        try {
+                            chartObj.timeScale().setVisibleLogicalRange({ from: newFrom, to: newTo });
+                        } catch(_) {}
                     });
                 }
                 console.log(`[InfiniteScroll] ${sym} ${tf}: +${filtered.length} → ${newData.length}`);
@@ -3371,9 +3379,9 @@ function openCoinModal(sym) {
     const minMove = parseFloat((1 / Math.pow(10, prec)).toFixed(prec));
 
     const wmText = spGet('showWatermark', true) ? sym.replace('USDT', '/USDT') : '';
-    // Gapless chart — equally-spaced candles via custom horizontal scale behavior
-    modal._gapless = new GaplessHorzScaleBehavior();
-    modal.chart = LightweightCharts.createChartEx(chartEl, modal._gapless, {
+    // Standard chart (same as mini-charts — no gapless, crypto is 24/7)
+    modal._gapless = null;
+    modal.chart = LightweightCharts.createChart(chartEl, {
         autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: getGridOpts(),
@@ -3645,47 +3653,12 @@ async function loadModalChart(sym, tf) {
             (newData) => {
                 modal.candleData = newData;
                 if (drawCtx.source === 'modal') drawCtx.candleData = newData;
-            }
+            },
+            null // no gapless — standard time scale like mini-charts
         );
-        // Auto-load history in background (prepend chunks, no jumps)
-        setTimeout(async () => {
-            if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) return;
-            const TARGET = 20000;
-            let attempts = 0;
-            while (attempts < 14) {
-                if (!modal.chart || modal.currentSym !== sym || modal.currentTF !== tf) break;
-                const cd = modal.candleData;
-                if (!cd || cd.length >= TARGET) break;
-                const oldest = cd[0].time * 1000;
-                try {
-                    const res = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500&endTime=${oldest - 1}`);
-                    const json = await res.json();
-                    if (!Array.isArray(json) || json.length === 0) break;
-                    const olderData = parseKlines(json);
-                    const fresh = modal.candleData || cd;
-                    const filtered = olderData.filter(c => c.time < fresh[0].time);
-                    if (filtered.length === 0) break;
-                    const newData = [...filtered, ...fresh];
-                    modal.candleData = newData;
-                    if (drawCtx.source === 'modal') drawCtx.candleData = newData;
-                    // Save viewport, restore shifted by prepend count
-                    const mRangeBefore = modal.chart.timeScale().getVisibleLogicalRange();
-                    const mPrepend = filtered.length;
-                    modal.series.setData(newData);
-                    if (modal.volSeries) modal.volSeries.setData(extractVolume(newData));
-                    if (mRangeBefore) {
-                        modal.chart.timeScale().setVisibleLogicalRange({
-                            from: mRangeBefore.from + mPrepend,
-                            to: mRangeBefore.to + mPrepend
-                        });
-                    }
-                    console.log(`[Modal] ${sym} prepend +${filtered.length} → ${newData.length}`);
-                    attempts++;
-                    await new Promise(r => setTimeout(r, 100));
-                } catch(e) { break; }
-            }
-        }, 500);
-        console.log(`[Modal] ${sym} loaded ${data1.length} candles, background loading started`);
+        // History loads on-demand via infinite scroll (up to 20k candles)
+        // No auto-prepend — avoids conflicts with overlays and gapless scale
+        console.log(`[Modal] ${sym} loaded ${data1.length} candles, infinite scroll ready`);
     } catch (e) {
         if (e.name === 'AbortError') return; // Cancelled by new TF click — expected
         console.error('Modal chart error:', e);
