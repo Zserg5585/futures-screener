@@ -1796,7 +1796,7 @@ const start = async () => {
     push.init({ stmts: auth.stmts })
     // Init klines SQLite cache (before signals so liq_sweep can use it)
     klinesCache.initDB()
-    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
+    signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap, vpinScanner })
     alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
     depthStore.init({ stateManager, getProxyCached })
     vpinScanner.init({ bgetWithRetry, getProxyCached })

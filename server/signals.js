@@ -40,6 +40,12 @@ const FUNDING_SQUEEZE_NEG = -0.05  // trigger oi_funding_squeeze LONG (5x = shor
 const OI_DIV_TREND_PCT = 2.0       // min OI trend % over window for divergence
 const OI_DIV_PRICE_PCT = 1.0       // min price change % for divergence
 
+// VPIN toxicity thresholds
+const VPIN_THRESHOLD = 0.5          // emit signal when VPIN exceeds this
+const VPIN_BUY_LONG = 0.55          // buyPct > 55% → LONG
+const VPIN_SELL_SHORT = 0.45        // buyPct < 45% → SHORT
+const VPIN_SCAN_INTERVAL_MS = 60_000
+
 const liveSignals = []
 const MAX_LIVE = 200
 
@@ -67,6 +73,8 @@ let _klinesCache = null
 let _stateManager = null
 let _densityV2 = null
 let _persistenceMap = null
+let _vpinScanner = null
+let _vpinTimer = null
 
 // ticker/24hr helper — uses proxy cache then Bottleneck (maxConcurrent=50 supports weight=40)
 async function _fetchTicker24hr() {
@@ -77,7 +85,7 @@ async function _fetchTicker24hr() {
   return data
 }
 
-function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap }) {
+function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap, vpinScanner }) {
   _getProxyCached = getProxyCached
   _setProxyCached = setProxyCached
   _bgetWithRetry = bgetWithRetry
@@ -87,6 +95,7 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
   _stateManager = stateManager || null
   _densityV2 = densityV2 || null
   _persistenceMap = persistenceMap || null
+  _vpinScanner = vpinScanner || null
 
   _scanTimer = setInterval(scan, SCAN_INTERVAL_MS)
   _oiCvdTimer = setInterval(scanOiCvd, OI_CVD_INTERVAL_MS)
@@ -111,6 +120,12 @@ function init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, kline
     getNatrMap,
   })
 
+  // VPIN toxicity scanner (only if vpinScanner available)
+  if (_vpinScanner) {
+    _vpinTimer = setInterval(scanVPIN, VPIN_SCAN_INTERVAL_MS)
+    setTimeout(scanVPIN, 90_000) // 90s — wait for VPIN cache to populate
+  }
+
   log.info({ volInterval: SCAN_INTERVAL_MS / 1000, oiInterval: OI_CVD_INTERVAL_MS / 1000, liqInterval: LIQ_SWEEP_INTERVAL_MS / 1000, outcomeInterval: OUTCOME_CHECK_MS / 1000 }, 'Scanner started')
 }
 
@@ -134,6 +149,7 @@ function stop() {
   if (_oiCvdTimer) clearInterval(_oiCvdTimer)
   if (_liqSweepTimer) clearInterval(_liqSweepTimer)
   if (_outcomeTimer) clearInterval(_outcomeTimer)
+  if (_vpinTimer) clearInterval(_vpinTimer)
   stopChannelScanners()
   stopLiqCleanup()
 }
@@ -768,6 +784,68 @@ async function checkOutcomes() {
     }
   } catch (err) {
     log.error({ err: err.message }, 'Outcome check error')
+  }
+}
+
+// ======================== VPIN TOXICITY ========================
+
+function scanVPIN() {
+  if (!_vpinScanner) return
+  try {
+    const all = _vpinScanner.getAll()
+    const tickers = _getProxyCached('ticker24hr', 60_000)
+    const priceMap = {}
+    if (Array.isArray(tickers)) {
+      for (const t of tickers) priceMap[t.symbol] = parseFloat(t.lastPrice)
+    }
+
+    let emitted = 0
+    for (const entry of all) {
+      if (entry.vpin < VPIN_THRESHOLD) break // sorted desc, no more above threshold
+
+      const price = priceMap[entry.symbol] || 0
+      if (!price) continue
+
+      // Direction from buy/sell ratio
+      let direction = 'LONG'
+      let dirLabel = 'aggressive buying'
+      if (entry.buyPct < VPIN_SELL_SHORT) {
+        direction = 'SHORT'
+        dirLabel = 'aggressive selling'
+      } else if (entry.buyPct <= VPIN_BUY_LONG) {
+        direction = 'NEUTRAL'
+        dirLabel = 'direction unclear'
+      }
+
+      // Confidence: VPIN 0.5→50, 0.7→70, 0.9→90, cap 95
+      const confidence = Math.min(95, Math.round(40 + (entry.vpin - 0.4) * 100))
+
+      const buyPctFmt = (entry.buyPct * 100).toFixed(1)
+      const description = direction === 'NEUTRAL'
+        ? `VPIN ${entry.vpin.toFixed(3)} — high toxicity, ${dirLabel} (${buyPctFmt}% buy)`
+        : `VPIN ${entry.vpin.toFixed(3)} — ${dirLabel} (${buyPctFmt}% buy)`
+
+      emitSignal({
+        type: 'vpin_toxicity',
+        symbol: entry.symbol,
+        direction,
+        price,
+        confidence,
+        description,
+        metadata: {
+          subType: 'vpin_toxicity',
+          vpin: +entry.vpin.toFixed(4),
+          buyPct: +buyPctFmt,
+          sellPct: +((1 - entry.buyPct) * 100).toFixed(1),
+          totalVol: entry.totalVol,
+          buckets: entry.buckets,
+        },
+      })
+      emitted++
+    }
+    if (emitted) log.info({ emitted }, 'VPIN signals emitted')
+  } catch (err) {
+    log.error({ err: err.message }, 'VPIN scan error')
   }
 }
 
