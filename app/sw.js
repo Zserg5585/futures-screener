@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v39'
+const CACHE_NAME = 'fs-v40'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',

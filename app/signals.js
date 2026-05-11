@@ -40,7 +40,15 @@ const sigState = {
 // Restore saved type filter for display only
 try {
   const saved = localStorage.getItem('sig_type_filter')
-  if (saved) { const arr = JSON.parse(saved); if (Array.isArray(arr)) sigState.typeFilter = new Set(arr) }
+  if (saved) {
+    const arr = JSON.parse(saved)
+    if (Array.isArray(arr)) {
+      // Migration: add 'channel' type if saved before it existed
+      if (!arr.includes('channel')) arr.push('channel')
+      sigState.typeFilter = new Set(arr)
+      localStorage.setItem('sig_type_filter', JSON.stringify(arr))
+    }
+  }
 } catch {}
 fetch(`${SIG_API}/api/signals/live?limit=500&hours=24`)
   .then(r => r.json())
