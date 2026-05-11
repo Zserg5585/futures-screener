@@ -10,7 +10,7 @@ const log = createLogger('signals')
  * Outcome tracker: snapshots at 5m/15m/1h/4h/1d + MFE/MAE tracking
  */
 
-const { scanLiqSweep } = require('./liq-sweep')
+const { scanLiqSweep, stopCleanup: stopLiqCleanup } = require('./liq-sweep')
 const { initChannelScanners, stopChannelScanners } = require('./channel-signal')
 
 const SCAN_INTERVAL_MS = 60_000
@@ -134,6 +134,7 @@ function stop() {
   if (_liqSweepTimer) clearInterval(_liqSweepTimer)
   if (_outcomeTimer) clearInterval(_outcomeTimer)
   stopChannelScanners()
+  stopLiqCleanup()
 }
 
 // ======================== MARKET CONTEXT HELPERS ========================
@@ -206,7 +207,7 @@ function buildMarketContext(t, { natrMap, fundingMap, rank }) {
     volume24h: Math.round(volume24h),
     natr: natrMap[t.symbol] || null,
     trades24h: Number(t.count) || 0,
-    fundingRate: fundingMap[t.symbol] != null ? parseFloat((fundingMap[t.symbol] * 100).toFixed(4)) : null,
+    fundingPct: fundingMap[t.symbol] != null ? parseFloat((fundingMap[t.symbol] * 100).toFixed(4)) : null,
     pricePosition,
     marketRank: rank,
   }
@@ -565,26 +566,34 @@ async function scanOiCvd() {
           const oiLast = oiValues[oiValues.length - 1]
           const oiTrendPct = ((oiLast - oiFirst) / oiFirst) * 100
           const oiTrending = Math.abs(oiTrendPct) > OI_DIV_TREND_PCT
-          const priceTrending = Math.abs(change) > OI_DIV_PRICE_PCT
+
+          // Derive price change over the SAME window as OI (not 24h ticker change)
+          // price ≈ sumOpenInterestValue / sumOpenInterest
+          const oiValFirst = parseFloat(oiHist[0].sumOpenInterestValue || 0)
+          const oiValLast = parseFloat(oiHist[lastIdx].sumOpenInterestValue || 0)
+          const priceFirst = oiFirst > 0 ? oiValFirst / oiFirst : 0
+          const priceLast = oiLast > 0 ? oiValLast / oiLast : 0
+          const priceChangeSameWindow = priceFirst > 0 ? ((priceLast - priceFirst) / priceFirst) * 100 : change
+          const priceTrending = Math.abs(priceChangeSameWindow) > OI_DIV_PRICE_PCT
 
           if (oiTrending && priceTrending) {
             const oiTrendDir = oiTrendPct > 0 ? 'UP' : 'DOWN'
-            const priceTrendDir = change > 0 ? 'UP' : 'DOWN'
+            const priceTrendDir = priceChangeSameWindow > 0 ? 'UP' : 'DOWN'
 
             if (oiTrendDir !== priceTrendDir) {
               let divDirection, divDesc
               if (priceTrendDir === 'UP' && oiTrendDir === 'DOWN') {
                 divDirection = 'SHORT'
-                divDesc = `🔀 OI Divergence (exhaustion) — Price +${change.toFixed(1)}% but OI ${oiTrendPct.toFixed(1)}%`
+                divDesc = `🔀 OI Divergence (exhaustion) — Price +${priceChangeSameWindow.toFixed(1)}% but OI ${oiTrendPct.toFixed(1)}% (${oiHist.length}h)`
               } else {
                 divDirection = 'LONG'
-                divDesc = `🔀 OI Divergence (accumulation) — Price ${change.toFixed(1)}% but OI +${oiTrendPct.toFixed(1)}%`
+                divDesc = `🔀 OI Divergence (accumulation) — Price ${priceChangeSameWindow.toFixed(1)}% but OI +${oiTrendPct.toFixed(1)}% (${oiHist.length}h)`
               }
 
               // Confidence: stronger divergence = higher conf
               let divConf = 50
                 + Math.min(15, Math.abs(oiTrendPct) * 2)
-                + Math.min(10, Math.abs(change) * 2)
+                + Math.min(10, Math.abs(priceChangeSameWindow) * 2)
               if (regime.direction) {
                 const withTrend = (regime.direction === 'BULLISH' && divDirection === 'LONG') ||
                                   (regime.direction === 'BEARISH' && divDirection === 'SHORT')
@@ -600,7 +609,7 @@ async function scanOiCvd() {
                 description: divDesc,
                 metadata: {
                   oiTrendPct: parseFloat(oiTrendPct.toFixed(2)),
-                  priceChange: parseFloat(change.toFixed(2)),
+                  priceChange: parseFloat(priceChangeSameWindow.toFixed(2)),
                   oiCandles: oiHist.length,
                   subType: 'oi_divergence',
                   fundingPct: parseFloat(fundingPct.toFixed(4)),
@@ -613,23 +622,26 @@ async function scanOiCvd() {
         }
 
         // === OI FUNDING SQUEEZE contrarian signal ===
-        // OI spiking + extreme funding = one side overcrowded → trade against them
-        if (oiChangePct > OI_CHANGE_PCT) {
+        // Extreme funding = one side overcrowded → trade against them
+        // OI spike strengthens signal, but extreme funding alone is enough
+        {
           let sqDir = null, sqDesc = null
+          const oiLabel = oiChangePct > 0 ? `+${oiChangePct.toFixed(1)}` : oiChangePct.toFixed(1)
 
           if (fundingPct > FUNDING_SQUEEZE_POS) {
             sqDir = 'SHORT'
-            sqDesc = `⚡ Funding Squeeze — OI +${oiChangePct.toFixed(1)}%/1h + funding +${fundingPct.toFixed(3)}% (longs overcrowded)`
+            sqDesc = `⚡ Funding Squeeze — OI ${oiLabel}%/1h + funding +${fundingPct.toFixed(3)}% (longs overcrowded)`
           } else if (fundingPct < FUNDING_SQUEEZE_NEG) {
             sqDir = 'LONG'
-            sqDesc = `⚡ Funding Squeeze — OI +${oiChangePct.toFixed(1)}%/1h + funding ${fundingPct.toFixed(3)}% (shorts overcrowded)`
+            sqDesc = `⚡ Funding Squeeze — OI ${oiLabel}%/1h + funding ${fundingPct.toFixed(3)}% (shorts overcrowded)`
           }
 
           if (sqDir) {
             const fundingExtreme = Math.abs(fundingPct)
+            const oiBoost = oiChangePct > OI_CHANGE_PCT ? Math.min(10, (oiChangePct - OI_CHANGE_PCT) * 2) : 0
             let sqConf = 55
               + Math.min(15, fundingExtreme * 100)
-              + Math.min(10, (oiChangePct - OI_CHANGE_PCT) * 2)
+              + oiBoost
             if (regime.direction) {
               const withTrend = (regime.direction === 'BULLISH' && sqDir === 'LONG') ||
                                 (regime.direction === 'BEARISH' && sqDir === 'SHORT')
@@ -699,7 +711,8 @@ async function checkOutcomes() {
       const trackKey = sig.id
       let track = mfeTracker.get(trackKey)
       if (!track) {
-        track = { mfe: 0, mae: 0, createdAt: now }
+        // Restore from DB to survive PM2 restarts (avoid overwriting real MFE/MAE with 0)
+        track = { mfe: sig.mfe_pct || 0, mae: sig.mae_pct || 0, createdAt: now }
         mfeTracker.set(trackKey, track)
       }
       if (pnlNow > track.mfe) track.mfe = pnlNow
@@ -760,21 +773,30 @@ async function checkOutcomes() {
 // ======================== EMIT ========================
 
 function emitSignal({ type, symbol, direction, price, confidence, description, metadata, signalTime }) {
-  const key = `${type}:${symbol}`
+  // For channel signals, include subType in cooldown key so bounce/reversal/acceleration don't block each other
+  const subType = metadata?.subType
+  const dedupKey = (type === 'channel' && subType) ? `${subType}:${symbol}` : `${type}:${symbol}`
   const now = Date.now()
 
   // In-memory cooldown (fast path)
-  if (cooldowns.has(key) && now - cooldowns.get(key) < COOLDOWN_MS) return
+  if (cooldowns.has(dedupKey) && now - cooldowns.get(dedupKey) < COOLDOWN_MS) return
 
   // DB-based dedup (survives restarts)
   try {
-    const recent = _auth.db.prepare(
-      "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
-    ).get(type, symbol, Math.floor(COOLDOWN_MS / 60_000))
-    if (recent) { cooldowns.set(key, now); return }
+    let recent
+    if (type === 'channel' && subType) {
+      recent = _auth.db.prepare(
+        "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND json_extract(metadata, '$.subType') = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
+      ).get(type, symbol, subType, Math.floor(COOLDOWN_MS / 60_000))
+    } else {
+      recent = _auth.db.prepare(
+        "SELECT id FROM signal_log WHERE type = ? AND symbol = ? AND created_at > datetime('now', '-' || ? || ' minutes') LIMIT 1"
+      ).get(type, symbol, Math.floor(COOLDOWN_MS / 60_000))
+    }
+    if (recent) { cooldowns.set(dedupKey, now); return }
   } catch (e) { log.warn({ err: e.message }, 'DB dedup check failed') }
 
-  cooldowns.set(key, now)
+  cooldowns.set(dedupKey, now)
 
   const signal = {
     id: `${now}-${Math.random().toString(36).slice(2, 6)}`,
@@ -790,7 +812,9 @@ function emitSignal({ type, symbol, direction, price, confidence, description, m
   try {
     // Pass candle-based created_at to DB for accurate outcome tracking
     const dbTs = signal.created_at.replace('T', ' ').replace(/\.\d+Z$/, '')
-    _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata), dbTs)
+    const info = _auth.stmts.logSignal.run(type, symbol, direction, price, confidence, JSON.stringify(metadata), dbTs)
+    // Use DB rowid so push signalId matches API response id
+    signal.id = String(info.lastInsertRowid)
   } catch (err) {
     log.error({ err: err.message }, 'DB log error')
   }

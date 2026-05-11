@@ -309,7 +309,8 @@ describe('checkConfluence', () => {
 // ---- getTouchCount ----
 describe('getTouchCount', () => {
   it('counts approaches to upper band', () => {
-    const channel = { upper: 110, lower: 90, period: 50 }
+    // Flat channel: mid=100, sigma=5, BAND_MULT=2 → upper=110, lower=90
+    const channel = { upper: 110, lower: 90, period: 50, intercept: 100, slope: 0, sigma: 5 }
     // Create candles, some touching upper band
     const candles = Array.from({ length: 50 }, (_, i) => ({
       high: i % 10 === 0 ? 109.8 : 105, // every 10th candle touches upper zone
@@ -321,7 +322,7 @@ describe('getTouchCount', () => {
   })
 
   it('counts approaches to lower band', () => {
-    const channel = { upper: 110, lower: 90, period: 50 }
+    const channel = { upper: 110, lower: 90, period: 50, intercept: 100, slope: 0, sigma: 5 }
     const candles = Array.from({ length: 50 }, (_, i) => ({
       high: 105,
       low: i % 10 === 0 ? 90.2 : 95, // touches lower zone
@@ -332,7 +333,7 @@ describe('getTouchCount', () => {
   })
 
   it('requires min 3 candles between touches', () => {
-    const channel = { upper: 110, lower: 90, period: 10 }
+    const channel = { upper: 110, lower: 90, period: 10, intercept: 100, slope: 0, sigma: 5 }
     // All candles touch upper — but only counted every 3
     const candles = Array.from({ length: 10 }, () => ({
       high: 110, low: 95, close: 100,

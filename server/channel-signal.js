@@ -152,17 +152,20 @@ function computeRegressionChannel(closes, mult = BAND_MULT) {
 
 function getTouchCount(symbol, side, tf, channel, candles) {
   // Count approaches within the channel's period window
+  // Band position varies per candle due to slope: mid_i = intercept + slope * i
   const periodCandles = candles.slice(-channel.period)
-  const band = side === 'upper' ? channel.upper : channel.lower
-  const zone = band * (APPROACH_ZONE_PCT / 100)
+  const { intercept, slope, sigma } = channel
 
   let touches = 0
   let lastTouchIdx = -10 // prevent double-counting adjacent candles
   for (let i = 0; i < periodCandles.length; i++) {
     const c = periodCandles[i]
+    const midAtI = intercept + slope * i
+    const bandAtI = side === 'upper' ? midAtI + sigma * BAND_MULT : midAtI - sigma * BAND_MULT
+    const zone = Math.abs(bandAtI) * (APPROACH_ZONE_PCT / 100)
     const nearBand = side === 'upper'
-      ? (c.high >= band - zone)
-      : (c.low <= band + zone)
+      ? (c.high >= bandAtI - zone)
+      : (c.low <= bandAtI + zone)
     if (nearBand && i - lastTouchIdx >= 3) { // min 3 candles between touches
       touches++
       lastTouchIdx = i

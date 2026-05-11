@@ -3,6 +3,11 @@
  * Fetches live signals + outcome stats
  */
 
+// Fallback if global escAttr (from index.html) isn't loaded yet
+if (typeof escAttr === 'undefined') {
+  window.escAttr = (s) => String(s).replace(/[&"'<>]/g, c => ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[c])
+}
+
 const SIG_API = window.location.origin
 const SIG_REFRESH_MS = 30_000
 
@@ -219,7 +224,7 @@ function renderOutcomeStats() {
     const wrColor = wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444'
     const avgPnl = s.avg_pnl != null ? (s.avg_pnl > 0 ? '+' : '') + s.avg_pnl.toFixed(2) + '%' : '—'
     const pnlColor = s.avg_pnl > 0 ? '#22c55e' : '#ef4444'
-    const icon = { volume_spike: '📊', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡', liq_sweep: '🎯' }[s.type] || '•'
+    const icon = { volume_spike: '📊', oi_cvd: '🔮', oi_divergence: '🔀', oi_funding_squeeze: '⚡', liq_sweep: '🎯', channel: '📐' }[s.type] || '•'
 
     return `<div class="sig-outcome-card">
       <div class="sig-outcome-type">${icon} ${formatTypeShort(s.type)}</div>
@@ -325,7 +330,7 @@ function renderSignals() {
         <span class="sig-conf-text" style="color:${confColor}">${Math.round(s.confidence)}%</span>
         <span class="sig-conf-bar" style="width:${Math.round(s.confidence) * 0.5}px; background:${confColor};"></span>
       </td>
-      <td class="sig-desc-col" style="color:var(--text-muted); font-size:11px;">${s.description || ''}</td>
+      <td class="sig-desc-col" style="color:var(--text-muted); font-size:11px;">${escAttr(s.description || '')}</td>
     </tr>`
   }).join('')
 }
@@ -401,7 +406,8 @@ function selectSignal(id) {
   if (meta.volume24h !== undefined && s.type !== 'channel') metaItems.push({ key: 'Volume 24h', val: fmtVol(meta.volume24h) })
   if (meta.natr !== undefined && meta.natr !== null) metaItems.push({ key: 'NATR', val: `${meta.natr}%`, color: meta.natr >= 2 ? '#f59e0b' : meta.natr >= 1 ? '#22c55e' : '#94a3b8' })
   if (meta.trades24h !== undefined && meta.trades24h > 0) metaItems.push({ key: 'Trades 24h', val: meta.trades24h >= 1e6 ? (meta.trades24h / 1e6).toFixed(1) + 'M' : meta.trades24h >= 1e3 ? (meta.trades24h / 1e3).toFixed(0) + 'K' : meta.trades24h.toString() })
-  if (meta.fundingRate !== undefined && meta.fundingRate !== null) metaItems.push({ key: 'Funding', val: `${meta.fundingRate > 0 ? '+' : ''}${meta.fundingRate}%`, color: meta.fundingRate > 0.01 ? '#22c55e' : meta.fundingRate < -0.01 ? '#ef4444' : '#94a3b8' })
+  const _fr = meta.fundingPct ?? meta.fundingRate // fundingPct is canonical, fundingRate is legacy fallback
+  if (_fr !== undefined && _fr !== null) metaItems.push({ key: 'Funding', val: `${_fr > 0 ? '+' : ''}${_fr}%`, color: _fr > 0.01 ? '#22c55e' : _fr < -0.01 ? '#ef4444' : '#94a3b8' })
   if (meta.pricePosition !== undefined) metaItems.push({ key: '24h Range', val: `${meta.pricePosition}%`, color: meta.pricePosition >= 80 ? '#22c55e' : meta.pricePosition <= 20 ? '#ef4444' : '#94a3b8' })
   if (meta.marketRank !== undefined) metaItems.push({ key: 'Vol Rank', val: `#${meta.marketRank}` })
 
@@ -430,7 +436,7 @@ function selectSignal(id) {
 
     <div class="sig-detail-section">
       <div class="sig-detail-label">Description</div>
-      <div class="sig-detail-value">${s.description || '—'}</div>
+      <div class="sig-detail-value">${escAttr(s.description || '—')}</div>
     </div>
 
     <div class="sig-detail-section">
@@ -496,7 +502,7 @@ function formatType(type, metadata) {
 }
 
 function formatTypeShort(type) {
-  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD', oi_divergence: 'OI Diver', oi_funding_squeeze: 'Fund Squeeze', liq_sweep: 'Liq Sweep' }
+  const map = { volume_spike: 'Vol Spike', oi_cvd: 'OI+CVD', oi_divergence: 'OI Diver', oi_funding_squeeze: 'Fund Squeeze', liq_sweep: 'Liq Sweep', channel: 'Channel' }
   return map[type] || type
 }
 
@@ -552,6 +558,18 @@ async function subscribeToPush() {
 
     // Check existing subscription
     let sub = await reg.pushManager.getSubscription()
+
+    // Auto-resubscribe if VAPID key rotated
+    if (sub && sub.options?.applicationServerKey) {
+      const subKey = btoa(String.fromCharCode(...new Uint8Array(sub.options.applicationServerKey)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+      if (subKey !== data.key) {
+        console.log('[Push] VAPID key rotated, resubscribing...')
+        await sub.unsubscribe()
+        sub = null
+      }
+    }
+
     if (!sub) {
       const permission = await Notification.requestPermission()
       if (permission !== 'granted') {
@@ -573,7 +591,7 @@ async function subscribeToPush() {
       minRatio: sp ? (sp.get('signalMinRatio') || 2) : 2,
       watchlistOnly: sp ? sp.get('signalWatchlistOnly') : false,
       watchlist: sp?.watchlist ? [...sp.watchlist] : [],
-      types: sp ? (sp.get('signalTypes') || []) : [],
+      types: sigState.typeFilter.size > 0 ? [...sigState.typeFilter] : [],
       channelTimeframes: sp ? ['5m', '15m', '1h'].filter(tf => sp.get('channelTf' + tf)) : ['5m', '15m', '1h'],
     }
 
@@ -646,6 +664,12 @@ function notifyNewSignals(newList) {
   }
 
   if (fresh.length === 0) return
+
+  // Only play sound for signals matching user's type filter
+  const relevant = sigState.typeFilter.size > 0
+    ? fresh.filter(s => sigState.typeFilter.has(s.type))
+    : []
+  if (relevant.length === 0) return
 
   // Play sound if enabled (push notification is handled by SW from server push)
   if (sp?.get('signalSound') && sp?.get('signalNotifications')) {

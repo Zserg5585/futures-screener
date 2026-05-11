@@ -577,6 +577,10 @@ const LIQ_SWEEP_SCAN_DELAY_MS = 150
 const MIN_VOL_24H = 30_000_000
 const MIN_VOLUME_RATIO = 5 // sweep candle volume must be >= 5x average
 
+// Funding rate thresholds for extreme context (%, must match signals.js FUNDING_GATE values)
+const FUNDING_EXTREME_POS = 0.03  // longs overcrowded → SHORT sweep stronger
+const FUNDING_EXTREME_NEG = -0.02 // shorts overcrowded → LONG sweep stronger
+
 // In-memory 1h klines cache for sweep scanner (avoids 72 API calls per scan)
 // Refreshed every 30min per symbol (1h candles don't change fast)
 const _1hCache = new Map() // symbol → { candles, ts }
@@ -766,8 +770,8 @@ async function scanLiqSweep(deps) {
         const fundingPct = rawFunding != null ? rawFunding * 100 : null
         let fundingContext = null
         if (fundingPct != null) {
-          if (fundingPct > 0.03 && pinBar.direction === 'SHORT') fundingContext = 'extreme'
-          else if (fundingPct < -0.02 && pinBar.direction === 'LONG') fundingContext = 'extreme'
+          if (fundingPct > FUNDING_EXTREME_POS && pinBar.direction === 'SHORT') fundingContext = 'extreme'
+          else if (fundingPct < FUNDING_EXTREME_NEG && pinBar.direction === 'LONG') fundingContext = 'extreme'
         }
 
         // --- 6. Score confidence ---
@@ -841,8 +845,7 @@ module.exports = {
   confirmSweep,
   scoreConfidence,
   scanLiqSweep,
-  // cleanup interval — register in _intervals for graceful shutdown
-  _cleanupInterval,
+  stopCleanup: () => clearInterval(_cleanupInterval),
   // internal — exported for testing
   mergeLevels,
   clusterLevels,
