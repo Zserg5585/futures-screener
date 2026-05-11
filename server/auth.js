@@ -130,6 +130,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_signal_log_type ON signal_log(type);
   CREATE INDEX IF NOT EXISTS idx_signal_log_symbol ON signal_log(symbol);
   CREATE INDEX IF NOT EXISTS idx_signal_log_created ON signal_log(created_at);
+  CREATE INDEX IF NOT EXISTS idx_signal_log_dedup ON signal_log(type, symbol, created_at);
 
   -- Push notification subscriptions (Web Push API)
   CREATE TABLE IF NOT EXISTS push_subscriptions (

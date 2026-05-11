@@ -30,12 +30,13 @@ const CVD_MIN_SKEW = 0.1      // |buySellRatio - 1| must exceed this
 const PRICE_DIVERGENCE_PCT = 0.5  // price move threshold for divergence detection
 
 // Funding rate thresholds for OI gating (values in %, e.g. 0.03 = 0.03%)
-const FUNDING_GATE_LONGS = 0.03    // skip oi_longs when funding > +0.03%
-const FUNDING_GATE_SHORTS = -0.02  // skip oi_shorts when funding < -0.02%
+// Neutral funding = 0.01%. Crypto markets are naturally net-long.
+const FUNDING_GATE_LONGS = 0.04    // skip oi_longs when funding > +0.04% (4x neutral)
+const FUNDING_GATE_SHORTS = -0.03  // skip oi_shorts when funding < -0.03% (3x neg neutral)
 const FUNDING_EXTREME_POS = 0.04   // boost oi_liquidation confidence
-const FUNDING_EXTREME_NEG = -0.03  // boost oi_squeeze confidence
-const FUNDING_SQUEEZE_POS = 0.05   // trigger oi_funding_squeeze SHORT
-const FUNDING_SQUEEZE_NEG = -0.03  // trigger oi_funding_squeeze LONG
+const FUNDING_EXTREME_NEG = -0.04  // boost oi_squeeze confidence (symmetric with POS)
+const FUNDING_SQUEEZE_POS = 0.07   // trigger oi_funding_squeeze SHORT (7x = genuinely overcrowded)
+const FUNDING_SQUEEZE_NEG = -0.05  // trigger oi_funding_squeeze LONG (5x = shorts genuinely overcrowded)
 const OI_DIV_TREND_PCT = 2.0       // min OI trend % over window for divergence
 const OI_DIV_PRICE_PCT = 1.0       // min price change % for divergence
 
@@ -425,7 +426,7 @@ async function scanOiCvd() {
         let buySellRatio = null
 
         if (Array.isArray(takerData) && takerData.length > 0) {
-          buySellRatio = parseFloat(takerData[0].buySellRatio || 1)
+          buySellRatio = parseFloat(takerData[0].buySellRatio) || 1
           cvdDirection = buySellRatio > 1 ? 'BUY' : 'SELL'
         }
 

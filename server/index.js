@@ -4,6 +4,7 @@ const fastify = require('fastify')({ logger: false })
 
 // CORS — whitelist known origins only
 const ALLOWED_ORIGINS = [
+  'https://screen.clkway.online',
   'https://futures-screener.szhub.space',
   'http://localhost:3200',
   'http://127.0.0.1:3200'
@@ -436,9 +437,9 @@ async function getKlinesWithStats(symbol) {
     return result
 
   } catch (err) {
-    // On failure: return stale cache if available (better than dropping symbol)
+    // On failure: return stale cache if available (better than dropping symbol), max 10min
     const stale = klinesStatsCache.get(symbol)
-    if (stale) {
+    if (stale && (Date.now() - stale.ts) < 600_000) {
       log.warn({ symbol, err: err.message, staleSec: ((Date.now() - stale.ts) / 1000).toFixed(0) }, 'Klines stats failed, using stale cache')
       return stale.data
     }
