@@ -25,9 +25,10 @@ const depthHeatmapUI = (() => {
   let _renderRAF = null
 
   const FETCH_INTERVAL = 5000   // fetch new data every 5s
-  const BID_COLOR = [0, 200, 100]   // green
-  const ASK_COLOR = [220, 50, 50]   // red
-  const MAX_OPACITY = 0.55
+  const BID_COLOR = [0, 180, 120]   // softer green
+  const ASK_COLOR = [200, 60, 60]   // softer red
+  const MAX_OPACITY = 0.28          // much more transparent — candles visible through
+  const MIN_INTENSITY = 0.04        // skip noise below 4% of max
 
   /**
    * Attach heatmap overlay to modal chart
@@ -37,7 +38,7 @@ const depthHeatmapUI = (() => {
     if (!modal || !modal.chart || !modal.currentSym) return
     _modal = modal
     _enabled = true
-    _visible = lsGet('heatmapVisible', false)
+    _visible = false  // always off by default, user clicks button to enable
 
     // Create canvas overlay
     const chartEl = document.getElementById('cmChartBody')
@@ -96,7 +97,6 @@ const depthHeatmapUI = (() => {
    */
   function toggle() {
     _visible = !_visible
-    lsSet('heatmapVisible', _visible)
     if (_visible) {
       showCanvas()
       fetchData()
@@ -143,27 +143,43 @@ const depthHeatmapUI = (() => {
   }
 
   /**
-   * Render heatmap cells on canvas
+   * Render heatmap cells on canvas — Bookmap-style
+   * Each 5s snapshot = separate column for maximum detail
    */
   function render() {
     if (!_ctx || !_canvas || !_modal || !_modal.chart || !_modal.series || !_data || !_visible) return
     if (!_data.snapshots || !_data.snapshots.length) return
 
-    const chart = _modal.chart
     const series = _modal.series
-    const gapless = _modal._gapless
-    const timeScale = chart.timeScale()
+    const timeScale = _modal.chart.timeScale()
     const w = _canvas.width
     const h = _canvas.height
 
     _ctx.clearRect(0, 0, w, h)
 
-    // Get visible time range
-    const visRange = timeScale.getVisibleLogicalRange()
-    if (!visRange) return
+    // Get visible time range in seconds for linear coordinate mapping
+    const range = timeScale.getVisibleRange()
+    if (!range) return
+    const fromTs = typeof range.from === 'number' ? range.from : 0
+    const toTs = typeof range.to === 'number' ? range.to : 0
+    if (toTs <= fromTs) return
+
+    // Establish px/sec ratio using two anchor points from chart
+    const x1 = timeScale.timeToCoordinate(fromTs)
+    const x2 = timeScale.timeToCoordinate(toTs)
+    if (x1 == null || x2 == null || x2 <= x1) return
+    const pxPerSec = (x2 - x1) / (toTs - fromTs)
 
     const bucketSize = _data.bucketSize || 1
     const snapshots = _data.snapshots
+
+    // Cell width: calculate from actual snapshot interval (typically 10s) + slight overlap
+    let snapIntervalSec = 10
+    if (snapshots.length >= 2) {
+      const dt = (snapshots[1].ts - snapshots[0].ts) / 1000
+      if (dt > 0 && dt < 120) snapIntervalSec = dt
+    }
+    const cellW = Math.max(2, Math.ceil(snapIntervalSec * pxPerSec) + 1)
 
     // Find global max notional for normalization
     let maxNotional = 0
@@ -173,58 +189,13 @@ const depthHeatmapUI = (() => {
     }
     if (maxNotional <= 0) return
 
-    // Calculate cell width based on time spacing
-    // Each snapshot is ~5s apart; map to chart coordinates
-    const totalBars = visRange.to - visRange.from
-    if (totalBars <= 0) return
+    // Render each snapshot as its own column (true bookmap detail)
+    for (const snap of snapshots) {
+      const snapSec = Math.floor(snap.ts / 1000)
+      const xCoord = x1 + (snapSec - fromTs) * pxPerSec
+      if (xCoord < -cellW || xCoord > w + cellW) continue
 
-    // For each snapshot, find its position on the chart's time axis
-    // Snapshots have real timestamps; we need to map them to the gapless index space
-    for (let si = 0; si < snapshots.length; si++) {
-      const snap = snapshots[si]
-      const snapTs = Math.floor(snap.ts / 1000) // convert to seconds
-
-      // Map timestamp to chart coordinate
-      // For gapless charts, we need to find the nearest candle index
-      let xCoord = null
-      if (gapless && gapless._timeMap) {
-        // Find closest mapped timestamp
-        const idx = gapless._timeMap.get(snapTs)
-        if (idx != null) {
-          xCoord = timeScale.logicalToCoordinate(idx)
-        } else {
-          // Find nearest timestamp in the map
-          let closest = null, closestDist = Infinity
-          for (const [ts, i] of gapless._timeMap) {
-            const dist = Math.abs(ts - snapTs)
-            if (dist < closestDist) { closestDist = dist; closest = i }
-          }
-          if (closest != null && closestDist < 300) { // within 5min
-            xCoord = timeScale.logicalToCoordinate(closest)
-          }
-        }
-      }
-
-      if (xCoord == null || xCoord < 0 || xCoord > w) continue
-
-      // Cell width: approximate from bar spacing
-      const nextSnap = snapshots[si + 1]
-      let cellW = 6 // default
-      if (nextSnap && gapless && gapless._timeMap) {
-        const nextTs = Math.floor(nextSnap.ts / 1000)
-        let nextIdx = null
-        for (const [ts, i] of gapless._timeMap) {
-          if (Math.abs(ts - nextTs) < 300) { nextIdx = i; break }
-        }
-        if (nextIdx != null) {
-          const nextX = timeScale.logicalToCoordinate(nextIdx)
-          if (nextX != null && nextX > xCoord) cellW = Math.max(2, nextX - xCoord)
-        }
-      }
-
-      // Draw bid cells (green)
       drawSide(snap.bids, BID_COLOR, xCoord, cellW, bucketSize, maxNotional, series)
-      // Draw ask cells (red)
       drawSide(snap.asks, ASK_COLOR, xCoord, cellW, bucketSize, maxNotional, series)
     }
   }
@@ -241,15 +212,16 @@ const depthHeatmapUI = (() => {
       const yCoord = series.priceToCoordinate(price)
       if (yCoord == null || yCoord < 0 || yCoord > _canvas.height) continue
 
-      // Map next price bucket to get cell height
+      // Map next price bucket to get cell height (+1px overlap for seamless fill)
       const yCoord2 = series.priceToCoordinate(price + bucketSize)
       let cellH = 4 // default minimum
       if (yCoord2 != null) {
-        cellH = Math.max(2, Math.abs(yCoord2 - yCoord))
+        cellH = Math.ceil(Math.abs(yCoord2 - yCoord)) + 1
       }
 
       // Intensity based on relative notional
       const intensity = Math.min(1, notional / maxNotional)
+      if (intensity < MIN_INTENSITY) continue  // skip noise
       // Apply sqrt for better visual distribution (small walls still visible)
       const alpha = Math.sqrt(intensity) * MAX_OPACITY
 

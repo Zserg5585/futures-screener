@@ -46,7 +46,7 @@ const auth = require('./auth');
 const signals = require('./signals');
 const push = require('./push');
 const alertChecker = require('./alerts');
-const depthHeatmap = require('./depth-heatmap');
+const depthStore = require('./depth-store');
 const vpinScanner = require('./vpin');
 const fillKill = require('./fill-kill');
 const resilience = require('./resilience')
@@ -728,18 +728,18 @@ fastify.get('/api/alerts/types', async () => {
   return { success: true, types: alertChecker.CONDITION_TYPES }
 })
 
-// Depth Heatmap (Bookmap-style)
+// Depth Heatmap (Bookmap-style, SQLite 4h history)
 fastify.get('/api/depth-heatmap', async (req) => {
-  const { symbol } = req.query
+  const { symbol, hours } = req.query
   if (!symbol) return { success: false, error: 'symbol required' }
-  depthHeatmap.track(symbol)
-  const data = depthHeatmap.getData(symbol)
+  depthStore.track(symbol)
+  const data = depthStore.getSnapshots(symbol, Math.min(parseFloat(hours) || 4, 4))
   if (!data || !data.count) return { success: true, data: { symbol, snapshots: [], count: 0, message: 'Collecting data, retry in 10s' } }
   return { success: true, data }
 })
 
 fastify.get('/api/depth-heatmap/stats', async () => {
-  return { success: true, data: depthHeatmap.getStats() }
+  return { success: true, data: depthStore.getStats() }
 })
 
 // VPIN — Volume-Synchronized Probability of Informed Trading
@@ -838,7 +838,7 @@ fastify.get('/symbols', async () => {
 
 fastify.get('/depth/:symbol', async (req, reply) => {
   const symbol = String(req.params.symbol || '').toUpperCase()
-  if (!/^[A-Z0-9]{2,20}$/.test(symbol)) {
+  if (!symbol || symbol.length < 2 || symbol.length > 40 || /[\s<>"';&|]/.test(symbol)) {
     reply.code(400)
     return { error: 'Invalid symbol format' }
   }
@@ -1338,7 +1338,7 @@ fastify.get('/api/klines', async (req, reply) => {
   const limit = Math.min(Number(req.query.limit || 200), 1500)
   const endTime = req.query.endTime ? Number(req.query.endTime) : null
   const startTime = req.query.startTime ? Number(req.query.startTime) : null
-  if (!symbol || !/^[A-Z0-9]{2,20}$/.test(symbol)) {
+  if (!symbol || symbol.length < 2 || symbol.length > 40 || /[\s<>"';&|]/.test(symbol)) {
     reply.code(400)
     return { error: 'Invalid or missing symbol' }
   }
@@ -1392,14 +1392,24 @@ fastify.get('/api/klines', async (req, reply) => {
     const age = Date.now() / 1000 - (latestTime || 0)
     if (age < 300) {
       const rows = klinesCache.getCandles(symbol, interval, limit)
-      const result = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
-      // Stale cache (>60s) — return immediately but trigger background refresh
-      if (age >= 60) {
-        bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=3`)
-          .then(data => { if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data) })
-          .catch(() => {})
+      // Check for gaps in cached data (e.g. after PM2 restart)
+      const TF_SEC = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400 }
+      const step = TF_SEC[interval] || 300
+      let hasGap = false
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i].time - rows[i - 1].time > step * 1.5) { hasGap = true; break }
       }
-      return result
+      if (!hasGap) {
+        const result = rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+        // Stale cache (>60s) — return immediately but trigger background refresh
+        if (age >= 60) {
+          bgetWithRetry(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=3`)
+            .then(data => { if (Array.isArray(data)) klinesCache.storeCandles(symbol, interval, data) })
+            .catch(() => {})
+        }
+        return result
+      }
+      // Gap detected — fall through to Binance fetch (backfills cache)
     }
   }
 
@@ -1787,7 +1797,7 @@ const start = async () => {
     klinesCache.initDB()
     signals.init({ getProxyCached, setProxyCached, bgetWithRetry, auth, push, klinesCache, stateManager, densityV2, persistenceMap: densityV2PersistenceMap })
     alertChecker.init({ auth, push, getProxyCached, bgetWithRetry })
-    depthHeatmap.init({ stateManager, getProxyCached })
+    depthStore.init({ stateManager, getProxyCached })
     vpinScanner.init({ bgetWithRetry, getProxyCached })
     fillKill.init({ stateManager, getProxyCached })
     resilience.init({ stateManager, getProxyCached })
@@ -1839,7 +1849,7 @@ async function gracefulShutdown(signal) {
     // Stop signal scanners
     try { signals.stop() } catch (_) {}
     try { alertChecker.stop() } catch (_) {}
-    try { depthHeatmap.stop() } catch (_) {}
+    try { depthStore.stop() } catch (_) {}
     try { vpinScanner.stop() } catch (_) {}
     try { fillKill.stop() } catch (_) {}
     try { resilience.stop() } catch (_) {}
