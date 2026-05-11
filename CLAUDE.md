@@ -95,8 +95,22 @@ See `.env.example` — key ones: `JWT_SECRET`, `VAPID_*`, `PORT` (default 3200)
 
 ---
 
-## 🚨 Deploy Rules (CRITICAL — May 7 lesson)
+## 🚨 Deploy Rules (CRITICAL — May 7 + May 11 lessons)
 
+### Environments
+| | Dev (основной сервер) | Prod (Malaysia VPS) |
+|---|---|---|
+| **Домен** | `futures-screener.szhub.space` | `screen.clkway.online` |
+| **IP** | 76.13.138.220:3200 | 72.62.247.119:3200 |
+| **Push** | OFF | ON (только прод!) |
+| **Назначение** | Разработка, тесты | Юзеры, стабильная версия |
+
+### Deploy to Prod
+- **Скрипт:** `./deploy-prod.sh` (тесты → dry-run → confirm → rsync → pm2 restart → health check → log)
+- **Deploy log:** `deploys/log.txt` — всегда видно что на проде
+- **После серверных коммитов Бендер спрашивает:** "Деплоить на прод?"
+
+### Rules
 - **Frontend changes (JS/CSS/HTML):** `rsync` to prod + `curl -X POST http://localhost:3200/api/reload-static`
 - **NEVER PM2 restart for frontend-only changes** — каждый рестарт = Binance IP бан 20-45 мин!
 - **Server code changes:** PM2 restart unavoidable, expect 1-2 min ban

@@ -1,0 +1,1 @@
+2026-05-11 18:04 PDT | 06a61ba | feat: vpin_toxicity signal — emit when VPIN > 0.5 (includes 8 commits: crash loop fix, bottleneck bypass, heatmap v2, signal audit, cache bust, CORS audit, VPIN)
