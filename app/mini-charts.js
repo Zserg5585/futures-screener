@@ -3248,7 +3248,7 @@ function attachRuler(chartEl, chart, series) {
         rulerActive = false;
         chart.applyOptions({
             handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
-            handleScale: { mouseWheel: true, pinch: true }
+            handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } }
         });
         // Remove after 3 seconds
         setTimeout(removeOverlay, 3000);
@@ -3318,8 +3318,12 @@ function openCoinModal(sym) {
         <span class="cm-metric" id="cmResilience" title="Book Stability — depth consistency near price (1=stable, 0=fragile)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><path d="M1 8L3 4L5 6L7 3L9 5" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="1" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="0.8"/></svg>Stab —</span>
     `;
 
-    // Fetch VPIN for this symbol (async, updates metric when ready)
-    fetch('/api/vpin?symbol=' + sym).then(r => r.json()).then(j => {
+    // Fetch metrics with AbortController (cancelled on modal close)
+    if (modal._metricsController) modal._metricsController.abort();
+    modal._metricsController = new AbortController();
+    const metricSignal = modal._metricsController.signal;
+
+    fetch('/api/vpin?symbol=' + sym, { signal: metricSignal }).then(r => r.json()).then(j => {
         const vpinEl = document.getElementById('cmVpin');
         if (!vpinEl || !j.success || !j.data || j.data.vpin == null) return;
         const v = j.data.vpin;
@@ -3327,8 +3331,7 @@ function openCoinModal(sym) {
         vpinEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><circle cx="5" cy="5" r="4" stroke="${color}" stroke-width="1.2" fill="none"/><path d="M5 3v4M5 3l2 2M5 3l-2 2" stroke="${color}" stroke-width="1"/></svg><span style="color:${color}">VPIN: ${v.toFixed(3)}</span>`;
     }).catch(() => {});
 
-    // Fetch Fill:Kill ratio for this symbol (async)
-    fetch('/api/fill-kill?symbol=' + sym).then(r => r.json()).then(j => {
+    fetch('/api/fill-kill?symbol=' + sym, { signal: metricSignal }).then(r => r.json()).then(j => {
         const fkEl = document.getElementById('cmFillKill');
         if (!fkEl || !j.success || !j.data || j.data.fillKillRatio == null) return;
         const r = j.data.fillKillRatio;
@@ -3336,8 +3339,7 @@ function openCoinModal(sym) {
         fkEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:2px"><rect x="1" y="1" width="8" height="8" rx="1" stroke="${color}" stroke-width="1" fill="none"/><path d="M3 5h4" stroke="${color}" stroke-width="1.2"/></svg><span style="color:${color}">F:K ${r.toFixed(2)}</span> <span style="color:#64748b;font-size:10px">(${j.data.filled}/${j.data.total})</span>`;
     }).catch(() => {});
 
-    // Fetch resilience (book stability) for this symbol (async)
-    fetch('/api/resilience?symbol=' + sym).then(r => r.json()).then(j => {
+    fetch('/api/resilience?symbol=' + sym, { signal: metricSignal }).then(r => r.json()).then(j => {
         const stEl = document.getElementById('cmResilience');
         if (!stEl || !j.success || !j.data || j.data.stability == null) return;
         const s = j.data.stability;
@@ -3448,9 +3450,16 @@ function openCoinModal(sym) {
         modal.legend.innerHTML = `<span style="color:${color}">O <b>${o}</b></span><span style="color:${color}">H <b>${h}</b></span><span style="color:${color}">L <b>${l}</b></span><span style="color:${color}">C <b>${c}</b></span><span style="color:var(--text-muted)">V <b>${v}</b></span>`;
     });
 
+    // Reset drawing tool to cursor on every modal open (prevents locked interaction)
+    draw.activeTool = 'cursor';
+    draw.clickCount = 0;
     setDrawCtxModal();
     renderDrawToolbar();
-    setupDrawingHandlers();
+    // Only attach drawing handlers once per DOM element (they use global state via DC()/DS())
+    if (!chartEl._drawHandlersAttached) {
+        setupDrawingHandlers();
+        chartEl._drawHandlersAttached = true;
+    }
     updateModalCursor();
 
     // ---- Price Alert: bell button + right-click on price scale ----
@@ -3464,20 +3473,24 @@ function openCoinModal(sym) {
     });
     chartEl.appendChild(alertBtn);
 
-    // Right-click on price scale → add alert at that price
-    chartEl.addEventListener('contextmenu', (e) => {
-        const rect = chartEl.getBoundingClientRect();
-        const xInChart = e.clientX - rect.left;
-        // Right ~60px is the price scale area
-        if (xInChart < rect.width - 65) return;
-        e.preventDefault();
-        const yInChart = e.clientY - rect.top;
-        try {
-            const price = modal.series.coordinateToPrice(yInChart);
-            if (!price || isNaN(price) || price <= 0) return;
-            showAlertContextMenu(e.clientX, e.clientY, price, sym);
-        } catch {}
-    });
+    // Right-click on price scale → add alert at that price (attach once)
+    if (!chartEl._contextmenuAttached) {
+        chartEl._contextmenuAttached = true;
+        chartEl.addEventListener('contextmenu', (e) => {
+            if (!modal.series || !modal.currentSym) return;
+            const rect = chartEl.getBoundingClientRect();
+            const xInChart = e.clientX - rect.left;
+            // Right ~60px is the price scale area
+            if (xInChart < rect.width - 65) return;
+            e.preventDefault();
+            const yInChart = e.clientY - rect.top;
+            try {
+                const price = modal.series.coordinateToPrice(yInChart);
+                if (!price || isNaN(price) || price <= 0) return;
+                showAlertContextMenu(e.clientX, e.clientY, price, modal.currentSym);
+            } catch {}
+        });
+    }
 
     // Load and render alert lines after chart data is loaded
     priceAlertStore.loadFromServer().then(() => {
@@ -5804,6 +5817,9 @@ function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
     removeRulerMeasurement();
+    // Abort pending fetches (klines + metrics)
+    if (_modalLoadController) { _modalLoadController.abort(); _modalLoadController = null; }
+    if (modal._metricsController) { modal._metricsController.abort(); modal._metricsController = null; }
     // Cleanup ResizeObserver
     if (modal._resizeObserver) { modal._resizeObserver.disconnect(); modal._resizeObserver = null; }
     // Detach library DrawingManager
@@ -5887,6 +5903,8 @@ function initModalEvents() {
         el('cmTFButtons').querySelectorAll('.mc-tf-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         modal.currentTF = btn.dataset.tf;
+        // Detach heatmap before chart rebuild (prevents ghost canvas)
+        if (typeof depthHeatmapUI !== 'undefined') try { depthHeatmapUI.detach() } catch(_){}
         // Clear chart objects before reload (data stays in localStorage)
         draw.drawings.forEach(d => removeDrawingFromChart(d));
         draw.drawings = [];
