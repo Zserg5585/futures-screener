@@ -105,7 +105,11 @@ function sendPushForSignal(signal) {
       if (filters.minConfidence && signal.confidence < filters.minConfidence) continue
       if (filters.minRatio && signal.type === 'volume_spike' &&
           (signal.metadata?.ratio || 0) < filters.minRatio) continue
-      if (filters.types?.length && !filters.types.includes(signal.type)) continue
+      if (filters.types?.length) {
+        // oi_cvd signals have subType (oi_longs, oi_shorts, etc.) — check both
+        const subType = signal.type === 'oi_cvd' && signal.metadata?.subType
+        if (!filters.types.includes(signal.type) && !(subType && filters.types.includes(subType))) continue
+      }
       if (filters.watchlistOnly && filters.watchlist?.length &&
           !filters.watchlist.includes(signal.symbol)) continue
       // Channel TF filter: skip if user disabled this timeframe

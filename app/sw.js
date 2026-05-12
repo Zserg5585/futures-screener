@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fs-v40'
+const CACHE_NAME = 'fs-v48'
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -13,7 +13,11 @@ const STATIC_ASSETS = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then(c => c.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then(c =>
+      Promise.all(STATIC_ASSETS.map(url =>
+        fetch(url, { cache: 'no-store' }).then(res => c.put(url, res))
+      ))
+    )
   )
   self.skipWaiting()
 })
@@ -98,9 +102,9 @@ self.addEventListener('fetch', (e) => {
     )
     return
   }
-  // Static assets — network first (bypass HTTP cache), fallback to SW cache
+  // Static assets — network first (force bypass HTTP cache + nginx immutable), fallback to SW cache
   e.respondWith(
-    fetch(e.request, { cache: 'no-cache' }).then(res => {
+    fetch(e.request, { cache: 'no-store' }).then(res => {
       const clone = res.clone()
       caches.open(CACHE_NAME).then(c => c.put(e.request, clone))
       return res

@@ -2179,7 +2179,7 @@ body.theme-amoled {
     min-height: 0;
     position: relative;
     background: #060a12;
-    touch-action: none;
+    touch-action: manipulation;
 }
 
 /* Chart loader / error overlay */

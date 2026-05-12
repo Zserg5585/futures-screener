@@ -1156,7 +1156,7 @@ function createChartInstance(sym) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 32, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false, rightOffset: 50, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
         handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
     });
@@ -3393,7 +3393,7 @@ function openCoinModal(sym) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 50, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 50, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
         handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
     });
@@ -4290,9 +4290,13 @@ const draw = {
     overlay: null,   // canvas overlay for live preview
     selected: null,  // selected drawing id
     dragging: false, // drag in progress
+    dragMode: 'move', // 'move' | 'resize'
+    dragAnchorIdx: -1, // which anchor point is being resized
     justDragged: false, // suppress click after drag
     dragStartY: 0,
     dragStartPrice: 0,
+    dragStartTime: 0,
+    dragOrigData: null,  // snapshot of d.data at drag start
 };
 
 // Drawing Context — points to the active chart for drawing tools
@@ -4394,6 +4398,7 @@ function updateModalCursor() {
     const chart = drawCtx.chart || modal.chart;
     if (draw.activeTool === 'cursor') {
         chartEl.style.cursor = '';
+        chartEl.style.touchAction = '';
         if (chart) {
             chart.applyOptions({
                 handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
@@ -4402,10 +4407,11 @@ function updateModalCursor() {
         }
     } else {
         chartEl.style.cursor = 'crosshair';
+        chartEl.style.touchAction = 'none';
         if (chart) {
             chart.applyOptions({
-                handleScroll: false,
-                handleScale: false,
+                handleScroll: { mouseWheel: false, pressedMouseMove: false, vertTouchDrag: false, horzTouchDrag: false },
+                handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false },
             });
         }
     }
@@ -4493,16 +4499,132 @@ function removeDrawingFromChart(d) {
     }
 }
 
+// ---- Selection overlay (anchor handles + highlight) ----
+let _selOverlay = null;   // canvas element
+let _selUnsub = null;     // unsubscribe from chart range changes
+
+function renderSelectionOverlay() {
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
+    if (!_selOverlay || !_s || !_c || !chartEl) return;
+    const d = draw.drawings.find(dd => dd.id === draw.selected);
+    if (!d || !d.data) { removeSelectionOverlay(); return; }
+
+    const w = chartEl.clientWidth, h = chartEl.clientHeight;
+    _selOverlay.width = w;
+    _selOverlay.height = h;
+    const ctx = _selOverlay.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+
+    const clr = d.color || '#5b9cf6';
+    const anchors = []; // [{x, y}] — collect anchor points for circles
+
+    if (d.type === 'hline') {
+        const ly = _s.priceToCoordinate(d.data.price);
+        if (ly === null) return;
+        // Highlight line
+        ctx.strokeStyle = clr; ctx.lineWidth = 3; ctx.globalAlpha = 0.4;
+        ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
+        ctx.globalAlpha = 1;
+        anchors.push({ x: 40, y: ly }, { x: w - 40, y: ly });
+    }
+    if (d.type === 'ray') {
+        const ly = _s.priceToCoordinate(d.data.price);
+        const sx = _c.timeScale().timeToCoordinate(d.data.startTime);
+        if (ly === null) return;
+        const startX = sx !== null ? sx : 0;
+        ctx.strokeStyle = clr; ctx.lineWidth = 3; ctx.globalAlpha = 0.4;
+        ctx.beginPath(); ctx.moveTo(startX, ly); ctx.lineTo(w, ly); ctx.stroke();
+        ctx.globalAlpha = 1;
+        anchors.push({ x: startX, y: ly }, { x: w - 20, y: ly });
+    }
+    if (d.type === 'trendline') {
+        const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        if (x1 === null || y1 === null || x2 === null || y2 === null) return;
+        ctx.strokeStyle = clr; ctx.lineWidth = 3; ctx.globalAlpha = 0.4;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.globalAlpha = 1;
+        anchors.push({ x: x1, y: y1 }, { x: x2, y: y2 });
+    }
+    if (d.type === 'rect') {
+        const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        if (x1 === null || y1 === null || x2 === null || y2 === null) return;
+        const xMin = Math.min(x1, x2), xMax = Math.max(x1, x2);
+        const yMin = Math.min(y1, y2), yMax = Math.max(y1, y2);
+        ctx.strokeStyle = clr; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.4;
+        ctx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
+        ctx.globalAlpha = 1;
+        anchors.push({ x: xMin, y: yMin }, { x: xMax, y: yMin }, { x: xMin, y: yMax }, { x: xMax, y: yMax });
+    }
+    if (d.type === 'fib') {
+        const diff = d.data.p2 - d.data.p1;
+        const rawLevels = d.data.levels || fibConfig.load();
+        for (const item of rawLevels) {
+            const lvl = typeof item === 'number' ? item : item.level;
+            const fibPrice = d.data.p1 + diff * lvl;
+            const ly = _s.priceToCoordinate(fibPrice);
+            if (ly === null) continue;
+            ctx.strokeStyle = clr; ctx.lineWidth = 2; ctx.globalAlpha = 0.3;
+            ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        if (y1 !== null) anchors.push({ x: 40, y: y1 });
+        if (y2 !== null) anchors.push({ x: 40, y: y2 });
+    }
+
+    // Draw anchor circles
+    for (const a of anchors) {
+        ctx.fillStyle = '#fff'; ctx.strokeStyle = clr; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(a.x, a.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+}
+
+function showSelectionOverlay() {
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
+    const _c = drawCtx.chart || modal.chart;
+    if (!chartEl || !_c) return;
+    removeSelectionOverlay();
+    const canvas = document.createElement('canvas');
+    canvas.className = 'sel-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:55;';
+    chartEl.appendChild(canvas);
+    _selOverlay = canvas;
+    renderSelectionOverlay();
+    // Re-render on zoom/scroll
+    try {
+        const unsub = _c.timeScale().subscribeVisibleLogicalRangeChange(() => {
+            if (_selOverlay) renderSelectionOverlay();
+        });
+        _selUnsub = unsub;
+    } catch (_) {}
+}
+
+function removeSelectionOverlay() {
+    if (_selUnsub) { try { _selUnsub(); } catch (_) {} _selUnsub = null; }
+    if (_selOverlay) { _selOverlay.remove(); _selOverlay = null; }
+}
+
 function selectDrawing(id) {
     draw.selected = id;
     const d = draw.drawings.find(dd => dd.id === id);
     if (!d) return;
     showDrawingPanel(d);
+    showSelectionOverlay();
 }
 
 function deselectDrawing() {
     draw.selected = null;
     hideDrawingPanel();
+    removeSelectionOverlay();
 }
 
 function showDrawingPanel(d) {
@@ -4842,35 +4964,126 @@ function changeDrawingColor(id, color) {
     showDrawingPanel(d); // refresh panel
 }
 
-// Find drawing near a price (for click-to-select)
-function findDrawingNearPrice(price) {
-    if (!(drawCtx.series || modal.series)) return null;
-    const threshold = Math.abs(price) * 0.005; // 0.5% tolerance
+// Point-to-segment distance in pixels
+function ptSegDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
 
-    for (const d of draw.drawings) {
-        if (d.type === 'hline' && d.data) {
-            if (Math.abs(d.data.price - price) < threshold) return d;
+// 2D hit detection — find drawing at pixel coordinates (relative to chartEl)
+function findDrawingAtPoint(px, py) {
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_s || !_c) return null;
+    const HIT = 8; // px tolerance
+
+    // Reverse order: last drawn = on top → gets priority
+    for (let i = draw.drawings.length - 1; i >= 0; i--) {
+        const d = draw.drawings[i];
+        if (!d.data) continue;
+
+        if (d.type === 'hline') {
+            const ly = _s.priceToCoordinate(d.data.price);
+            if (ly !== null && Math.abs(py - ly) < HIT) return d;
         }
-        if (d.type === 'ray' && d.data) {
-            if (Math.abs(d.data.price - price) < threshold) return d;
+        if (d.type === 'ray') {
+            const ly = _s.priceToCoordinate(d.data.price);
+            const sx = _c.timeScale().timeToCoordinate(d.data.startTime);
+            if (ly !== null && Math.abs(py - ly) < HIT) {
+                if (sx === null || px >= sx - HIT) return d;
+            }
         }
-        if (d.type === 'fib' && d.data) {
+        if (d.type === 'trendline') {
+            const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+            const y1 = _s.priceToCoordinate(d.data.p1);
+            const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+            const y2 = _s.priceToCoordinate(d.data.p2);
+            if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+                if (ptSegDist(px, py, x1, y1, x2, y2) < HIT) return d;
+            }
+        }
+        if (d.type === 'rect') {
+            const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+            const y1 = _s.priceToCoordinate(d.data.p1);
+            const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+            const y2 = _s.priceToCoordinate(d.data.p2);
+            if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+                const xMin = Math.min(x1, x2), xMax = Math.max(x1, x2);
+                const yMin = Math.min(y1, y2), yMax = Math.max(y1, y2);
+                // Near border or inside
+                if (px >= xMin - HIT && px <= xMax + HIT && py >= yMin - HIT && py <= yMax + HIT) return d;
+            }
+        }
+        if (d.type === 'fib') {
             const diff = d.data.p2 - d.data.p1;
             const rawLevels = d.data.levels || fibConfig.load();
             for (const item of rawLevels) {
                 const lvl = typeof item === 'number' ? item : item.level;
                 const fibPrice = d.data.p1 + diff * lvl;
-                if (Math.abs(fibPrice - price) < threshold) return d;
+                const ly = _s.priceToCoordinate(fibPrice);
+                if (ly !== null && Math.abs(py - ly) < HIT) return d;
             }
-        }
-        if (d.type === 'rect' && d.data) {
-            // Select if price is near top or bottom border
-            if (Math.abs(d.data.p1 - price) < threshold || Math.abs(d.data.p2 - price) < threshold) return d;
-            // Or if price is inside the rectangle
-            if (price >= Math.min(d.data.p1, d.data.p2) && price <= Math.max(d.data.p1, d.data.p2)) return d;
         }
     }
     return null;
+}
+
+// Legacy wrapper for backward compat (price-only)
+function findDrawingNearPrice(price) {
+    const _s = drawCtx.series || modal.series;
+    if (!_s) return null;
+    const py = _s.priceToCoordinate(price);
+    if (py === null) return null;
+    // Use center-x of chart as px (full-width hit for price-only calls)
+    const chartEl = drawCtx.chartEl || el('cmChartBody');
+    const cx = chartEl ? chartEl.clientWidth / 2 : 400;
+    return findDrawingAtPoint(cx, py);
+}
+
+// Get pixel positions of anchor points for a drawing
+function getDrawingAnchors(d) {
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_s || !_c || !d.data) return [];
+    if (d.type === 'trendline') {
+        const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+            return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+        }
+    }
+    if (d.type === 'rect') {
+        const x1 = _c.timeScale().timeToCoordinate(d.data.t1);
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const x2 = _c.timeScale().timeToCoordinate(d.data.t2);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+            return [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x1, y: y2 }, { x: x2, y: y2 }];
+        }
+    }
+    if (d.type === 'fib') {
+        const y1 = _s.priceToCoordinate(d.data.p1);
+        const y2 = _s.priceToCoordinate(d.data.p2);
+        const anchors = [];
+        if (y1 !== null) anchors.push({ x: 40, y: y1 });
+        if (y2 !== null) anchors.push({ x: 40, y: y2 });
+        return anchors;
+    }
+    return [];
+}
+
+// Find anchor index at pixel point, returns -1 if none
+function findAnchorAtPoint(px, py, d) {
+    const anchors = getDrawingAnchors(d);
+    for (let i = 0; i < anchors.length; i++) {
+        if (Math.hypot(px - anchors[i].x, py - anchors[i].y) < 12) return i;
+    }
+    return -1;
 }
 
 // Save current drawings to localStorage
@@ -4950,10 +5163,42 @@ function setupDrawingHandlers(targetEl) {
     const DD = () => drawCtx.candleData || modal.candleData;
     const DTF = () => drawCtx.tf || modal.currentTF;
 
+    // Get time from pixel X — extrapolates for future area (beyond last candle)
+    function getTimeFromX(x) {
+        const _c = DC();
+        if (!_c) return null;
+        const data = DD();
+        if (!data || data.length < 2) {
+            return _c.timeScale().coordinateToTime(x);
+        }
+        const last = data[data.length - 1];
+        const prev = data[data.length - 2];
+        const lastX = _c.timeScale().timeToCoordinate(last.time);
+        const prevX = _c.timeScale().timeToCoordinate(prev.time);
+        if (lastX === null || prevX === null) {
+            return _c.timeScale().coordinateToTime(x);
+        }
+        // If x is beyond the last candle — ALWAYS extrapolate (coordinateToTime snaps to last bar)
+        if (x > lastX + 2) {
+            const pxPerBar = lastX - prevX;
+            if (pxPerBar <= 0) return null;
+            const step = last.time - prev.time;
+            const barsAhead = (x - lastX) / pxPerBar;
+            return Math.round(last.time + barsAhead * step);
+        }
+        // Within data range — use LWC's coordinate mapping
+        const t = _c.timeScale().coordinateToTime(x);
+        return t !== null ? t : null;
+    }
+
     // Snap price to nearest OHLC of closest candle (magnet mode)
     function snapToCandle(time, price) {
         const data = DD();
         if (!data || data.length === 0) return { time, price };
+
+        // Don't snap time if it's beyond the last candle (future area)
+        const lastTime = data[data.length - 1].time;
+        if (time > lastTime) return { time, price };
 
         // Binary search for closest candle by time
         let lo = 0, hi = data.length - 1;
@@ -4986,19 +5231,20 @@ function setupDrawingHandlers(targetEl) {
     }
 
     // Unified handler for both click and touch
-    function handleDrawClick(clientX, clientY) {
+    function handleDrawClick(clientX, clientY, fromTouch) {
         const _c = drawCtx.chart || modal.chart;
         const _s = drawCtx.series || modal.series;
         if (!_c || !_s) return;
         if (draw.activeTool === 'cursor') return;
-        // If library DrawingManager is handling this tool, don't use custom handlers
-        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler' && draw.activeTool !== 'alert') return;
+        // Desktop: DM handles drawing via chart.subscribeClick, skip custom handler to avoid duplicates
+        // Touch: always use custom handler (LWC touch is blocked, DM can't receive touch events)
+        if (!fromTouch && typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler' && draw.activeTool !== 'alert') return;
 
         const rect = chartEl.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
         let price = _s.coordinateToPrice(y);
-        let time = _c.timeScale().coordinateToTime(x);
+        let time = getTimeFromX(x);
         if (price === null || time === null) return;
 
         // Magnet snap to nearest OHLC
@@ -5104,7 +5350,7 @@ function setupDrawingHandlers(targetEl) {
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
                 let price = _sc.coordinateToPrice(y);
-                let time = _cc.timeScale().coordinateToTime(x);
+                let time = getTimeFromX(x);
                 if (price !== null && time !== null) {
                     if (drawMagnet) { const snapped = snapToCandle(time, price); price = snapped.price; time = snapped.time; }
                     removeRulerMeasurement();
@@ -5117,56 +5363,33 @@ function setupDrawingHandlers(targetEl) {
                 }
                 return;
             }
-            // Select/deselect drawing
+            // Select/deselect drawing (2D hit detection)
             const rect2 = chartEl.getBoundingClientRect();
-            const y2 = e.clientY - rect2.top;
-            const price2 = _sc ? _sc.coordinateToPrice(y2) : null;
-            if (price2 !== null) {
-                const found = findDrawingNearPrice(price2);
-                if (found) {
-                    selectDrawing(found.id);
-                } else {
-                    deselectDrawing();
-                }
+            const px2 = e.clientX - rect2.left;
+            const py2 = e.clientY - rect2.top;
+            const found = findDrawingAtPoint(px2, py2);
+            if (found) {
+                selectDrawing(found.id);
+            } else {
+                deselectDrawing();
             }
             return;
         }
         handleDrawClick(e.clientX, e.clientY);
     });
 
-    // Mobile touch — use touchend so we get final position
+    // Mobile touch — cursor mode only (drawing/drag handled in capture handlers above)
     chartEl.addEventListener('touchend', (e) => {
-        if (draw.dragging) {
-            draw.dragging = false;
-            draw.justDragged = true;
-            persistDrawings();
-            updateModalCursor();
-            return;
-        }
+        if (draw.dragging) { endDrag(); return; }
         if (draw.activeTool === 'cursor') {
-            // Select drawing on tap
             const touch = e.changedTouches[0];
             if (!touch) return;
             const tRect = chartEl.getBoundingClientRect();
-            const tY = touch.clientY - tRect.top;
-            const tPrice = (drawCtx.series || modal.series)?.coordinateToPrice(tY) ?? null;
-            if (tPrice !== null) {
-                const found = findDrawingNearPrice(tPrice);
-                if (found) {
-                    selectDrawing(found.id);
-                } else {
-                    deselectDrawing();
-                }
-            }
-            return;
+            const tPx = touch.clientX - tRect.left;
+            const tPy = touch.clientY - tRect.top;
+            const found = findDrawingAtPoint(tPx, tPy);
+            if (found) { selectDrawing(found.id); } else { deselectDrawing(); }
         }
-        // If library DrawingManager handles this tool — don't preventDefault,
-        // let native touch→click conversion happen so chart.subscribeClick fires for the library
-        if (typeof DM !== 'undefined' && DM && DM.isActive() && draw.activeTool !== 'ruler' && draw.activeTool !== 'alert') return;
-        e.preventDefault();
-        const touch = e.changedTouches[0];
-        if (!touch) return;
-        handleDrawClick(touch.clientX, touch.clientY);
     }, { passive: false });
 
     // Touch→mouse proxy for library DrawingManager drag (library only listens to mouse events)
@@ -5187,147 +5410,206 @@ function setupDrawingHandlers(targetEl) {
         chartEl.dispatchEvent(new MouseEvent('mouseup', { clientX: t.clientX, clientY: t.clientY, bubbles: true }));
     }, { passive: true });
 
-    // Drag support for hline and ray — mousedown
-    chartEl.addEventListener('mousedown', (e) => {
-        if (draw.activeTool !== 'cursor' || draw.selected === null) return;
+    // Freeze/unfreeze chart scroll during drawing drag
+    const _freezeChart = () => {
+        const ce = drawCtx.chartEl || el('cmChartBody');
+        if (ce) ce.style.touchAction = 'none';
+        if (DC()) DC().applyOptions({
+            handleScroll: { mouseWheel: false, pressedMouseMove: false, vertTouchDrag: false, horzTouchDrag: false },
+            handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false },
+        });
+    };
+    const _unfreezeChart = () => {
+        const ce = drawCtx.chartEl || el('cmChartBody');
+        if (ce) ce.style.touchAction = '';
+        if (DC()) DC().applyOptions({
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
+            handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { price: true, time: true }, axisDoubleClickReset: { price: true, time: true } },
+        });
+    };
+
+    // Drag support for ALL drawing types — mousedown
+    function initDrag(px, py, e) {
+        if (draw.activeTool !== 'cursor' || draw.selected === null) return false;
         const d = draw.drawings.find(dd => dd.id === draw.selected);
-        if (!d || d.locked || (d.type !== 'hline' && d.type !== 'ray')) return;
+        if (!d || d.locked) return false;
 
-        const rect = chartEl.getBoundingClientRect();
-        const y = e.clientY - rect.top;
-        const price = DS() ? DS().coordinateToPrice(y) : null;
-        if (price === null) return;
-        const dragPrice = d.data.price;
-        const threshold = Math.abs(dragPrice) * 0.005;
-        if (Math.abs(price - dragPrice) > threshold) return;
+        // Check anchor hit first (resize mode)
+        const anchorIdx = findAnchorAtPoint(px, py, d);
+        if (anchorIdx >= 0) {
+            if (e) e.preventDefault();
+            draw.dragging = true;
+            draw.dragMode = 'resize';
+            draw.dragAnchorIdx = anchorIdx;
+            draw.dragOrigData = JSON.parse(JSON.stringify(d.data));
+            _freezeChart();
+            return true;
+        }
 
-        e.preventDefault();
+        // Check body hit (move mode)
+        const hit = findDrawingAtPoint(px, py);
+        if (!hit || hit.id !== d.id) return false;
+
+        if (e) e.preventDefault();
         draw.dragging = true;
-        draw.dragStartY = e.clientY;
-        draw.dragStartPrice = dragPrice;
-        if (DC()) DC().applyOptions({ handleScroll: false, handleScale: false });
+        draw.dragMode = 'move';
+        draw.dragAnchorIdx = -1;
+        draw.dragStartPrice = DS() ? DS().coordinateToPrice(py) : 0;
+        draw.dragStartTime = getTimeFromX(px) || 0;
+        draw.dragOrigData = JSON.parse(JSON.stringify(d.data));
+        _freezeChart();
+        return true;
+    }
+
+    chartEl.addEventListener('mousedown', (e) => {
+        const rect = chartEl.getBoundingClientRect();
+        initDrag(e.clientX - rect.left, e.clientY - rect.top, e);
     });
 
-    // Drag — mousemove
-    chartEl.addEventListener('mousemove', (e) => {
-        if (draw.dragging && draw.selected !== null) {
-            const d = draw.drawings.find(dd => dd.id === draw.selected);
-            if (!d || (d.type !== 'hline' && d.type !== 'ray')) return;
-            const rect = chartEl.getBoundingClientRect();
-            const y = e.clientY - rect.top;
-            const newPrice = DS() ? DS().coordinateToPrice(y) : null;
-            if (newPrice === null) return;
+    // Drag — mousemove (move + resize)
+    function handleDragMove(px, py) {
+        if (!draw.dragging || draw.selected === null) return;
+        const d = draw.drawings.find(dd => dd.id === draw.selected);
+        if (!d) return;
+        const newPrice = DS() ? DS().coordinateToPrice(py) : null;
+        const newTime = getTimeFromX(px);
+        if (newPrice === null) return;
+        const orig = draw.dragOrigData;
 
-            if (d.type === 'hline') {
-                try { DS().removePriceLine(d.priceLine); } catch(ex) {}
-                d.priceLine = DS().createPriceLine({
-                    price: newPrice, color: d.color, lineWidth: 2, lineStyle: 0,
-                    axisLabelVisible: true, title: '',
-                });
-                d.data.price = newPrice;
-            } else if (d.type === 'ray') {
-                if (d.lineSeries) {
-                    try { DC().removeSeries(d.lineSeries); } catch(ex) {}
-                }
-                const startTime = d.data.startTime;
-                const farTime = startTime + 365 * 24 * 3600;
-                const ls = DC().addSeries(LightweightCharts.LineSeries, {
-                    color: d.color, lineWidth: 2,
-                    crosshairMarkerVisible: false, lastValueVisible: false,
-                    priceLineVisible: false, pointMarkersVisible: false,
-                });
-                ls.setData([
-                    { time: startTime, value: newPrice },
-                    { time: farTime, value: newPrice },
-                ]);
-                d.lineSeries = ls;
-                d.data.price = newPrice;
+        if (draw.dragMode === 'resize') {
+            // Resize: move only the dragged anchor point
+            const idx = draw.dragAnchorIdx;
+            if (d.type === 'trendline') {
+                if (idx === 0) { d.data.t1 = newTime || orig.t1; d.data.p1 = newPrice; }
+                else { d.data.t2 = newTime || orig.t2; d.data.p2 = newPrice; }
+            } else if (d.type === 'rect') {
+                // anchors: 0=(t1,p1) 1=(t2,p1) 2=(t1,p2) 3=(t2,p2)
+                const nt = newTime || (idx < 2 ? orig.t1 : orig.t2);
+                if (idx === 0)      { d.data.t1 = nt; d.data.p1 = newPrice; }
+                else if (idx === 1) { d.data.t2 = nt; d.data.p1 = newPrice; }
+                else if (idx === 2) { d.data.t1 = nt; d.data.p2 = newPrice; }
+                else                { d.data.t2 = nt; d.data.p2 = newPrice; }
+            } else if (d.type === 'fib') {
+                if (idx === 0) d.data.p1 = newPrice;
+                else d.data.p2 = newPrice;
             }
+        } else {
+            // Move: shift all points by delta
+            const dp = newPrice - draw.dragStartPrice;
+            const dt = (newTime && draw.dragStartTime) ? newTime - draw.dragStartTime : 0;
+            if (d.type === 'hline') {
+                d.data.price = orig.price + dp;
+            } else if (d.type === 'ray') {
+                d.data.price = orig.price + dp;
+                d.data.startTime = orig.startTime + dt;
+            } else if (d.type === 'trendline') {
+                d.data.t1 = orig.t1 + dt; d.data.p1 = orig.p1 + dp;
+                d.data.t2 = orig.t2 + dt; d.data.p2 = orig.p2 + dp;
+            } else if (d.type === 'rect') {
+                d.data.t1 = orig.t1 + dt; d.data.p1 = orig.p1 + dp;
+                d.data.t2 = orig.t2 + dt; d.data.p2 = orig.p2 + dp;
+            } else if (d.type === 'fib') {
+                d.data.p1 = orig.p1 + dp;
+                d.data.p2 = orig.p2 + dp;
+            } else { return; }
         }
+
+        removeDrawingVisuals(d);
+        recreateDrawingVisuals(d);
+        renderSelectionOverlay();
+    }
+
+    chartEl.addEventListener('mousemove', (e) => {
+        if (!draw.dragging) return;
+        const rect = chartEl.getBoundingClientRect();
+        handleDragMove(e.clientX - rect.left, e.clientY - rect.top);
     });
 
     // Drag — mouseup
-    chartEl.addEventListener('mouseup', () => {
-        if (draw.dragging) {
-            draw.dragging = false;
-            draw.justDragged = true;
-            persistDrawings();
-            updateModalCursor();
-        }
-    });
+    function endDrag() {
+        if (!draw.dragging) return;
+        draw.dragging = false;
+        draw.justDragged = true;
+        draw.dragOrigData = null;
+        draw.dragMode = 'move';
+        draw.dragAnchorIdx = -1;
+        persistDrawings();
+        updateModalCursor();
+        _unfreezeChart();
+    }
 
-    // Touch drag for hline and ray
+    chartEl.addEventListener('mouseup', endDrag);
+
+    // Touch: capture phase on chartEl fires BEFORE LWC's canvas handlers.
+    // stopPropagation prevents LWC from seeing touch → no chart panning.
+    // ALL drawing/drag touch logic runs HERE (bubble handlers won't fire after stopPropagation).
+    // Cursor mode: no blocking → events flow to LWC + bubble handlers normally.
+
     chartEl.addEventListener('touchstart', (e) => {
-        if (draw.activeTool !== 'cursor' || draw.selected === null) return;
-        const d = draw.drawings.find(dd => dd.id === draw.selected);
-        if (!d || d.locked || (d.type !== 'hline' && d.type !== 'ray')) return;
-
         const touch = e.touches[0];
+        if (!touch) return;
         const rect = chartEl.getBoundingClientRect();
-        const y = touch.clientY - rect.top;
-        const price = DS() ? DS().coordinateToPrice(y) : null;
-        if (price === null) return;
-        const dragPrice = d.data.price;
-        const threshold = Math.abs(dragPrice) * 0.008;
-        if (Math.abs(price - dragPrice) > threshold) return;
-
-        e.preventDefault();
-        draw.dragging = true;
-        if (DC()) DC().applyOptions({ handleScroll: false, handleScale: false });
-    }, { passive: false });
+        const px = touch.clientX - rect.left;
+        const py = touch.clientY - rect.top;
+        if (initDrag(px, py, e)) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        if (draw.activeTool !== 'cursor') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, { capture: true, passive: false });
 
     chartEl.addEventListener('touchmove', (e) => {
         if (draw.dragging && draw.selected !== null) {
             e.preventDefault();
-            const d = draw.drawings.find(dd => dd.id === draw.selected);
-            if (!d || (d.type !== 'hline' && d.type !== 'ray')) return;
+            e.stopPropagation();
             const touch = e.touches[0];
             const rect = chartEl.getBoundingClientRect();
-            const y = touch.clientY - rect.top;
-            const newPrice = DS() ? DS().coordinateToPrice(y) : null;
-            if (newPrice === null) return;
-
-            if (d.type === 'hline') {
-                try { DS().removePriceLine(d.priceLine); } catch(ex) {}
-                d.priceLine = DS().createPriceLine({
-                    price: newPrice, color: d.color, lineWidth: 2, lineStyle: 0,
-                    axisLabelVisible: true, title: '',
-                });
-                d.data.price = newPrice;
-            } else if (d.type === 'ray') {
-                if (d.lineSeries) try { DC().removeSeries(d.lineSeries); } catch(ex) {}
-                const startTime = d.data.startTime;
-                const farTime = startTime + 365 * 24 * 3600;
-                const ls = DC().addSeries(LightweightCharts.LineSeries, {
-                    color: d.color, lineWidth: 2,
-                    crosshairMarkerVisible: false, lastValueVisible: false,
-                    priceLineVisible: false, pointMarkersVisible: false,
-                });
-                ls.setData([
-                    { time: startTime, value: newPrice },
-                    { time: farTime, value: newPrice },
-                ]);
-                d.lineSeries = ls;
-                d.data.price = newPrice;
+            handleDragMove(touch.clientX - rect.left, touch.clientY - rect.top);
+            return;
+        }
+        if (draw.activeTool !== 'cursor') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (draw.clickCount >= 1) {
+                const touch = e.touches[0];
+                if (touch) {
+                    const rect = chartEl.getBoundingClientRect();
+                    renderDrawPreview(touch.clientX - rect.left, touch.clientY - rect.top);
+                }
             }
         }
-    }, { passive: false });
+    }, { capture: true, passive: false });
 
-    // Live preview for 2-click tools
-    chartEl.addEventListener('mousemove', (e) => {
+    chartEl.addEventListener('touchend', (e) => {
+        if (draw.dragging) {
+            e.stopPropagation();
+            endDrag();
+            return;
+        }
+        if (draw.activeTool !== 'cursor') {
+            e.stopPropagation();
+            const touch = e.changedTouches[0];
+            if (touch) handleDrawClick(touch.clientX, touch.clientY, true);
+            return;
+        }
+    }, { capture: true, passive: false });
+
+    // Live preview for 2-click tools (shared by mouse + touch)
+    function renderDrawPreview(x, y) {
         if (!DC() || !DS()) return;
         if (draw.clickCount !== 1) return;
         if (draw.activeTool !== 'trendline' && draw.activeTool !== 'fib' && draw.activeTool !== 'rect' && draw.activeTool !== 'ruler') return;
 
-        const rect = chartEl.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        let y = e.clientY - rect.top;
         let price = DS().coordinateToPrice(y);
         if (price === null) return;
 
         // Snap to nearest candle OHLC (if magnet enabled)
         if (drawMagnet) {
-            const curTime = DC().timeScale().coordinateToTime(x);
+            const curTime = getTimeFromX(x);
             if (curTime !== null) {
                 const snapped = snapToCandle(curTime, price);
                 price = snapped.price;
@@ -5383,7 +5665,7 @@ function setupDrawingHandlers(targetEl) {
             ctx.fillRect(startX2, startY2, w, h);
         } else if (draw.activeTool === 'ruler') {
             // Preview ruler measurement
-            const curTime = DC().timeScale().coordinateToTime(x);
+            const curTime = getTimeFromX(x);
             const priceDiff = price - draw.startPrice;
             const pctDiff = draw.startPrice !== 0 ? (priceDiff / draw.startPrice * 100) : 0;
             const isUp = priceDiff >= 0;
@@ -5475,7 +5757,93 @@ function setupDrawingHandlers(targetEl) {
             ctx.lineTo(x, y);
             ctx.stroke();
         }
+    }
+
+    chartEl.addEventListener('mousemove', (e) => {
+        if (draw.clickCount !== 1) return;
+        const rect = chartEl.getBoundingClientRect();
+        renderDrawPreview(e.clientX - rect.left, e.clientY - rect.top);
     });
+
+    chartEl.addEventListener('touchmove', (e) => {
+        if (draw.clickCount !== 1) return;
+        if (draw.dragging) return; // drag has its own handler
+        const touch = e.touches[0];
+        if (!touch) return;
+        const rect = chartEl.getBoundingClientRect();
+        renderDrawPreview(touch.clientX - rect.left, touch.clientY - rect.top);
+    }, { passive: true });
+}
+
+// ============================================
+// Drawing visual helpers (remove + recreate for drag/move)
+// ============================================
+function removeDrawingVisuals(d) {
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (d.priceLine && _s) { try { _s.removePriceLine(d.priceLine); } catch (_) {} d.priceLine = null; }
+    if (d.lineSeries && _c) { try { _c.removeSeries(d.lineSeries); } catch (_) {} d.lineSeries = null; }
+    if (d.rectLines && _c) { d.rectLines.forEach(ls => { try { _c.removeSeries(ls); } catch (_) {} }); d.rectLines = null; }
+    if (d.fillSeries && _c) { try { _c.removeSeries(d.fillSeries); } catch (_) {} d.fillSeries = null; }
+    if (d.bottomPriceLine && _s) { try { _s.removePriceLine(d.bottomPriceLine); } catch (_) {} d.bottomPriceLine = null; }
+    if (d.fibLines && _s) { d.fibLines.forEach(pl => { try { _s.removePriceLine(pl); } catch (_) {} }); d.fibLines = null; }
+}
+
+function recreateDrawingVisuals(d) {
+    const _s = drawCtx.series || modal.series;
+    const _c = drawCtx.chart || modal.chart;
+    if (!_s || !_c) return;
+    const c = d.color || '#5b9cf6';
+    const lineOpts = { color: c, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false };
+
+    if (d.type === 'hline') {
+        d.priceLine = _s.createPriceLine({ price: d.data.price, color: c, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
+    }
+    if (d.type === 'ray') {
+        const farTime = d.data.startTime + 365 * 24 * 3600;
+        d.lineSeries = _c.addSeries(LightweightCharts.LineSeries, lineOpts);
+        d.lineSeries.setData([{ time: d.data.startTime, value: d.data.price }, { time: farTime, value: d.data.price }]);
+    }
+    if (d.type === 'trendline') {
+        d.lineSeries = _c.addSeries(LightweightCharts.LineSeries, lineOpts);
+        const pts = [{ time: d.data.t1, value: d.data.p1 }, { time: d.data.t2, value: d.data.p2 }].sort((a, b) => a.time - b.time);
+        // Dedup times
+        const seen = new Set();
+        const unique = pts.filter(p => { if (seen.has(p.time)) return false; seen.add(p.time); return true; });
+        d.lineSeries.setData(unique);
+    }
+    if (d.type === 'rect') {
+        const { t1, p1, t2, p2 } = d.data;
+        const tMin = Math.min(t1, t2), tMax = Math.max(t1, t2);
+        const pMin = Math.min(p1, p2), pMax = Math.max(p1, p2);
+        const mkLine = () => _c.addSeries(LightweightCharts.LineSeries, { ...lineOpts, lineWidth: 1.5 });
+        const topLine = mkLine(); topLine.setData([{ time: tMin, value: pMax }, { time: tMax, value: pMax }]);
+        const bottomLine = mkLine(); bottomLine.setData([{ time: tMin, value: pMin }, { time: tMax, value: pMin }]);
+        const leftLine = mkLine(); leftLine.setData([{ time: tMin, value: pMin }, { time: tMin + 1, value: pMax }]);
+        const rightLine = mkLine(); rightLine.setData([{ time: tMax, value: pMin }, { time: tMax + 1, value: pMax }]);
+        d.rectLines = [topLine, bottomLine, leftLine, rightLine];
+        // Fill
+        const hexToFill = (hex) => { const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return `rgba(${r},${g},${b},0.08)`; };
+        d.fillSeries = _c.addSeries(LightweightCharts.AreaSeries, {
+            topColor: hexToFill(c), bottomColor: 'transparent', lineColor: 'transparent', lineWidth: 0,
+            crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        const fillPts = []; const steps = 20;
+        for (let i = 0; i <= steps; i++) fillPts.push({ time: Math.round(tMin + (tMax - tMin) * i / steps), value: pMax });
+        const seenT = new Set(); d.fillSeries.setData(fillPts.filter(p => { if (seenT.has(p.time)) return false; seenT.add(p.time); return true; }));
+        d.bottomPriceLine = _s.createPriceLine({ price: pMin, color: 'transparent', lineWidth: 0, lineStyle: 2, axisLabelVisible: false, title: '' });
+    }
+    if (d.type === 'fib') {
+        const rawLevels = d.data.levels || fibConfig.load();
+        const diff = d.data.p2 - d.data.p1;
+        d.fibLines = [];
+        rawLevels.forEach((item, i) => {
+            const lvl = typeof item === 'number' ? item : item.level;
+            const clr = (typeof item === 'object' && item.color) ? item.color : c;
+            const price = d.data.p1 + diff * lvl;
+            d.fibLines.push(_s.createPriceLine({ price, color: clr, lineWidth: 1.5, lineStyle: 0, axisLabelVisible: true, title: `${(lvl * 100).toFixed(1)}%` }));
+        });
+    }
 }
 
 // ============================================
@@ -5821,6 +6189,7 @@ function closeCoinModal() {
     const closingSym = modal.currentSym;
     el('coinModal').classList.add('hidden');
     removeRulerMeasurement();
+    removeSelectionOverlay();
     // Abort pending fetches (klines + metrics)
     if (_modalLoadController) { _modalLoadController.abort(); _modalLoadController = null; }
     if (modal._metricsController) { modal._metricsController.abort(); modal._metricsController = null; }
@@ -6210,7 +6579,7 @@ function createSlotChart(slotIndex) {
         grid: getGridOpts(),
         crosshair: { mode: 0 },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.05, bottom: 0.05 }, minimumWidth: 45, mode: getPriceScaleMode() },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 10, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 50, shiftVisibleRangeOnNewBar: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: localTickFormatter },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, vertTouchDrag: true, horzTouchDrag: true },
         handleScale: { mouseWheel: true, pinch: true },
     });

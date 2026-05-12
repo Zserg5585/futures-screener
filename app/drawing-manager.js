@@ -169,6 +169,28 @@ const DM = (() => {
         return true;
     }
 
+    // ── Time Extrapolation (future area where coordinateToTime returns null) ──
+
+    function _getTimeFromX(x) {
+        if (!currentChart) return null;
+        const ts = currentChart.timeScale();
+        const t = ts.coordinateToTime(x);
+        if (t !== null) return t;
+        // Extrapolate: find two known bars and project forward
+        let ref1 = null, ref2 = null;
+        for (let testX = Math.floor(x) - 1; testX >= 0; testX -= 5) {
+            const tt = ts.coordinateToTime(testX);
+            if (tt !== null) {
+                if (!ref1) { ref1 = { x: testX, t: tt }; }
+                else if (tt !== ref1.t) { ref2 = { x: testX, t: tt }; break; }
+            }
+        }
+        if (!ref1 || !ref2) return null;
+        const pxPerSec = (ref1.x - ref2.x) / (ref1.t - ref2.t);
+        if (pxPerSec <= 0) return null;
+        return Math.round(ref1.t + (x - ref1.x) / pxPerSec);
+    }
+
     // ── Click Handler ───────────────────────────────────
 
     function _handleChartClick(param) {
@@ -179,7 +201,11 @@ const DM = (() => {
         if (!manager || !currentSeries) return;
         if (!param.time && !param.point) return;
 
-        const time = param.time;
+        let time = param.time;
+        // Extrapolate time when clicking in the future area (beyond last candle)
+        if (time == null && param.point) {
+            time = _getTimeFromX(param.point.x);
+        }
         let price = param.point ? currentSeries.coordinateToPrice(param.point.y) : null;
         if (time == null || price == null) return;
 
