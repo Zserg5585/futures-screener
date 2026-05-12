@@ -1449,8 +1449,9 @@ fastify.get('/api/push/vapid-key', async () => {
   return { success: true, key }
 })
 
-// Subscribe to push notifications
-fastify.post('/api/push/subscribe', async (req) => {
+// Subscribe to push notifications (auth required)
+fastify.post('/api/push/subscribe', async (req, reply) => {
+  if (!auth.requireAuth(req, reply)) return
   const { subscription, filters } = req.body || {}
   if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
     return { success: false, error: 'Invalid subscription' }
@@ -1462,11 +1463,9 @@ fastify.post('/api/push/subscribe', async (req) => {
     JSON.stringify(filters || {})
   )
   // Link subscription to authenticated user (for per-user alert push)
-  if (req.user) {
-    try { auth.stmts.linkPushSubToUser.run(req.user.id, subscription.endpoint) } catch {}
-  }
+  try { auth.stmts.linkPushSubToUser.run(req.user.id, subscription.endpoint) } catch {}
   const count = auth.stmts.countPushSubs.get()?.count || 0
-  log.info({ total: count, userId: req.user?.id }, 'Push: new subscription registered')
+  log.info({ total: count, userId: req.user.id }, 'Push: new subscription registered')
   return { success: true, total: count }
 })
 
@@ -1511,8 +1510,10 @@ fastify.get('/api/signals/test', async (req, reply) => {
 fastify.get('/api/oi-history', async (req, reply) => {
   const symbol = String(req.query.symbol || '').toUpperCase()
   const period = String(req.query.period || '5m')
+  const VALID_PERIODS = ['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']
   const limit = Math.min(Number(req.query.limit || 500), 500)
   if (!symbol) return { error: 'symbol required' }
+  if (!VALID_PERIODS.includes(period)) return { error: `Invalid period. Valid: ${VALID_PERIODS.join(', ')}` }
 
   const key = `oiHist:${symbol}:${period}:${limit}`
   const cached = getProxyCached(key, 60000) // cache 1 min
@@ -1743,7 +1744,10 @@ function startKlinesUpdater() {
 }
 
 // ---- rate limiter status + reset endpoint ----
-fastify.post('/api/rate-limiter/reset', async () => {
+fastify.post('/api/rate-limiter/reset', async (req, reply) => {
+  if (!req.user || req.user.tier !== 'admin') {
+    return reply.code(403).send({ error: 'Admin only' })
+  }
   rateLimiter.pauseUntil = 0
   rateLimiter.usedWeight = 0
   savePauseToDisk(0)
@@ -1754,7 +1758,10 @@ fastify.post('/api/rate-limiter/reset', async () => {
 // Log level management — runtime control without restart
 const { setLevel, getLevels } = require('./logger')
 fastify.get('/api/log-levels', async () => ({ success: true, levels: getLevels() }))
-fastify.post('/api/log-levels', async (req) => {
+fastify.post('/api/log-levels', async (req, reply) => {
+  if (!req.user || req.user.tier !== 'admin') {
+    return reply.code(403).send({ error: 'Admin only' })
+  }
   const { module, level } = req.body || {}
   if (!module || !level) return { success: false, error: 'module and level required' }
   const result = setLevel(module, level)
@@ -1766,7 +1773,10 @@ fastify.post('/api/log-levels', async (req) => {
 fastify.get('/api/rate-limit', async () => ({ success: true, ...(await getBinanceStats()) }))
 
 // Hot-reload static files from disk (no PM2 restart needed → no Binance ban)
-fastify.post('/api/reload-static', async () => {
+fastify.post('/api/reload-static', async (req, reply) => {
+  if (!req.user || req.user.tier !== 'admin') {
+    return reply.code(403).send({ error: 'Admin only' })
+  }
   reloadAllStatic()
   return { success: true, files: STATIC_FILES.length }
 })
