@@ -1178,22 +1178,26 @@ function createChartInstance(sym) {
     mc.charts[sym] = { chart, series, volSeries, lines: [], oiSeries: null, candleData: null };
 
     // Drawing tools on mini-chart — switch context on interaction
-    chartEl.addEventListener('mousedown', () => {
-        if (drawCtx.source !== 'mini:' + sym) {
-            setDrawCtxMini(sym);
-            renderDrawToolbar(chartEl);
-        }
-    }, true);
-    chartEl.addEventListener('touchstart', () => {
-        if (drawCtx.source !== 'mini:' + sym) {
-            setDrawCtxMini(sym);
-            renderDrawToolbar(chartEl);
-        }
-    }, { capture: true, passive: true });
+    // Guard: prevent duplicate listeners on scroll in/out cycles
+    if (!chartEl._miniListenersAttached) {
+        chartEl.addEventListener('mousedown', () => {
+            if (drawCtx.source !== 'mini:' + sym) {
+                setDrawCtxMini(sym);
+                renderDrawToolbar(chartEl);
+            }
+        }, true);
+        chartEl.addEventListener('touchstart', () => {
+            if (drawCtx.source !== 'mini:' + sym) {
+                setDrawCtxMini(sym);
+                renderDrawToolbar(chartEl);
+            }
+        }, { capture: true, passive: true });
 
-    // Attach ruler + drawing handlers
-    attachRuler(chartEl, chart, series);
-    setupDrawingHandlers(chartEl);
+        // Attach ruler + drawing handlers
+        attachRuler(chartEl, chart, series);
+        setupDrawingHandlers(chartEl);
+        chartEl._miniListenersAttached = true;
+    }
 }
 
 // TF string → milliseconds lookup for staleness check & countdown

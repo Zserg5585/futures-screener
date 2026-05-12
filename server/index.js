@@ -69,96 +69,6 @@ const KLINE_LIMIT = 20
 // So: vol1 = newest (t), vol2 = prev (t-1), vol3 = oldest (t-2)
 // Note: Variable names now match time order, not index order
 
-function filterLevelsByWindow(levels, markPrice, windowPct) {
-  return levels.filter(level => {
-    const distPct = Math.abs(level.price - markPrice) / markPrice * 100;
-    return distPct <= windowPct;
-  });
-}
-
-// Group close levels into clusters (for MM detection)
-// levels: array of {price, notional, distancePct}
-// maxGapPct: max distance between levels in same cluster (%)
-function groupCloseLevels(levels, maxGapPct = 0.2) {
-  if (!levels || levels.length === 0) return []
-
-  // Sort by price
-  const sorted = [...levels].sort((a, b) => a.price - b.price)
-
-  const clusters = []
-  let currentCluster = [sorted[0]]
-
-  for (let i = 1; i < sorted.length; i++) {
-    const level = sorted[i]
-    const prevLevel = sorted[i - 1]
-
-    // Calculate gap in % relative to price
-    const gapPct = Math.abs(level.price - prevLevel.price) / prevLevel.price * 100
-
-    if (gapPct <= maxGapPct) {
-      // Add to current cluster
-      currentCluster.push(level)
-    } else {
-      // Close current cluster and start new one
-      if (currentCluster.length >= 2) {
-        clusters.push(currentCluster)
-      }
-      currentCluster = [level]
-    }
-  }
-
-  // Don't forget the last cluster
-  if (currentCluster.length >= 2) {
-    clusters.push(currentCluster)
-  }
-
-  return clusters
-}
-
-function calcNearestDensities({ price, bids, asks, minNotional, windowPct }) {
-  // bids/asks are arrays: [priceStr, qtyStr]
-  const filteredLevels = [];
-
-  for (const [pStr, qStr] of bids) {
-    const p = toNumber(pStr), q = toNumber(qStr)
-    const notional = p * q
-    if (notional >= minNotional) {
-      const distPct = Math.abs((price - p) / price) * 100
-      if (distPct <= windowPct) {
-        filteredLevels.push({
-          side: 'bid',
-          price: p,
-          qty: q,
-          notional,
-          distancePct: distPct
-        })
-      }
-    }
-  }
-
-  for (const [pStr, qStr] of asks) {
-    const p = toNumber(pStr), q = toNumber(qStr)
-    const notional = p * q
-    if (notional >= minNotional) {
-      const distPct = Math.abs((p - price) / price) * 100
-      if (distPct <= windowPct) {
-        filteredLevels.push({
-          side: 'ask',
-          price: p,
-          qty: q,
-          notional,
-          distancePct: distPct
-        })
-      }
-    }
-  }
-
-  const bidLevels = filteredLevels.filter(l => l.side === 'bid');
-  const askLevels = filteredLevels.filter(l => l.side === 'ask');
-
-  return { filteredLevels, bidLevels, askLevels };
-}
-
 // Simple concurrency limiter (no deps) with optional per-item delay
 async function mapLimit(items, limit, fn, delayMs = 0) {
   const out = new Array(items.length)
@@ -208,19 +118,6 @@ if (diskCache) {
   densityCache = { data: diskCache.data, meta: diskCache.meta, ts: diskCache.ts }
 }
 
-// Scoring function: enhanced with Time To Eat, NATR, and lifetime
-function calcScore({ notional, distancePct, isMM, timeToEatMinutes, natr, lifetimeSec }) {
-  let score = notional / 1000000; // Base score in millions
-  score = score / (1 + distancePct); // Penalty for distance
-
-  if (timeToEatMinutes > 60) score *= 1.5; // Huge wall compared to 25m passing volume
-  if (natr > 1.0) score *= 1.2; // Bonus for high volatility coins
-  if (lifetimeSec > 300) score *= 1.2; // Bonus for proven walls (5+ mins old)
-  if (isMM) score *= 1.5; // Bonus for clustered MM levels
-
-  return score;
-}
-
 // Track all intervals for graceful shutdown cleanup
 const _intervals = []
 
@@ -246,49 +143,6 @@ _intervals.push(setInterval(() => {
     }
   }
 }, 30000))
-
-// --- Telegram Alerts Scaffold ---
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || ''
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || ''
-
-async function sendTelegramAlert(msg) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return
-  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' })
-    })
-  } catch (e) {
-    log.error({ err: e.message }, 'Telegram send error')
-  }
-}
-
-function getCacheKey(req) {
-  return JSON.stringify({
-    symbols: req.query.symbols || 'all',
-    minNotional: req.query.minNotional || 50000,
-    depthLimit: req.query.depthLimit || 100,
-    windowPct: req.query.windowPct || 1.0,
-    minScore: req.query.minScore || 0,
-    concurrency: req.query.concurrency || 6
-  })
-}
-
-function getCached(req) {
-  const key = getCacheKey(req)
-  const entry = cache.get(key)
-  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) {
-    return entry.data
-  }
-  return null
-}
-
-function setCached(req, data) {
-  const key = getCacheKey(req)
-  cache.set(key, { data, ts: Date.now() })
-}
 
 // bget / bgetWithRetry / RateLimitError / rateLimiter — imported from ./binance-client.js
 
