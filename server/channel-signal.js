@@ -357,8 +357,11 @@ function checkConfluence(symbol, direction, subType, interval) {
 }
 
 function recordSignalForConfluence(symbol, direction, subType, interval) {
-  recentChannelSignals.push({ symbol, direction, subType, interval, time: Date.now() })
-  // Trim old entries
+  const now = Date.now()
+  recentChannelSignals.push({ symbol, direction, subType, interval, time: now })
+  // Evict entries older than confluence window + trim by size cap
+  const cutoff = now - CONFLUENCE_WINDOW_MS
+  while (recentChannelSignals.length > 0 && recentChannelSignals[0].time < cutoff) recentChannelSignals.shift()
   while (recentChannelSignals.length > MAX_RECENT_SIGNALS) recentChannelSignals.shift()
 }
 

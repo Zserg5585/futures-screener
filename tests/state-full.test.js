@@ -6,7 +6,6 @@ describe('StateManager — getTopLevels', () => {
   beforeEach(() => {
     sm.books.clear()
     sm.binHistory.clear()
-    sm._resyncCooldowns.clear()
   })
 
   it('returns top levels by notional within window', () => {
@@ -167,7 +166,6 @@ describe('StateManager — gap detection / resync', () => {
   beforeEach(() => {
     sm.books.clear()
     sm.binHistory.clear()
-    sm._resyncCooldowns.clear()
     sm._resyncHandler = null
   })
 
@@ -196,7 +194,7 @@ describe('StateManager — gap detection / resync', () => {
     expect(book.lastUpdateId).toBe(100) // not updated
   })
 
-  it('respects resync cooldown (30s)', () => {
+  it('fires resync handler on every gap (throttling in index.js)', () => {
     const handler = vi.fn()
     sm.setResyncHandler(handler)
 
@@ -207,9 +205,9 @@ describe('StateManager — gap detection / resync', () => {
     sm.processDelta('BTCUSDT', { U: 200, u: 210, b: [], a: [] })
     expect(handler).toHaveBeenCalledTimes(1)
 
-    // Second gap immediately — should be throttled
+    // Second gap — also fires (cooldown is caller's responsibility)
     sm.processDelta('BTCUSDT', { U: 300, u: 310, b: [], a: [] })
-    expect(handler).toHaveBeenCalledTimes(1) // still 1
+    expect(handler).toHaveBeenCalledTimes(2)
   })
 
   it('applies delta normally when sequence is valid', () => {

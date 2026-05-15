@@ -577,15 +577,16 @@ const LIQ_SWEEP_SCAN_DELAY_MS = 150
 const MIN_VOL_24H = 30_000_000
 const MIN_VOLUME_RATIO = 5 // sweep candle volume must be >= 5x average
 
-// Funding rate thresholds for extreme context (%, must match signals.js FUNDING_GATE values)
-const FUNDING_EXTREME_POS = 0.03  // longs overcrowded → SHORT sweep stronger
-const FUNDING_EXTREME_NEG = -0.02 // shorts overcrowded → LONG sweep stronger
+// Funding rate thresholds for extreme context (%, must match signals.js FUNDING_EXTREME values)
+const FUNDING_EXTREME_POS = 0.04  // longs overcrowded → SHORT sweep stronger
+const FUNDING_EXTREME_NEG = -0.04 // shorts overcrowded → LONG sweep stronger
 
 // In-memory 1h klines cache for sweep scanner (avoids 72 API calls per scan)
 // Refreshed every 30min per symbol (1h candles don't change fast)
 const _1hCache = new Map() // symbol → { candles, ts }
 const _1H_CACHE_TTL = 30 * 60_000
 const _1H_CACHE_MAX_AGE = 60 * 60_000 // evict entries older than 60min
+const _1H_CACHE_MAX_SIZE = 300 // hard cap on symbols in cache
 
 // Periodic cleanup of stale 1h cache entries (every 10min)
 const _cleanupInterval = setInterval(() => {
@@ -696,6 +697,11 @@ async function scanLiqSweep(deps) {
                   low: parseFloat(k[3]), close: parseFloat(k[4]),
                   volume: parseFloat(k[7]),
                 }))
+                if (_1hCache.size >= _1H_CACHE_MAX_SIZE) {
+                  // Evict oldest entry
+                  const oldest = _1hCache.keys().next().value
+                  _1hCache.delete(oldest)
+                }
                 _1hCache.set(symbol, { candles: candles1h, ts: Date.now() })
               } else { candles1h = null }
             } catch { candles1h = null }

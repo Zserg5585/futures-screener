@@ -13,9 +13,8 @@ class StateManager {
 
     // Resync callback: called when order book goes out-of-sync
     // Set via setResyncHandler(fn(symbol))
+    // Throttling is handled by the caller (index.js resync queue with cooldown/debounce/cap)
     this._resyncHandler = null;
-    // Throttle: don't resync the same symbol more than once per 30s
-    this._resyncCooldowns = new Map();
 
     // Cache to track dynamically created bins over time to detect robots
     // cacheKey: "SYMBOL:SIDE:BIN_ANCHOR" -> { oldestSeen, maxNotional, lastUpdate, isMovingTowardPrice }
@@ -26,7 +25,7 @@ class StateManager {
     this._resyncHandler = fn;
   }
 
-  initBook(symbol, bids, asks) {
+  initBook(symbol, bids, asks, lastUpdateId) {
     // Evict oldest book if at capacity
     if (!this.books.has(symbol) && this.books.size >= this.MAX_BOOKS) {
       let oldestSym = null, oldestTime = Infinity;
@@ -49,6 +48,9 @@ class StateManager {
     const state = this.books.get(symbol);
     const now = Date.now();
     state._lastActivity = now;
+
+    // Set lastUpdateId from snapshot to prevent resync loops
+    if (lastUpdateId) state.lastUpdateId = lastUpdateId;
 
     bids.forEach(([priceStr, qtyStr]) => {
       const price = parseFloat(priceStr);
@@ -78,12 +80,8 @@ class StateManager {
 
     // Gap detection: if first updateId of this delta > lastUpdateId+1, we missed deltas
     if (state.lastUpdateId > 0 && payload.U > state.lastUpdateId + 1) {
-      const now = Date.now();
-      const cooldown = this._resyncCooldowns.get(symbol) || 0;
-      if (this._resyncHandler && now - cooldown > 30000) {
-        this._resyncCooldowns.set(symbol, now);
+      if (this._resyncHandler) {
         log.warn({ symbol, expected: state.lastUpdateId + 1, got: payload.U }, 'Gap detected, requesting resync');
-        // Fire-and-forget — resync will call initBook which resets state
         this._resyncHandler(symbol);
       }
       return; // Drop this delta — book is stale until resync

@@ -7,13 +7,15 @@ const PING_INTERVAL = 3 * 60 * 1000; // 3 min (Binance closes idle after 5 min)
 const MAX_STREAMS_PER_CONN = 190; // Binance limit 200, leave margin
 
 class BinanceWSConnection {
-  constructor(id, onMessage) {
+  constructor(id, onMessage, onReconnect) {
     this.id = id;
     this.ws = null;
     this.streams = new Set();
     this.onMessage = onMessage;
+    this.onReconnect = onReconnect;
     this._pingTimer = null;
     this._reconnectTimer = null;
+    this._hasConnectedBefore = false;
   }
 
   connect() {
@@ -26,9 +28,14 @@ class BinanceWSConnection {
     this.ws = new WebSocket(BINANCE_WS_URL);
 
     this.ws.on('open', () => {
-      log.info({ connId: this.id }, 'Connected');
+      const isReconnect = this._hasConnectedBefore;
+      this._hasConnectedBefore = true;
+      log.info({ connId: this.id, reconnect: isReconnect }, 'Connected');
       this._resubscribe();
       this._startPing();
+      if (isReconnect && this.onReconnect) {
+        this.onReconnect([...this.streams]);
+      }
     });
 
     this.ws.on('message', (data) => {
@@ -142,6 +149,11 @@ class BinanceWS {
     this.connections = []; // BinanceWSConnection[]
     this.callbacks = new Map(); // symbol -> callback
     this.streamToConn = new Map(); // streamName -> connection
+    this._reconnectHandler = null; // (symbols[]) => void
+  }
+
+  setReconnectHandler(fn) {
+    this._reconnectHandler = fn;
   }
 
   subscribe(symbol, callback) {
@@ -159,6 +171,13 @@ class BinanceWS {
         const sym = payload.s;
         if (this.callbacks.has(sym)) {
           this.callbacks.get(sym)(payload);
+        }
+      }, (streamNames) => {
+        // On reconnect: extract symbols from stream names and notify
+        if (this._reconnectHandler) {
+          const symbols = streamNames.map(s => s.split('@')[0].toUpperCase());
+          log.info({ connId: id, symbols: symbols.length }, 'Reconnect: notifying handler');
+          this._reconnectHandler(symbols);
         }
       });
       this.connections.push(conn);

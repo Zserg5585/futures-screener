@@ -35,7 +35,7 @@ fastify.register(rateLimit, {
 })
 
 // Centralized Binance REST client (Bottleneck rate limiting)
-const { bget, bgetWithRetry, RateLimitError, rateLimiter, BINANCE_FAPI, getStats: getBinanceStats } = require('./binance-client')
+const { bget, bgetWithRetry, RateLimitError, rateLimiter, BINANCE_FAPI, getStats: getBinanceStats, savePauseToDisk } = require('./binance-client')
 
 // Custom Modules
 const wsManager = require('./ws');
@@ -152,7 +152,7 @@ const _resyncCooldown = new Map() // symbol → timestamp (prevent re-add within
 let _resyncRunning = 0
 const RESYNC_MAX_CONCURRENT = 3
 const RESYNC_DELAY_MS = 500
-const RESYNC_MAX_PENDING = 10      // cap pending to prevent queue explosion after WS reconnect
+const RESYNC_MAX_PENDING = 50      // cap pending per debounce cycle; dropped symbols retry on next delta
 const RESYNC_COOLDOWN_MS = 60_000  // don't re-add same symbol within 60s
 
 async function processResyncQueue() {
@@ -169,7 +169,7 @@ async function processResyncQueue() {
           const res = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=100`, { signal: controller.signal })
           if (!res.ok) throw new Error(`depth ${symbol}: ${res.status}`)
           const ob = await res.json()
-          stateManager.initBook(symbol, ob.bids, ob.asks)
+          stateManager.initBook(symbol, ob.bids, ob.asks, ob.lastUpdateId)
           log.info({ symbol, pending: _resyncPending.size }, 'Resync completed')
         } finally {
           clearTimeout(tid)
@@ -197,10 +197,12 @@ stateManager.setResyncHandler((symbol) => {
   // Cooldown: skip if recently resynced or attempted
   const now = Date.now()
   if (_resyncCooldown.has(symbol) && now - _resyncCooldown.get(symbol) < RESYNC_COOLDOWN_MS) return
-  _resyncCooldown.set(symbol, now)
 
   // Cap pending to prevent queue explosion after mass WS reconnect
+  // Don't set cooldown here — dropped symbols should retry on next delta
   if (_resyncPending.size >= RESYNC_MAX_PENDING) return
+
+  _resyncCooldown.set(symbol, now)
   _resyncPending.add(symbol)
 
   if (!_resyncDebounce) {
@@ -209,6 +211,15 @@ stateManager.setResyncHandler((symbol) => {
       log.info({ pending: _resyncPending.size, running: _resyncRunning }, 'Resync queue processing')
       processResyncQueue()
     }, 2000) // 2s debounce — collect gaps after WS reconnect
+  }
+})
+
+// On WS reconnect: invalidate lastUpdateId so gap detection fires immediately on first delta
+wsManager.setReconnectHandler((symbols) => {
+  log.info({ count: symbols.length }, 'WS reconnect: invalidating books for immediate resync')
+  for (const sym of symbols) {
+    const book = stateManager.books.get(sym)
+    if (book) book.lastUpdateId = 0
   }
 })
 
@@ -584,9 +595,9 @@ fastify.get('/api/alerts/types', async () => {
 })
 
 // Depth Heatmap (Bookmap-style, SQLite 4h history)
-fastify.get('/api/depth-heatmap', async (req) => {
+fastify.get('/api/depth-heatmap', async (req, reply) => {
   const { symbol, hours } = req.query
-  if (!symbol) return { success: false, error: 'symbol required' }
+  if (!symbol) return reply.code(400).send({ success: false, error: 'symbol required' })
   depthStore.track(symbol)
   const data = depthStore.getSnapshots(symbol, Math.min(parseFloat(hours) || 4, 4))
   if (!data || !data.count) return { success: true, data: { symbol, snapshots: [], count: 0, message: 'Collecting data, retry in 10s' } }
@@ -787,7 +798,7 @@ fastify.get('/densities/simple', async (req, reply) => {
         const _dsRes = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: _dsCtrl.signal })
         if (!_dsRes.ok) throw new Error(`depth ${sym}: ${_dsRes.status}`)
         const ob = await _dsRes.json()
-        stateManager.initBook(sym, ob.bids, ob.asks);
+        stateManager.initBook(sym, ob.bids, ob.asks, ob.lastUpdateId);
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload); });
       } catch (err) {
         log.debug({ symbol: sym, err: err.message.slice(0, 80) }, 'Density: skip symbol');
@@ -1037,7 +1048,7 @@ fastify.get('/densities/v2', async (req) => {
         const _dRes = await fetch(`${BINANCE_FAPI}/fapi/v1/depth?symbol=${encodeURIComponent(sym)}&limit=1000`, { signal: _dCtrl.signal })
         if (!_dRes.ok) throw new Error(`depth ${sym}: ${_dRes.status}`)
         const ob = await _dRes.json()
-        stateManager.initBook(sym, ob.bids, ob.asks)
+        stateManager.initBook(sym, ob.bids, ob.asks, ob.lastUpdateId)
         wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
       } catch (err) {
         continue
@@ -1283,8 +1294,12 @@ fastify.get('/api/klines', async (req, reply) => {
     if (Array.isArray(data)) {
       setProxyCached(key, data)
       klinesCache.storeCandles(symbol, interval, data)
+      return data
     }
-    return data
+    // Binance returned non-OK — fall back to SQLite cache
+    const rows = klinesCache.getCandles(symbol, interval, limit)
+    if (rows.length) return rows.map(c => [c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume)])
+    return []
   } catch (e) {
     // Rate limited — return whatever SQLite has
     const rows = klinesCache.getCandles(symbol, interval, limit)
@@ -1308,7 +1323,7 @@ fastify.post('/api/push/subscribe', async (req, reply) => {
   if (!auth.requireAuth(req, reply)) return
   const { subscription, filters } = req.body || {}
   if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
-    return { success: false, error: 'Invalid subscription' }
+    return reply.code(400).send({ success: false, error: 'Invalid subscription' })
   }
   auth.stmts.upsertPushSub.run(
     subscription.endpoint,
@@ -1324,9 +1339,9 @@ fastify.post('/api/push/subscribe', async (req, reply) => {
 })
 
 // Unsubscribe from push notifications
-fastify.post('/api/push/unsubscribe', async (req) => {
+fastify.post('/api/push/unsubscribe', async (req, reply) => {
   const { endpoint } = req.body || {}
-  if (!endpoint) return { success: false, error: 'Missing endpoint' }
+  if (!endpoint) return reply.code(400).send({ success: false, error: 'Missing endpoint' })
   auth.stmts.deletePushSub.run(endpoint)
   return { success: true }
 })
@@ -1366,8 +1381,8 @@ fastify.get('/api/oi-history', async (req, reply) => {
   const period = String(req.query.period || '5m')
   const VALID_PERIODS = ['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']
   const limit = Math.min(Number(req.query.limit || 500), 500)
-  if (!symbol) return { error: 'symbol required' }
-  if (!VALID_PERIODS.includes(period)) return { error: `Invalid period. Valid: ${VALID_PERIODS.join(', ')}` }
+  if (!symbol) return reply.code(400).send({ error: 'symbol required' })
+  if (!VALID_PERIODS.includes(period)) return reply.code(400).send({ error: `Invalid period. Valid: ${VALID_PERIODS.join(', ')}` })
 
   const key = `oiHist:${symbol}:${period}:${limit}`
   const cached = getProxyCached(key, 60000) // cache 1 min
@@ -1617,7 +1632,7 @@ fastify.post('/api/log-levels', async (req, reply) => {
     return reply.code(403).send({ error: 'Admin only' })
   }
   const { module, level } = req.body || {}
-  if (!module || !level) return { success: false, error: 'module and level required' }
+  if (!module || !level) return reply.code(400).send({ success: false, error: 'module and level required' })
   const result = setLevel(module, level)
   log.info({ module, level }, 'Log level changed via API')
   return { success: true, ...result }
@@ -1706,9 +1721,10 @@ const start = async () => {
 async function gracefulShutdown(signal) {
   log.info({ signal }, 'Shutdown: signal received, closing gracefully')
   try {
-    // Stop all intervals
+    // Stop all intervals + pending resync debounce
     for (const id of _intervals) clearInterval(id)
     if (_klinesUpdaterInterval) clearInterval(_klinesUpdaterInterval)
+    if (_resyncDebounce) { clearTimeout(_resyncDebounce); _resyncDebounce = null }
     // Stop liq-sweep cache cleanup interval
     try { const liqSweep = require('./liq-sweep'); clearInterval(liqSweep._cleanupInterval) } catch (_) {}
     // Stop signal scanners
@@ -1812,7 +1828,7 @@ async function warmupDensitySubscriptions() {
             if (!_res.ok) throw new Error(`depth ${sym}: ${_res.status}`)
             ob = await _res.json()
           } finally { clearTimeout(_tid) }
-          stateManager.initBook(sym, ob.bids, ob.asks)
+          stateManager.initBook(sym, ob.bids, ob.asks, ob.lastUpdateId)
           wsManager.subscribe(sym, (payload) => { stateManager.processDelta(sym, payload) })
           subscribed++
         } catch (err) {

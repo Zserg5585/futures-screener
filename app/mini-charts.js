@@ -755,6 +755,7 @@ async function refreshMiniCharts() {
 
     try {
         const res = await fetch('/api/ticker24hr');
+        if (!res.ok) throw new Error(`ticker24hr: ${res.status}`);
         const data = await res.json();
 
         let pairs = data.filter(d => d.symbol.endsWith('USDT') && !d.symbol.includes('_'));
@@ -803,6 +804,7 @@ async function refreshMiniCharts() {
 async function fetchServerNATR(tf) {
     try {
         const res = await fetch(`/api/natr?interval=${tf}`);
+        if (!res.ok) return;
         const natrMap = await res.json();
         if (!natrMap || typeof natrMap !== 'object') return;
 
@@ -1725,6 +1727,7 @@ async function loadChartData(sym, tf) {
     try {
         // Load 1500 candles (max Binance allows per request)
         const res1 = await fetch(`/api/klines?symbol=${sym}&interval=${tf}&limit=1500`);
+        if (!res1.ok) throw new Error(`klines: ${res1.status}`);
         const json1 = await res1.json();
         if (!Array.isArray(json1) || !mc.charts[sym]) return;
 
@@ -3154,6 +3157,9 @@ function wsUnsubscribeAll() {
 // Shift+Drag Ruler (like TradingView)
 // ==========================================
 function attachRuler(chartEl, chart, series) {
+    // Cleanup previous ruler listeners on this element to prevent leaks
+    if (chartEl._rulerCleanup) chartEl._rulerCleanup();
+
     let rulerActive = false;
     let startX = 0, startY = 0;
     let startPrice = 0, startTime = 0;
@@ -3177,7 +3183,7 @@ function attachRuler(chartEl, chart, series) {
         if (label) { label.remove(); label = null; }
     }
 
-    chartEl.addEventListener('mousedown', (e) => {
+    const onMouseDown = (e) => {
         if (!e.shiftKey) return;
         e.preventDefault();
         e.stopPropagation();
@@ -3197,9 +3203,10 @@ function attachRuler(chartEl, chart, series) {
 
         // Temporarily disable chart interaction
         chart.applyOptions({ handleScroll: false, handleScale: false });
-    });
+    };
+    chartEl.addEventListener('mousedown', onMouseDown);
 
-    chartEl.addEventListener('mousemove', (e) => {
+    const onMouseMove = (e) => {
         if (!rulerActive || !line || !label) return;
 
         const rect = chartEl.getBoundingClientRect();
@@ -3245,7 +3252,8 @@ function attachRuler(chartEl, chart, series) {
         label.style.background = priceDiff >= 0 ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)';
         const timeInfo = timeStr ? ` | ${timeStr}` : '';
         label.textContent = `${sign}${priceDiff.toFixed(prec)}  (${sign}${pctDiff.toFixed(2)}%)${timeInfo}`;
-    });
+    };
+    chartEl.addEventListener('mousemove', onMouseMove);
 
     const endRuler = () => {
         if (!rulerActive) return;
@@ -3260,6 +3268,16 @@ function attachRuler(chartEl, chart, series) {
 
     chartEl.addEventListener('mouseup', endRuler);
     chartEl.addEventListener('mouseleave', endRuler);
+
+    // Store cleanup function to prevent listener leaks on re-attach
+    chartEl._rulerCleanup = () => {
+        chartEl.removeEventListener('mousedown', onMouseDown);
+        chartEl.removeEventListener('mousemove', onMouseMove);
+        chartEl.removeEventListener('mouseup', endRuler);
+        chartEl.removeEventListener('mouseleave', endRuler);
+        removeOverlay();
+        chartEl._rulerCleanup = null;
+    };
 }
 
 // ==========================================
@@ -3728,6 +3746,7 @@ async function applyOI(chartObj, sym, tf) {
 
     try {
         const res = await fetch(`/api/oi-history?symbol=${sym}&period=${period}&limit=500`);
+        if (!res.ok) throw new Error(`oi-history: ${res.status}`);
         const data = await res.json();
         if (!Array.isArray(data) || data.length === 0) {
             adjustChartMargins(chartObj, false);
@@ -6213,6 +6232,10 @@ function closeCoinModal() {
         modal.wsStream = null;
     }
     if (modal._infiniteUnsub) { try { modal._infiniteUnsub(); } catch(e) {} modal._infiniteUnsub = null; }
+    // Cleanup ruler listeners before removing chart
+    const chartEl = el('cmChartBody');
+    if (chartEl && chartEl._rulerCleanup) chartEl._rulerCleanup();
+
     if (modal.chart) {
         modal.chart.remove();
         modal.chart = null;
@@ -6652,6 +6675,7 @@ async function loadSlotChart(slotIndex) {
 
     try {
         const res = await fetch(`/api/klines?symbol=${slot.sym}&interval=${slot.tf}&limit=500`);
+        if (!res.ok) return;
         const raw = await res.json();
         if (!Array.isArray(raw) || raw.length === 0) return;
 

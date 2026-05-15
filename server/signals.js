@@ -752,8 +752,9 @@ async function checkOutcomes() {
 
       // Always update MFE/MAE even if no new snapshot
       const shouldFinalize = !!spot1d // done after 1d
+      const mfeChanged = track.mfe > (sig.mfe_pct || 0) || track.mae < (sig.mae_pct || 0)
 
-      if (!updated && !shouldFinalize) continue
+      if (!updated && !shouldFinalize && !mfeChanged) continue
 
       let outcome = null
       let pnlPct = null

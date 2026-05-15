@@ -1,4 +1,7 @@
-// Futures Screener - Densities UI
+// ⚠️ DEAD CODE — NOT loaded by index.html. All functionality lives in mini-charts.js.
+// Kept for reference only. Safe to delete when convenient.
+//
+// Futures Screener - Densities UI (LEGACY)
 // Utilities and Core Helpers
 const el = (id) => document.getElementById(id)
 const qs = (selector) => document.querySelector(selector)

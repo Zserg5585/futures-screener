@@ -235,4 +235,5 @@ module.exports = {
   BINANCE_FAPI,
   estimateWeight,
   getStats,
+  savePauseToDisk,
 }
