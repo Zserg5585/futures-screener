@@ -41,7 +41,7 @@ const OI_DIV_TREND_PCT = 2.0       // min OI trend % over window for divergence
 const OI_DIV_PRICE_PCT = 1.0       // min price change % for divergence
 
 // VPIN toxicity thresholds
-const VPIN_THRESHOLD = 0.5          // emit signal when VPIN exceeds this
+const VPIN_THRESHOLD = 0.3          // emit signal when VPIN exceeds this
 const VPIN_BUY_LONG = 0.55          // buyPct > 55% → LONG
 const VPIN_SELL_SHORT = 0.45        // buyPct < 45% → SHORT
 const VPIN_SCAN_INTERVAL_MS = 60_000
@@ -818,8 +818,8 @@ function scanVPIN() {
         dirLabel = 'direction unclear'
       }
 
-      // Confidence: VPIN 0.5→50, 0.7→70, 0.9→90, cap 95
-      const confidence = Math.min(95, Math.round(40 + (entry.vpin - 0.4) * 100))
+      // Confidence: VPIN 0.3→40, 0.5→60, 0.7→80, 0.9→95, cap 95
+      const confidence = Math.min(95, Math.round(40 + (entry.vpin - 0.3) * 100))
 
       const buyPctFmt = (entry.buyPct * 100).toFixed(1)
       const description = direction === 'NEUTRAL'
